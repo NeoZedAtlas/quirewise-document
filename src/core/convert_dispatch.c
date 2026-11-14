@@ -107,8 +107,9 @@ int qw_convert_to_pdf_memory(const void *data, size_t size,
                              QwConvertReport *report)
 {
     const uint8_t *bytes = (const uint8_t *)data;
+    const char *extension = NULL;
+    int reflow = 0;
 
-    (void)options;
     if (!out_pdf || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_pdf = NULL;
     *out_size = 0u;
@@ -117,8 +118,16 @@ int qw_convert_to_pdf_memory(const void *data, size_t size,
     if (convert_region_equals(bytes, size, 0u, "%PDF-")) {
         return pdf_passthrough(bytes, size, out_pdf, out_size, report);
     }
-    return qw_doc_convert_memory(bytes, size, NULL, 0, out_pdf, out_size,
-                                 report);
+    /* The memory entry point has no file extension; detect the EPUB container
+     * so the reflow route is reachable here as it is through the file API. */
+    if (convert_region_equals(bytes, size, 0u, "PK\x03\x04") &&
+        contains_text(bytes, size, "application/epub+zip")) {
+        extension = "epub";
+        reflow = 1;
+    }
+    return qw_doc_convert_memory_with_options(bytes, size, extension, reflow,
+                                              options, out_pdf, out_size,
+                                              report);
 }
 
 /* Map the historical MuPDF "convert memory" entry onto the internal writers. */
@@ -190,11 +199,37 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
     int ok = 0;
     status = qw_epub_parse(data, size, &document);
     if (status != QW_EPUB_OK || !document) {
+        int mapped;
+        const char *reason;
+        switch (status) {
+        case QW_EPUB_ERR_UNSUPPORTED:
+            mapped = QW_STATUS_ERR_UNSUPPORTED;
+            reason = "EPUB contains layout features the internal renderer does not support";
+            break;
+        case QW_EPUB_ERR_RESOURCE_LIMIT:
+            mapped = QW_STATUS_ERR_RESOURCE_LIMIT;
+            reason = "EPUB exceeds the structured layout limits";
+            break;
+        case QW_EPUB_ERR_OUT_OF_MEMORY:
+            mapped = QW_STATUS_ERR_OUT_OF_MEMORY;
+            reason = "out of memory while parsing the EPUB package";
+            break;
+        case QW_EPUB_ERR_DECODE:
+            mapped = QW_STATUS_ERR_DECODE;
+            reason = "EPUB content could not be decoded";
+            break;
+        case QW_EPUB_ERR_INVALID_ARGUMENT:
+            mapped = QW_STATUS_ERR_INVALID_ARGUMENT;
+            reason = "invalid EPUB input";
+            break;
+        default:
+            mapped = QW_STATUS_ERR_FORMAT;
+            reason = "EPUB package is invalid";
+            break;
+        }
         if (report) snprintf(report->note, sizeof(report->note),
-                             "EPUB parse failed with status %d", (int)status);
-        return status == QW_EPUB_ERR_RESOURCE_LIMIT
-                   ? QW_STATUS_ERR_RESOURCE_LIMIT
-                   : QW_STATUS_ERR_FORMAT;
+                             "EPUB parse failed: %s", reason);
+        return mapped;
     }
     section_count = qw_epub_section_count(document);
     ok = epub_html_append(&html, &length, &capacity,
@@ -309,15 +344,24 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
 }
 
 
+#define CONVERT_HTML_LIMIT (64u * 1024u * 1024u)
+
 static int csv_html_append(char **buffer, size_t *size, size_t *capacity,
                            const char *text, size_t length)
 {
     char *grown;
     size_t needed = *size + length;
-    if (needed < *size) return 0;
+    if (needed < *size || needed >= CONVERT_HTML_LIMIT) return 0;
     if (needed + 1u > *capacity) {
         size_t next = *capacity ? *capacity : 1024u;
-        while (next < needed + 1u) next *= 2u;
+        while (next < needed + 1u) {
+            if (next > CONVERT_HTML_LIMIT / 2u) {
+                next = CONVERT_HTML_LIMIT;
+                break;
+            }
+            next *= 2u;
+        }
+        if (next < needed + 1u) return 0;
         grown = (char *)realloc(*buffer, next);
         if (!grown) return 0;
         *buffer = grown;
@@ -353,6 +397,14 @@ static int csv_html_escape(char **buffer, size_t *size, size_t *capacity,
     return 1;
 }
 
+/* Status-family mappers are defined after the generic HTML helpers; declare
+ * them here because the FB2/CSV adapters below need them first. */
+static int convert_map_standard_status(int status);
+static int convert_map_compact_status(int status);
+static int convert_map_rtf_status(int status);
+static int convert_map_archive_status(int status);
+static int convert_map_pml_status(int status);
+
 static int fb2_to_pdf_internal(const uint8_t *data, size_t size,
                                uint8_t **out_pdf, size_t *out_size,
                                QwConvertReport *report)
@@ -365,9 +417,7 @@ static int fb2_to_pdf_internal(const uint8_t *data, size_t size,
     if (status != QW_FB2_OK || !document) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "FB2 parse failed with status %d", status);
-        return status == QW_FB2_ERROR_RESOURCE_LIMIT
-                   ? QW_STATUS_ERR_RESOURCE_LIMIT
-                   : QW_STATUS_ERR_FORMAT;
+        return convert_map_standard_status((int)status);
     }
     html = qw_fb2_document_html(document, &html_size);
     if (!html || !html_size) {
@@ -401,9 +451,7 @@ static int csv_to_pdf_internal(const uint8_t *data, size_t size,
     if (status != QW_SPREADSHEET_OK || !document) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "Spreadsheet parse failed with status %d", status);
-        return status == QW_SPREADSHEET_ERR_RESOURCE_LIMIT
-                   ? QW_STATUS_ERR_RESOURCE_LIMIT
-                   : QW_STATUS_ERR_FORMAT;
+        return convert_map_compact_status((int)status);
     }
     if (qw_spreadsheet_sheet_count(document) == 0u) {
         qw_spreadsheet_document_free(document);
@@ -514,9 +562,7 @@ static int convert_spreadsheet_to_pdf(const uint8_t *data, size_t size,
             snprintf(report->note, sizeof(report->note),
                      "spreadsheet parse failed with status %d", status);
         }
-        return status == QW_SPREADSHEET_ERR_RESOURCE_LIMIT
-                   ? QW_STATUS_ERR_RESOURCE_LIMIT
-                   : QW_STATUS_ERR_FORMAT;
+        return convert_map_compact_status((int)status);
     }
     sheet_count = qw_spreadsheet_sheet_count(document);
     if (sheet_count == 0u) {
@@ -648,6 +694,133 @@ static int convert_extension_contains(const char *extension, const char *name)
     return extension && extension[0] && strstr(extension, name) != NULL;
 }
 
+/* TTML is XML but belongs to the subtitle package; detect the <tt> root before
+ * the generic XML/ODT branch so a TTML file is not reported as a broken
+ * OpenDocument text (the previous behaviour for sample.ttml). */
+static int convert_looks_like_ttml(const uint8_t *data, size_t size)
+{
+    const uint8_t *first = convert_skip_preamble(data, size);
+    const uint8_t *limit = data + size;
+    const uint8_t *name_start;
+    const uint8_t *local;
+    const uint8_t *cursor;
+    size_t name_size;
+
+    if (first + 5u <= limit && memcmp(first, "<?xml", 5u) == 0) {
+        const uint8_t *after = NULL;
+        const uint8_t *scan = first + 5u;
+        while (scan + 1u < limit) {
+            if (scan[0] == '?' && scan[1] == '>') {
+                after = scan + 2u;
+                break;
+            }
+            ++scan;
+        }
+        if (!after) return 0;
+        first = convert_skip_preamble(after, (size_t)(limit - after));
+    }
+    if (first + 3u > limit || first[0] != '<' || first[1] == '/' ||
+        first[1] == '!') return 0;
+    name_start = first + 1u;
+    cursor = name_start;
+    while (cursor < limit && *cursor != '>' && *cursor != '/' &&
+           *cursor != ' ' && *cursor != '\t' && *cursor != '\r' &&
+           *cursor != '\n') {
+        ++cursor;
+    }
+    name_size = (size_t)(cursor - name_start);
+    local = name_start;
+    {
+        const uint8_t *scan = name_start;
+        for (; scan < cursor; ++scan) {
+            if (*scan == ':') local = scan + 1u;
+        }
+    }
+    name_size = (size_t)(cursor - local);
+    return name_size == 2u && local[0] == 't' && local[1] == 't';
+}
+
+/*
+ * The per-format libraries use two status layouts. Adapters must map them,
+ * not flatten every failure to FORMAT: "the input is unsupported" and "the
+ * input is corrupt" are different outcomes for callers and for --check.
+ *
+ * standard: -1 invalid, -2 OOM, -4 format, -5 unsupported, -6 decode,
+ *           -11 resource limit (EML, FB2, MOBI and QwStatus itself).
+ * compact:  -1 invalid, -2 OOM, -3 format, -4 unsupported, -5 resource limit,
+ *           -6 decode (spreadsheet, PPTX, ODP, HWPX, EPUB).
+ */
+static int convert_map_standard_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -4: return QW_STATUS_ERR_FORMAT;
+    case -5: return QW_STATUS_ERR_UNSUPPORTED;
+    case -6: return QW_STATUS_ERR_DECODE;
+    case -11: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+static int convert_map_compact_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -3: return QW_STATUS_ERR_FORMAT;
+    case -4: return QW_STATUS_ERR_UNSUPPORTED;
+    case -5: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    case -6: return QW_STATUS_ERR_DECODE;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+/* RTF status values are positive: 1 invalid, 2 OOM, 3 format,
+ * 4 unsupported, 5 resource limit, 6 encoding/decode. */
+static int convert_map_rtf_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case 1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case 2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case 3: return QW_STATUS_ERR_FORMAT;
+    case 4: return QW_STATUS_ERR_UNSUPPORTED;
+    case 5: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    case 6: return QW_STATUS_ERR_DECODE;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+/* HTMLZ and the text archives: -3 archive, -4 missing member,
+ * -5 resource limit. */
+static int convert_map_archive_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -3: return QW_STATUS_ERR_FORMAT;
+    case -4: return QW_STATUS_ERR_FORMAT;
+    case -5: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+/* PML: -1 invalid, -2 OOM, -3 resource limit. */
+static int convert_map_pml_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -3: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
 static int convert_html_to_pdf(const uint8_t *html, size_t size,
                                uint8_t **out_pdf, size_t *out_size,
                                QwConvertReport *report)
@@ -684,11 +857,7 @@ static int convert_pptx_to_pdf(const uint8_t *data, size_t size,
         if (report) snprintf(report->note, sizeof(report->note),
                              "presentation parse failed with status %d",
                              (int)status);
-        return status == QW_PPTX_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_PPTX_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_compact_status((int)status);
     }
     html = qw_pptx_document_html(document, &html_size);
     rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
@@ -722,11 +891,7 @@ static int convert_odp_to_pdf(const uint8_t *data, size_t size,
         if (report) snprintf(report->note, sizeof(report->note),
                              "OpenDocument presentation parse failed with "
                              "status %d", (int)status);
-        return status == QW_ODP_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_ODP_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_compact_status((int)status);
     }
     html = qw_odp_document_html(document, &html_size);
     rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
@@ -753,11 +918,7 @@ static int convert_hwpx_to_pdf(const uint8_t *data, size_t size,
     if (status != QW_HWPX_OK || !document) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "HWPX parse failed with status %d", (int)status);
-        return status == QW_HWPX_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_HWPX_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_compact_status((int)status);
     }
     html = qw_hwpx_document_html(document, &html_size);
     rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
@@ -784,11 +945,7 @@ static int convert_email_to_pdf(const uint8_t *data, size_t size,
     if (status != QW_EMAIL_OK || !document) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "EML parse failed with status %d", (int)status);
-        return status == QW_EMAIL_ERROR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_EMAIL_ERROR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_standard_status((int)status);
     }
     html = qw_email_document_html(document, &html_size);
     rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
@@ -816,11 +973,7 @@ static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
         if (report) snprintf(report->note, sizeof(report->note),
                              "HTMLZ extraction failed: %s",
                              error ? error : qw_htmlz_status_string(status));
-        return status == QW_HTMLZ_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_HTMLZ_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_archive_status((int)status);
     }
     rc = convert_html_to_pdf(document.html_bytes, document.html_size, out_pdf,
                              out_size, report);
@@ -851,11 +1004,7 @@ static int convert_text_archive_to_pdf(const uint8_t *data, size_t size,
                              "text archive extraction failed: %s",
                              error ? error
                                    : qw_text_archive_status_string(status));
-        return status == QW_TEXT_ARCHIVE_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_TEXT_ARCHIVE_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_archive_status((int)status);
     }
     rc = convert_text_to_pdf(document.text_bytes, document.text_size, out_pdf,
                              out_size, report);
@@ -888,11 +1037,7 @@ static int convert_pmlz_to_pdf(const uint8_t *data, size_t size,
                              error ? error
                                    : qw_text_archive_status_string(
                                          archive_status));
-        return archive_status == QW_TEXT_ARCHIVE_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : archive_status == QW_TEXT_ARCHIVE_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_archive_status((int)archive_status);
     }
     memset(&document, 0, sizeof(document));
     pml_status = qw_pml_parse(archive.text_bytes, archive.text_size, &document);
@@ -901,11 +1046,7 @@ static int convert_pmlz_to_pdf(const uint8_t *data, size_t size,
         if (report) snprintf(report->note, sizeof(report->note),
                              "PML parse failed with status %d",
                              (int)pml_status);
-        return pml_status == QW_PML_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : pml_status == QW_PML_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_pml_status((int)pml_status);
     }
     rc = convert_text_to_pdf(document.text_bytes, document.text_size, out_pdf,
                              out_size, report);
@@ -932,11 +1073,7 @@ static int convert_mobi_to_pdf(const uint8_t *data, size_t size,
     if (status != QW_MOBI_OK || !document) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "MOBI parse failed with status %d", (int)status);
-        return status == QW_MOBI_ERROR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_MOBI_ERROR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_standard_status((int)status);
     }
     text = qw_mobi_document_text(document, &text_size);
     rc = convert_text_to_pdf(text, text_size, out_pdf, out_size, report);
@@ -962,11 +1099,7 @@ static int convert_rtf_to_pdf(const uint8_t *data, size_t size,
     if (status != QW_RTF_OK) {
         if (report) snprintf(report->note, sizeof(report->note),
                              "RTF parse failed with status %d", (int)status);
-        return status == QW_RTF_ERR_OUT_OF_MEMORY
-                   ? QW_STATUS_ERR_OUT_OF_MEMORY
-                   : status == QW_RTF_ERR_RESOURCE_LIMIT
-                         ? QW_STATUS_ERR_RESOURCE_LIMIT
-                         : QW_STATUS_ERR_FORMAT;
+        return convert_map_rtf_status((int)status);
     }
     rc = convert_html_to_pdf((const uint8_t *)document.html, document.html_size,
                              out_pdf, out_size, report);
@@ -1170,6 +1303,12 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
         if (contains_text((const char *)data, size, "<svg")) {
             if (report) snprintf(report->note, sizeof(report->note),
                                  "SVG input is routed by the vector package, "
+                                 "not the document package");
+            return QW_STATUS_ERR_UNSUPPORTED;
+        }
+        if (convert_looks_like_ttml(data, size)) {
+            if (report) snprintf(report->note, sizeof(report->note),
+                                 "TTML input is routed by the subtitle package, "
                                  "not the document package");
             return QW_STATUS_ERR_UNSUPPORTED;
         }

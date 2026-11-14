@@ -121,7 +121,9 @@ if(BUILD_TESTING)
     target_include_directories(quirewise_document_epub_pdf_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
     target_compile_definitions(quirewise_document_epub_pdf_test PRIVATE
-        QUIREWISE_EPUB_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/reflow.epub")
+        QUIREWISE_EPUB_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/reflow.epub"
+        QUIREWISE_EPUB_CLASSY_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/reflow-classy.epub"
+        QUIREWISE_EPUB_UNSUPPORTED_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/unsupported-layout.epub")
     target_link_libraries(quirewise_document_epub_pdf_test PRIVATE quirewise_document)
     add_executable(quirewise_document_raster_page_test
         tests/raster_page_test.c)

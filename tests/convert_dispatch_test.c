@@ -29,6 +29,17 @@ static int is_pdf(const uint8_t *data, size_t size)
     return data && size > 8u && memcmp(data, "%PDF-", 5u) == 0;
 }
 
+static int contains_bytes(const uint8_t *data, size_t size, const char *text)
+{
+    size_t length = strlen(text);
+    size_t index;
+    if (!data || !length || length > size) return 0;
+    for (index = 0u; index + length <= size; ++index) {
+        if (memcmp(data + index, text, length) == 0) return 1;
+    }
+    return 0;
+}
+
 int main(void)
 {
     QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
@@ -192,6 +203,66 @@ int main(void)
         CHECK(is_pdf(pdf, pdf_size));
         free(pdf);
         pdf = NULL;
+    }
+
+    /* The memory entry point must honour page_mode instead of discarding the
+     * options (image inputs used to ignore --page and always use the image
+     * box). */
+    {
+        static const uint8_t bmp_1x1[] = {
+            'B', 'M', 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0,
+            40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0,
+            0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        };
+        QwConvertOptions a4 = QW_CONVERT_OPTIONS_INIT;
+        QwConvertOptions image = QW_CONVERT_OPTIONS_INIT;
+        a4.page_mode = QW_RASTER_PAGE_MODE_A4;
+        image.page_mode = QW_RASTER_PAGE_MODE_IMAGE;
+
+        CHECK(qw_convert_to_pdf_memory(bmp_1x1, sizeof(bmp_1x1), &a4, &pdf,
+                                       &pdf_size, &report) == QW_STATUS_OK);
+        CHECK(is_pdf(pdf, pdf_size));
+        CHECK(contains_bytes(pdf, pdf_size, "/MediaBox [0 0 595.276 841.89]"));
+        free(pdf);
+        pdf = NULL;
+        pdf_size = 0u;
+
+        CHECK(qw_convert_to_pdf_memory(bmp_1x1, sizeof(bmp_1x1), &image, &pdf,
+                                       &pdf_size, &report) == QW_STATUS_OK);
+        CHECK(is_pdf(pdf, pdf_size));
+        CHECK(contains_bytes(pdf, pdf_size, "/MediaBox [0 0 1 1]"));
+        free(pdf);
+        pdf = NULL;
+        pdf_size = 0u;
+    }
+
+    /* Broken spreadsheet/RTF inputs keep their FORMAT classification (the
+     * adapters used to flatten everything to FORMAT, so this also guards the
+     * status-preservation path). */
+    {
+        static const uint8_t broken_cfb[512] = {
+            0xD0u, 0xCFu, 0x11u, 0xE0u, 0xA1u, 0xB1u, 0x1Au, 0xE1u
+        };
+        QwConvertReport xls_report;
+        memset(&xls_report, 0, sizeof(xls_report));
+        CHECK(qw_doc_convert_memory(broken_cfb, sizeof(broken_cfb), "xls", 0,
+                                      &pdf, &pdf_size, &xls_report) ==
+              QW_STATUS_ERR_FORMAT);
+        CHECK(pdf == NULL && pdf_size == 0u);
+        CHECK(xls_report.note[0] != '\0');
+    }
+    {
+        static const char broken_rtf[] =
+            "{\\rtf1\\ansi {\\fonttbl {\\f0 Arial;}} \\f0 text";
+        QwConvertReport rtf_report;
+        memset(&rtf_report, 0, sizeof(rtf_report));
+        CHECK(qw_doc_convert_memory((const uint8_t *)broken_rtf,
+                                      strlen(broken_rtf), "rtf", 0, &pdf,
+                                      &pdf_size, &rtf_report) ==
+              QW_STATUS_ERR_FORMAT);
+        CHECK(pdf == NULL && pdf_size == 0u);
+        CHECK(rtf_report.note[0] != '\0');
     }
 
     CHECK(qw_convert_to_pdf_memory(NULL, 0u, &options, &pdf, &pdf_size, NULL) ==
