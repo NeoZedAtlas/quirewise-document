@@ -1,56 +1,182 @@
 # quirewise-document
 
-Standalone Quirewise document library: PDF structure, text extraction,
-rasterisation and merge, plus the conversion dispatch shared by the application
-packages.
+PDF reading, rasterisation, text extraction and merging, plus the Quirewise
+document-conversion dispatch for office files, e-books, email and images.
 
-CMake target: `Quirewise::Document`. The package owns the `convert.h` dispatch
-declaration and depends on the runtime contracts through
-`Quirewise::Runtime`; it never links the application.
+`Quirewise::Document` (CMake package `QuirewiseDocument`) is an independent,
+MIT-licensed C11 library. It is installed as a CMake package and can be
+consumed without the Quirewise application.
 
-Build with `cmake -S . -B build` and `cmake --build build`.
+## What it does
 
-## Capabilities
+- Converts a file or an in-memory buffer to PDF. The dispatch covers HTML,
+  DOCX/DOCM/DOTX/DOTM, ODT/OTT/FODT, RTF, EML, HWPX, PPTX and ODP families,
+  XLSX/XLS/ODS and CSV/TSV, EPUB, FB2, MOBI/AZW3, plain text, common image
+  formats, HTMLZ, TXTZ and PMLZ.
+- Converts PDF input to plain UTF-8 text or to a PNG of the first page, and
+  passes PDF-to-PDF requests through byte for byte.
+- Reads PDFs: classic cross-reference tables, cross-reference streams, object
+  streams, incremental updates, and RC4/AES standard security with an empty
+  user password. It exposes page count, media/crop boxes and rotation.
+- Rasterises PDF pages to RGB24 at a chosen resolution, and extracts the text
+  of every page as UTF-8.
+- Merges unencrypted PDFs into one classic-cross-reference PDF.
+- Checks whether a file can be read through its registered route without
+  writing an output file.
+- Renders caller-supplied gray or RGB raster pages into a PDF.
+- Exposes typed readers for DOCX, ODT, ODP, PPTX, HWPX, EML and XPS when a
+  caller needs HTML, layout metadata or attachment/page data instead of PDF.
 
-- PDF structure: classic cross-reference tables, cross-reference streams and
-  object streams, incremental updates, and RC4/AES crypt handlers.
-- Text extraction and page rendering through one internal parser: no MuPDF
-  code, header or library is involved.
-- Merge of classic-xref documents.
-- Image XObjects are rasterised with the filter matrix below; `/Decode [1 0]`
-  is honoured for the bitonal filters and `/JBIG2Globals` is resolved through
-  the object stream.
-- Content is scaled by the requested resolution: the content matrix starts with
-  `dpi / 72`, so a page rendered at 144 or 300 dpi keeps the same layout.
+The file API supplies the extension hint that plain text, CSV and spreadsheet
+inputs need; the memory API relies on content detection.
 
-## PDF image filters
+Everything is implemented in this package and its Quirewise dependencies. No
+MuPDF, Ghostscript, OCR engine or external PDF toolkit is involved.
 
-| Filter | Status |
+## Requirements
+
+- C11 compiler and CMake 3.21 or newer.
+- CTest for the test suite.
+- Quirewise CMake packages: `QuirewiseRuntime`, `QuirewiseArchive`,
+  `QuirewiseData`, `QuirewiseCompression`, `QuirewiseEbook`, `QuirewiseImage`,
+  `QuirewiseCrypto`, `QuirewiseSpreadsheet` and `QuirewiseText`.
+- No third-party runtime libraries beyond those packages.
+
+`Quirewise::Runtime` is a public dependency because `convert.h` exposes
+`QwConvertOptions`, `QwConvertReport`, `QwStatus` and `QwFormatId` from it. The
+other packages are linked privately.
+
+## Build, test and install
+
+Install the dependency packages first, or point CMake at their install prefix:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=/path/to/quirewise/prefix
+cmake --build build
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix /path/to/prefix
+```
+
+If all dependencies are already in a default CMake prefix, omit
+`-DCMAKE_PREFIX_PATH`.
+
+Shared builds are available with `-DQUIREWISE_BUILD_SHARED=ON`. On Windows,
+shared builds export all symbols through `WINDOWS_EXPORT_ALL_SYMBOLS`.
+
+## Use it from CMake
+
+```cmake
+find_package(QuirewiseDocument CONFIG REQUIRED)
+target_link_libraries(your_app PRIVATE Quirewise::Document)
+```
+
+Pass `-DCMAKE_PREFIX_PATH=/path/to/prefix` when configuring your project if the
+package is installed outside a default prefix. The installed package config
+finds the Quirewise dependencies listed above.
+
+## Quick start
+
+Convert one file to PDF. Output paths are never overwritten, and the report
+carries a human-readable note on both success and failure.
+
+```c
+#include <quirewise/convert.h>
+
+#include <stdio.h>
+#include <string.h>
+
+int main(void)
+{
+    QwConvertReport report;
+    int rc;
+
+    memset(&report, 0, sizeof report);
+    rc = qw_convert_file("book.odt", "book.pdf", NULL, &report);
+    if (rc != QW_STATUS_OK) {
+        fprintf(stderr, "conversion failed: %d (%s)\n", rc,
+                report.note[0] ? report.note : "no detail");
+        return 1;
+    }
+    printf("wrote %zu byte(s), %zu page(s)\n",
+           report.output_size, report.pages_written);
+    return 0;
+}
+```
+
+For in-memory input, call `qw_convert_to_pdf_memory` and release the result
+with `qw_buffer_free`. See [docs/usage.md](docs/usage.md) for that and the PDF
+reader recipes.
+
+## API overview
+
+| Header | Purpose |
 |---|---|
-| raw samples (Flate/LZW/RunLength, PNG and TIFF predictors) | supported |
-| `/DCTDecode` (JPEG) | supported; colour space from the frame component count |
-| `/JPXDecode` (JPEG 2000) | supported for JP2 containers and raw codestreams |
-| `/CCITTFaxDecode` (Group 4) | supported, including the `/Decode [1 0]` polarity |
-| `/JBIG2Decode` | generic regions (MMR or T.88 arithmetic, templates 0-3), symbol dictionaries with arithmetic-coded glyphs, text regions |
+| `quirewise/convert.h` | file/memory conversion, format detection, raster-to-PDF, `qw_buffer_free` |
+| `quirewise/pdf.h` | PDF open, structure, geometry, render, text extraction, merge, release |
+| `quirewise/docx.h` | DOCX-family probe, parse, HTML and page layout |
+| `quirewise/odt.h` | ODT/OTT/FODT parse, HTML |
+| `quirewise/odf_presentation.h` | ODP/OTP/FODP parse, HTML, slide count |
+| `quirewise/pptx.h` | PPTX-family parse, HTML |
+| `quirewise/hwpx.h` | HWPX parse, HTML, section/omitted-object counts |
+| `quirewise/email.h` | EML probe, parse, HTML, attachments |
+| `quirewise/xps.h` | XPS open, page count, page XML, page geometry |
 
-JBIG2 streams that use Huffman-coded dictionaries or text regions, refinement,
-halftones, pattern dictionaries or a transposed text region return
-`QW_STATUS_ERR_UNSUPPORTED` rather than drawing a partial page.
+| Task | Functions |
+|---|---|
+| File conversion | `qw_convert_file`, `qw_convert_file_to_format` |
+| Memory to PDF | `qw_convert_to_pdf_memory` |
+| Memory to a chosen format | `qw_convert_to_format_memory` |
+| Validate a file | `qw_check_file` |
+| Detect / name a format | `qw_detect_format`, `qw_format_name` |
+| Raster pages to PDF | `qw_raster_pages_to_pdf`, `qw_raster_pages_to_pdf_mode` |
+| Open / inspect a PDF | `qw_pdf_open`, `qw_pdf_open_structure`, `qw_pdf_page_geometry` |
+| Render / extract / merge | `qw_pdf_render_page`, `qw_pdf_extract_text`, `qw_pdf_merge` |
+| Release | `qw_buffer_free`, `qw_pdf_close`, `qw_pdf_free`, `qw_pdf_page_free` |
 
-## Tests
+## Behavior and limits
 
-`ctest` runs the PDF suites (structure, xref, encryption, text, merge, image
-filters, incremental merge) plus render tests whose fixtures were cross-checked
-against independent decoders:
+- Conversion and PDF functions return `QW_STATUS_OK` (0) or a negative
+  `QwStatus` error code. The compact format readers use their own enums; see
+  the usage guide.
+- Inputs are borrowed only for the call, except PDF and XPS reader inputs,
+  which must stay valid until their close call.
+- Conversion outputs are `malloc`-owned and released with `qw_buffer_free`.
+  PDF text and merged PDFs use `qw_pdf_free`; page rasters use
+  `qw_pdf_page_free`.
+- A failed conversion may leave `report.note` explaining the refusal. Output
+  pointers are set to `NULL` on failure.
+- The file API reads at most 512 MiB per input, never overwrites an existing
+  output path, and returns `QW_STATUS_ERR_IO` for filesystem failures.
+- The PDF reader accepts at most 100,000 pages and 64 MiB per stream; text
+  extraction is capped at 256 MiB.
+- Rendering accepts 1-1200 dpi (0 means 72) and RGB24 output up to 100,000
+  pixels per side. Unsupported drawing operators are noted in the report; a
+  successful raster may therefore be partial.
+- PDF merging rejects encrypted inputs, caps the result at 100,000 pages, and
+  writes a classic cross-reference table.
+- Deliberate boundaries: no PDF/A creation or verification, no OCR, no
+  embedded-font or CJK outline rendering, no HTML/Markdown output, and XPS is
+  available only through the reader API, not the conversion dispatch.
 
-- `pdf_ccitt_render_test` — Group 4 image XObject against a libtiff-generated
-  strip;
-- `pdf_jpx_render_test` — JP2 image XObject;
-- `pdf_jbig2_render_test` — MMR generic region, both polarities;
-- `pdf_jbig2_arith_render_test` — arithmetic generic region with the standalone
-  file header, plus 144 dpi content scaling;
-- `pdf_jbig2_symbol_render_test` — symbol dictionary and text region.
+## Testing
 
-The JBIG2 fixtures were decoded by `jbig2dec` and Ghostscript before being
-pinned; the 2550x3300 `perf_codecs_jbig2` page and the 128x96 file-header page
-from the pdf.js corpus match those decoders pixel for pixel.
+`ctest` runs 41 tests. They cover PDF xref tables/streams, object streams,
+incremental documents, stream lengths, page order, RC4 and AES decryption,
+ToUnicode extraction, page rendering (paths, images, CCITT G4, JPEG 2000 and
+JBIG2), merging (classic, xref-stream, object-stream, incremental, metadata,
+encrypted-input rejection), the public PDF API and PDF convert routes.
+
+Office and e-book coverage includes ODT and EPUB to PDF, HTML to PDF, FB2/CSV
+layout, CAJ JP2, format registry validation, file conversion, dispatch
+refusals, and fuzz smoke runs for PDF and document formats. The PDF corpus test
+skips itself when `app/testfile/pdf` is not present.
+
+## Documentation
+
+See [docs/usage.md](docs/usage.md) for build integration, task recipes, error
+handling, ownership, threading and resource limits.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
