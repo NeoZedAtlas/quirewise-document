@@ -1534,14 +1534,16 @@ void qw_buffer_free(void *buffer)
 #define QW_PDF_ROUTE_DPI 144u
 
 static int pdf_route_to_text(const uint8_t *data, size_t size,
-                             uint8_t **out_data, size_t *out_size,
-                             QwConvertReport *report)
+                             const char *password, uint8_t **out_data,
+                             size_t *out_size, QwConvertReport *report)
 {
     QwPdfDocument *document = NULL;
     size_t pages = 0u;
     uint8_t *text = NULL;
     size_t text_size = 0u;
-    int rc = qw_pdf_open(data, size, &document, &pages, report);
+    int rc = password ? qw_pdf_open_with_password(data, size, password,
+                                                  &document, &pages, report)
+                      : qw_pdf_open(data, size, &document, &pages, report);
     if (rc != QW_STATUS_OK) return rc;
     rc = qw_pdf_extract_text(document, &text, &text_size, report);
     qw_pdf_close(document);
@@ -1562,15 +1564,17 @@ static int pdf_route_to_text(const uint8_t *data, size_t size,
 }
 
 static int pdf_route_to_png(const uint8_t *data, size_t size,
-                            uint8_t **out_data, size_t *out_size,
-                            QwConvertReport *report)
+                            const char *password, uint8_t **out_data,
+                            size_t *out_size, QwConvertReport *report)
 {
     QwPdfDocument *document = NULL;
     size_t pages = 0u;
     QwPageImage page;
     int rc;
     memset(&page, 0, sizeof(page));
-    rc = qw_pdf_open(data, size, &document, &pages, report);
+    rc = password ? qw_pdf_open_with_password(data, size, password, &document,
+                                               &pages, report)
+                  : qw_pdf_open(data, size, &document, &pages, report);
     if (rc != QW_STATUS_OK) return rc;
     rc = qw_pdf_render_page(document, 0u, QW_PDF_ROUTE_DPI, &page, report);
     if (rc == QW_STATUS_OK) {
@@ -1601,6 +1605,7 @@ static int pdf_image_status(int status)
 }
 
 static int pdf_route_to_image(const uint8_t *data, size_t size,
+                              const char *password,
                               QwImageEncodeFormat target, const char *label,
                               uint8_t **out_data, size_t *out_size,
                               QwConvertReport *report)
@@ -1617,7 +1622,9 @@ static int pdf_route_to_image(const uint8_t *data, size_t size,
     memset(&page, 0, sizeof(page));
     memset(&image, 0, sizeof(image));
     memset(&decoded, 0, sizeof(decoded));
-    rc = qw_pdf_open(data, size, &document, &pages, report);
+    rc = password ? qw_pdf_open_with_password(data, size, password, &document,
+                                               &pages, report)
+                  : qw_pdf_open(data, size, &document, &pages, report);
     if (rc != QW_STATUS_OK) return rc;
     rc = qw_pdf_render_page(document, 0u, QW_PDF_ROUTE_DPI, &page, report);
     if (rc == QW_STATUS_OK) {
@@ -1680,32 +1687,38 @@ int qw_convert_to_format_memory(const void *data, size_t size,
         report->stage = QW_CONVERT_STAGE_EXECUTE;
     }
     if (convert_region_equals(bytes, size, 0u, "%PDF-")) {
+        const char *password = options ? options->pdf_password : NULL;
         if (report) report->format = QW_FORMAT_PDF;
         switch (output_format) {
         case QW_FORMAT_PDF:
             return pdf_passthrough(bytes, size, out_data, out_size, report);
         case QW_FORMAT_TXT:
-            return pdf_route_to_text(bytes, size, out_data, out_size, report);
+            return pdf_route_to_text(bytes, size, password, out_data,
+                                     out_size, report);
         case QW_FORMAT_PNG:
-            return pdf_route_to_png(bytes, size, out_data, out_size, report);
+            return pdf_route_to_png(bytes, size, password, out_data,
+                                    out_size, report);
         case QW_FORMAT_DOCX:
-            return qw_doc_office_docx_from_pdf(bytes, size, out_data,
+            return qw_doc_office_docx_from_pdf(bytes, size, password, out_data,
                                                out_size, report);
         case QW_FORMAT_EPUB:
-            return qw_doc_office_epub_from_pdf(bytes, size, out_data,
+            return qw_doc_office_epub_from_pdf(bytes, size, password, out_data,
                                                out_size, report);
         case QW_FORMAT_JPG:
-            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_JPEG,
-                                      "JPEG", out_data, out_size, report);
+            return pdf_route_to_image(bytes, size, password,
+                                      QW_IMAGE_ENCODE_JPEG, "JPEG", out_data,
+                                      out_size, report);
         case QW_FORMAT_BMP:
-            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_BMP, "BMP",
-                                      out_data, out_size, report);
+            return pdf_route_to_image(bytes, size, password, QW_IMAGE_ENCODE_BMP,
+                                      "BMP", out_data, out_size, report);
         case QW_FORMAT_TIFF:
-            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_TIFF,
-                                      "TIFF", out_data, out_size, report);
+            return pdf_route_to_image(bytes, size, password,
+                                      QW_IMAGE_ENCODE_TIFF, "TIFF", out_data,
+                                      out_size, report);
         case QW_FORMAT_WEBP:
-            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_WEBP,
-                                      "WebP", out_data, out_size, report);
+            return pdf_route_to_image(bytes, size, password,
+                                      QW_IMAGE_ENCODE_WEBP, "WebP", out_data,
+                                      out_size, report);
         case QW_FORMAT_HTML:
             return qw_doc_convert_html_memory(bytes, size, NULL, out_data,
                                               out_size, report);

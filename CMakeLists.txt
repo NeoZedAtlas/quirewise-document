@@ -341,7 +341,17 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_pdf_reader_mutool_test
+    add_executable(quirewise_document_pdf_password_test
+    tests/pdf_password_test.c)
+target_compile_features(quirewise_document_pdf_password_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_pdf_password_test PRIVATE
+    QUIREWISE_USERPW_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/encrypted-mutool-aes256-userpw.pdf")
+target_link_libraries(quirewise_document_pdf_password_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_pdf_password
+    COMMAND quirewise_document_pdf_password_test)
+
+add_executable(quirewise_document_pdf_reader_mutool_test
         tests/pdf_reader_mutool_encryption_test.c)
     target_compile_features(quirewise_document_pdf_reader_mutool_test PRIVATE c_std_11)
     target_include_directories(quirewise_document_pdf_reader_mutool_test PRIVATE

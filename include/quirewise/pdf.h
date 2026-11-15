@@ -49,6 +49,12 @@ QW_API int qw_pdf_open(const uint8_t *data, size_t size,
  * rendering on such a document fail with a stable error. Pages stored inside
  * an encrypted /ObjStm cannot be enumerated without the password.
  */
+/* Like qw_pdf_open, but supplies the user password for encrypted files. */
+QW_API int qw_pdf_open_with_password(const uint8_t *data, size_t size,
+                                     const char *password,
+                                     QwPdfDocument **out_document,
+                                     size_t *out_page_count,
+                                     QwConvertReport *report);
 QW_API int qw_pdf_open_structure(const uint8_t *data, size_t size,
                                  QwPdfDocument **out_document,
                                  size_t *out_page_count,

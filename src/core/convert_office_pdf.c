@@ -147,8 +147,8 @@ static void office_pdf_pages_free(OfficePdfPage *pages, size_t count)
 
 /* Render and JPEG-encode every page. The caller owns the returned array. */
 static int office_pdf_render(const uint8_t *data, size_t size,
-                             OfficePdfPage **out_pages, size_t *out_count,
-                             QwConvertReport *report)
+                             const char *password, OfficePdfPage **out_pages,
+                             size_t *out_count, QwConvertReport *report)
 {
     QwPdfDocument *document = NULL;
     size_t page_count = 0u;
@@ -158,7 +158,10 @@ static int office_pdf_render(const uint8_t *data, size_t size,
 
     *out_pages = NULL;
     *out_count = 0u;
-    status = qw_pdf_open(data, size, &document, &page_count, report);
+    status = password
+                 ? qw_pdf_open_with_password(data, size, password, &document,
+                                             &page_count, report)
+                 : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
     if (!page_count) {
         qw_pdf_close(document);
@@ -267,8 +270,8 @@ static int office_zip_finish(QwZipWriter *writer, uint8_t **out,
 }
 
 int qw_doc_office_docx_from_pdf(const uint8_t *data, size_t size,
-                                uint8_t **out_data, size_t *out_size,
-                                QwConvertReport *report)
+                                const char *password, uint8_t **out_data,
+                                size_t *out_size, QwConvertReport *report)
 {
     static const char content_types_prefix[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
@@ -310,7 +313,8 @@ int qw_doc_office_docx_from_pdf(const uint8_t *data, size_t size,
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
     *out_size = 0u;
-    status = office_pdf_render(data, size, &pages, &page_count, report);
+    status = office_pdf_render(data, size, password, &pages, &page_count,
+                               report);
     if (status != QW_STATUS_OK) return status;
     memset(&document, 0, sizeof(document));
     memset(&relationships, 0, sizeof(relationships));
@@ -406,8 +410,8 @@ out_of_memory:
 }
 
 int qw_doc_office_epub_from_pdf(const uint8_t *data, size_t size,
-                                uint8_t **out_data, size_t *out_size,
-                                QwConvertReport *report)
+                                const char *password, uint8_t **out_data,
+                                size_t *out_size, QwConvertReport *report)
 {
     static const char container_xml[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -456,7 +460,8 @@ int qw_doc_office_epub_from_pdf(const uint8_t *data, size_t size,
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
     *out_size = 0u;
-    status = office_pdf_render(data, size, &pages, &page_count, report);
+    status = office_pdf_render(data, size, password, &pages, &page_count,
+                               report);
     if (status != QW_STATUS_OK) return status;
     memset(&opf, 0, sizeof(opf));
     memset(&chapter, 0, sizeof(chapter));
@@ -465,8 +470,11 @@ int qw_doc_office_epub_from_pdf(const uint8_t *data, size_t size,
         QwPdfDocument *text_document = NULL;
         size_t text_pages = 0u;
 
-        if (qw_pdf_open(data, size, &text_document, &text_pages, NULL) ==
-                QW_STATUS_OK &&
+        if ((password ? qw_pdf_open_with_password(data, size, password,
+                                                   &text_document, &text_pages,
+                                                   NULL)
+                      : qw_pdf_open(data, size, &text_document, &text_pages,
+                                    NULL)) == QW_STATUS_OK &&
             text_document) {
             (void)qw_pdf_extract_text(text_document, &text_bytes, &text_size, NULL);
             qw_pdf_close(text_document);

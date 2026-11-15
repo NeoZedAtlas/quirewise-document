@@ -70,11 +70,11 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
  * HWPX package, all built from the HTML intermediate. */
 /* Layout-preserving PDF -> DOCX/EPUB: rasterize pages and embed them. */
 int qw_doc_office_docx_from_pdf(const uint8_t *data, size_t size,
-                                uint8_t **out_data, size_t *out_size,
-                                QwConvertReport *report);
+                                const char *password, uint8_t **out_data,
+                                size_t *out_size, QwConvertReport *report);
 int qw_doc_office_epub_from_pdf(const uint8_t *data, size_t size,
-                                uint8_t **out_data, size_t *out_size,
-                                QwConvertReport *report);
+                                const char *password, uint8_t **out_data,
+                                size_t *out_size, QwConvertReport *report);
 
 int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
                                 const char *input_extension,
@@ -178,6 +178,12 @@ int qw_pdf_render_page_memory(const uint8_t *data,
                              QwPageImage *out_page,
                              QwConvertReport *report);
 
+int qw_pdf_reader_open_password(const uint8_t *data,
+                                     size_t size,
+                                     const char *password,
+                                     QwPdfReader **out_reader,
+                                     size_t *out_page_count,
+                                     QwConvertReport *report);
 int qw_pdf_reader_open(const uint8_t *data,
                              size_t size,
                              QwPdfReader **out_reader,

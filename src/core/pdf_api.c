@@ -29,6 +29,26 @@ int qw_pdf_open(const uint8_t *data, size_t size,
     return QW_STATUS_OK;
 }
 
+int qw_pdf_open_with_password(const uint8_t *data, size_t size,
+                              const char *password,
+                              QwPdfDocument **out_document,
+                              size_t *out_page_count,
+                              QwConvertReport *report)
+{
+    QwPdfReader *reader = NULL;
+    size_t pages = 0u;
+    int status;
+    if (!out_document) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_document = NULL;
+    if (out_page_count) *out_page_count = 0u;
+    status = qw_pdf_reader_open_password(data, size, password, &reader, &pages,
+                                         report);
+    if (status != QW_STATUS_OK) return status;
+    *out_document = (QwPdfDocument *)reader;
+    if (out_page_count) *out_page_count = pages;
+    return QW_STATUS_OK;
+}
+
 int qw_pdf_open_structure(const uint8_t *data, size_t size,
                           QwPdfDocument **out_document,
                           size_t *out_page_count, QwConvertReport *report)

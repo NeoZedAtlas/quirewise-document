@@ -69,6 +69,8 @@ struct QwPdfReader {
     int encryption_aes256;
     uint8_t encryption_key[32];
     size_t encryption_key_size;
+    const char *password;
+    size_t password_size;
     size_t *page_objects;
     size_t page_count;
     QwPdfObjectSlice *slices;
@@ -1227,6 +1229,15 @@ static int pdf_setup_encryption(QwPdfReader *reader)
     uint8_t digest[16];
     size_t md5_size;
     size_t i;
+    uint8_t padded[32];
+    size_t padded_copy =
+        reader->password_size > 32u ? 32u : reader->password_size;
+    memset(padded, 0, sizeof(padded));
+    if (padded_copy) memcpy(padded, reader->password, padded_copy);
+    if (padded_copy < 32u) {
+        memcpy(padded + padded_copy, pdf_password_padding,
+               32u - padded_copy);
+    }
     found = pdf_memmem((const char *)reader->data, reader->size, "/Encrypt",
                        8u);
     if (!found) return 1;
@@ -1263,8 +1274,8 @@ static int pdf_setup_encryption(QwPdfReader *reader)
     aes = pdf_memmem(copy, dict_size, "AESV2", 5u) != NULL;
     encrypt_metadata = pdf_bool_field(copy, dict_size, "/EncryptMetadata", 1);
     if (version == 5 && (revision == 5 || revision == 6)) {
-        /* PDF 2.0 AES-256 (/V 5, /R 5 or 6, /AESV3). Only the empty user
-         * password is attempted, matching the RC4 path's behaviour. */
+        /* PDF 2.0 AES-256 (/V 5, /R 5 or 6, /AESV3): verify the supplied user
+         * password and unwrap the file key from /UE. */
         uint8_t oe_value[32], ue_value[32];
         uint8_t intermediate[32];
         uint8_t zero_iv[16] = {0};
@@ -1285,12 +1296,14 @@ static int pdf_setup_encryption(QwPdfReader *reader)
         free(copy);
         (void)oe_value;
         (void)oe_size; /* owner password is not tried */
-        if (!pdf_r6_hash(NULL, 0u, u_value + 32u, NULL, 0u, (int)revision,
+        if (!pdf_r6_hash(reader->password, reader->password_size,
+                         u_value + 32u, NULL, 0u, (int)revision,
                          intermediate) ||
             memcmp(intermediate, u_value, 32u) != 0) {
             return -1;
         }
-        if (!pdf_r6_hash(NULL, 0u, u_value + 40u, NULL, 0u, (int)revision,
+        if (!pdf_r6_hash(reader->password, reader->password_size,
+                         u_value + 40u, NULL, 0u, (int)revision,
                          intermediate)) {
             return -1;
         }
@@ -1354,7 +1367,7 @@ static int pdf_setup_encryption(QwPdfReader *reader)
     reader->encryption_key_size = key_size;
     {
         uint8_t check[32];
-        memcpy(check, pdf_password_padding, 32u);
+        memcpy(check, padded, 32u);
         if (revision == 2) {
             pdf_rc4(reader->encryption_key, key_size, check, 32u);
             if (memcmp(check, u_value, 32u) != 0) return -1;
@@ -2521,7 +2534,8 @@ static int pdf_find_catalog_root(const QwPdfReader *reader, size_t *out_root)
 }
 
 static int pdf_reader_open_impl(const uint8_t *data, size_t size,
-                                int allow_structure,
+                                int allow_structure, const char *password,
+                                size_t password_size,
                                 QwPdfReader **out_reader,
                                 size_t *out_page_count,
                                 QwConvertReport *report)
@@ -2541,6 +2555,8 @@ static int pdf_reader_open_impl(const uint8_t *data, size_t size,
     if (!reader) return QW_STATUS_ERR_OUT_OF_MEMORY;
     reader->data = data;
     reader->size = size;
+    reader->password = password;
+    reader->password_size = password_size;
     /* Resolve object offsets before anything else: encrypted object streams
      * need the security handler, and the handler's /Encrypt dictionary is
      * located through this index. A failed build leaves the text scan in
@@ -2701,8 +2717,19 @@ int qw_pdf_reader_open(const uint8_t *data, size_t size,
                        size_t *out_page_count,
                        QwConvertReport *report)
 {
-    return pdf_reader_open_impl(data, size, 0, out_reader, out_page_count,
-                                report);
+    return pdf_reader_open_impl(data, size, 0, NULL, 0u, out_reader,
+                                out_page_count, report);
+}
+
+int qw_pdf_reader_open_password(const uint8_t *data, size_t size,
+                                const char *password,
+                                QwPdfReader **out_reader,
+                                size_t *out_page_count,
+                                QwConvertReport *report)
+{
+    return pdf_reader_open_impl(data, size, 0, password,
+                                password ? strlen(password) : 0u, out_reader,
+                                out_page_count, report);
 }
 
 int qw_pdf_reader_open_structure(const uint8_t *data, size_t size,
@@ -2710,8 +2737,8 @@ int qw_pdf_reader_open_structure(const uint8_t *data, size_t size,
                                  size_t *out_page_count,
                                  QwConvertReport *report)
 {
-    return pdf_reader_open_impl(data, size, 1, out_reader, out_page_count,
-                                report);
+    return pdf_reader_open_impl(data, size, 1, NULL, 0u, out_reader,
+                                out_page_count, report);
 }
 
 int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
