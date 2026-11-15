@@ -1,6 +1,8 @@
 #include "../../core/format_registry.h"
 #include "../../core/html_output.h"
 #include "../../core/xml_parser.h"
+
+#include <quirewise/image.h>
 #include "../archive/zip_native.h"
 #include "pptx_native.h"
 
@@ -16,7 +18,10 @@ enum {
     PPTX_MAX_XML_NODES = 2000000u,
     PPTX_MAX_XML_DEPTH = 128u,
     PPTX_MAX_SLIDES = 1000u,
-    PPTX_MAX_PATH_BYTES = 1024u
+    PPTX_MAX_PATH_BYTES = 1024u,
+    PPTX_MAX_SLIDE_RELS = 512u,
+    PPTX_MAX_IMAGES_PER_SLIDE = 64u,
+    PPTX_MAX_MEDIA_BYTES = 16u * 1024u * 1024u
 };
 
 typedef struct PptxRelationship {
@@ -30,8 +35,12 @@ typedef struct PptxReader {
     size_t visited_nodes;
     size_t total_xml_bytes;
     size_t slide_count;
+    size_t slide_image_count;
     int output_limit_hit;
     const char *error;
+    const char *slide_path;
+    PptxRelationship *slide_rels;
+    size_t slide_rel_count;
 } PptxReader;
 
 static int pptx_html_literal(PptxReader *reader, const char *text)
@@ -264,6 +273,274 @@ static const char *pptx_relationship_target(
     return NULL;
 }
 
+
+static int pptx_html_base64(PptxReader *reader, const uint8_t *data,
+                            size_t size)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char chunk[260];
+    size_t used = 0u;
+    size_t index;
+
+    for (index = 0u; index < size; index += 3u) {
+        uint32_t value = (uint32_t)data[index] << 16;
+        if (index + 1u < size) value |= (uint32_t)data[index + 1u] << 8;
+        if (index + 2u < size) value |= (uint32_t)data[index + 2u];
+        chunk[used++] = alphabet[(value >> 18) & 0x3fu];
+        chunk[used++] = alphabet[(value >> 12) & 0x3fu];
+        chunk[used++] = index + 1u < size
+                            ? alphabet[(value >> 6) & 0x3fu] : '=';
+        chunk[used++] = index + 2u < size ? alphabet[value & 0x3fu] : '=';
+        if (used >= 256u) {
+            if (!qw_html_output_append(&reader->html, chunk, used,
+                                       PPTX_MAX_HTML_BYTES,
+                                       &reader->output_limit_hit))
+                return 0;
+            used = 0u;
+        }
+    }
+    if (used && !qw_html_output_append(&reader->html, chunk, used,
+                                       PPTX_MAX_HTML_BYTES,
+                                       &reader->output_limit_hit))
+        return 0;
+    return 1;
+}
+
+/* Normalise "a/./b/../c" into "a/c". */
+static int pptx_normalize_part(const char *combined, char *out,
+                               size_t out_capacity)
+{
+    size_t out_length = 0u;
+    const char *cursor = combined;
+
+    if (!combined || !out || out_capacity < 2u) return 0;
+    while (*cursor) {
+        const char *slash = strchr(cursor, '/');
+        size_t length = slash ? (size_t)(slash - cursor) : strlen(cursor);
+        if (length == 0u || (length == 1u && cursor[0] == '.')) {
+            /* skip */
+        } else if (length == 2u && cursor[0] == '.' && cursor[1] == '.') {
+            while (out_length > 0u && out[out_length - 1u] != '/') --out_length;
+            if (out_length > 0u) --out_length;
+        } else {
+            if (out_length > 0u && out_length + 1u < out_capacity)
+                out[out_length++] = '/';
+            if (out_length + length + 1u > out_capacity) return 0;
+            memcpy(out + out_length, cursor, length);
+            out_length += length;
+        }
+        if (!slash) break;
+        cursor = slash + 1u;
+    }
+    if (out_length == 0u) return 0;
+    out[out_length] = '\0';
+    return 1;
+}
+
+static int pptx_resolve_media_path(const char *slide_path,
+                                   const char *target, char *out,
+                                   size_t out_capacity)
+{
+    char combined[PPTX_MAX_PATH_BYTES * 2u];
+    const char *slash;
+
+    if (!target || !target[0]) return 0;
+    if (target[0] == '/') {
+        if (strlen(target + 1u) + 1u > sizeof(combined)) return 0;
+        memcpy(combined, target + 1u, strlen(target + 1u) + 1u);
+        return pptx_normalize_part(combined, out, out_capacity);
+    }
+    slash = slide_path ? strrchr(slide_path, '/') : NULL;
+    if (slash) {
+        size_t directory = (size_t)(slash - slide_path + 1u);
+        if (directory + strlen(target) + 1u > sizeof(combined)) return 0;
+        memcpy(combined, slide_path, directory);
+        memcpy(combined + directory, target, strlen(target) + 1u);
+    } else {
+        if (strlen(target) + 1u > sizeof(combined)) return 0;
+        memcpy(combined, target, strlen(target) + 1u);
+    }
+    return pptx_normalize_part(combined, out, out_capacity);
+}
+
+static void *pptx_extract_media(PptxReader *reader, const char *path,
+                                size_t *out_size)
+{
+    size_t index;
+    size_t extracted_size = 0u;
+    QwZipEntryInfo stat;
+    void *contents;
+
+    if (out_size) *out_size = 0u;
+    if (!reader || !reader->zip || !path || !out_size ||
+        !pptx_path_is_safe(path))
+        return NULL;
+    index = qw_zip_reader_locate_file(reader->zip, path, NULL,
+                                      QW_ZIP_CASE_SENSITIVE);
+    if (index == (size_t)-1 ||
+        !qw_zip_reader_file_stat(reader->zip, index, &stat) ||
+        !stat.uncompressed_size || stat.uncompressed_size > PPTX_MAX_MEDIA_BYTES ||
+        !qw_zip_reader_is_file_supported(reader->zip, index))
+        return NULL;
+    contents = qw_zip_reader_extract_to_heap(reader->zip, index,
+                                              &extracted_size, 0u);
+    if (!contents || extracted_size != stat.uncompressed_size ||
+        extracted_size > PPTX_MAX_MEDIA_BYTES) {
+        free(contents);
+        return NULL;
+    }
+    *out_size = extracted_size;
+    return contents;
+}
+
+static int pptx_load_slide_rels(PptxReader *reader, const char *slide_path,
+                                PptxRelationship **out_rels,
+                                size_t *out_count)
+{
+    char rels_path[PPTX_MAX_PATH_BYTES];
+    const char *slash = slide_path ? strrchr(slide_path, '/') : NULL;
+    size_t directory = slash ? (size_t)(slash - slide_path + 1u) : 0u;
+    const char *base = slash ? slash + 1u : slide_path;
+    QwXmlNode *xml;
+    QwXmlNode *root;
+    QwXmlNode *node;
+    PptxRelationship *rels = NULL;
+    size_t count = 0u;
+
+    *out_rels = NULL;
+    *out_count = 0u;
+    if (!slide_path || !base || !base[0]) return 1;
+    if (directory + 6u + strlen(base) + 6u >= sizeof(rels_path)) return 1;
+    memcpy(rels_path, slide_path, directory);
+    memcpy(rels_path + directory, "_rels/", 6u);
+    memcpy(rels_path + directory + 6u, base, strlen(base));
+    memcpy(rels_path + directory + 6u + strlen(base), ".rels", 6u);
+    rels_path[directory + 6u + strlen(base) + 5u] = '\0';
+    xml = pptx_parse_part(reader, rels_path);
+    if (!xml) return 1; /* no slide relationships is not an error */
+    root = qw_xml_root(xml);
+    for (node = qw_xml_down(root); node; node = qw_xml_next(node)) {
+        const char *id;
+        const char *target;
+        if (!pptx_is_tag(node, "Relationship")) continue;
+        id = qw_xml_att(node, "Id");
+        target = qw_xml_att(node, "Target");
+        if (!id || !target || count >= PPTX_MAX_SLIDE_RELS) continue;
+        {
+            PptxRelationship *grown =
+                (PptxRelationship *)realloc(rels, (count + 1u) * sizeof(*grown));
+            if (!grown) {
+                pptx_free_relationships(rels, count);
+                qw_xml_drop(xml);
+                return 0;
+            }
+            rels = grown;
+            memset(&rels[count], 0, sizeof(rels[count]));
+            if (!pptx_copy_string(&rels[count].id, id) ||
+                !pptx_copy_string(&rels[count].target, target)) {
+                pptx_free_relationships(rels, count + 1u);
+                qw_xml_drop(xml);
+                return 0;
+            }
+            ++count;
+        }
+    }
+    qw_xml_drop(xml);
+    *out_rels = rels;
+    *out_count = count;
+    return 1;
+}
+
+static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
+                             size_t depth)
+{
+    QwXmlNode *blip;
+    const char *embed;
+    const char *target;
+    char media_path[PPTX_MAX_PATH_BYTES];
+    void *media = NULL;
+    size_t media_size = 0u;
+    QwImage image;
+    uint8_t *png = NULL;
+    size_t png_size = 0u;
+    const char *alt = "image";
+    long width = 0;
+    static const char omitted[] =
+        "<p class=\"omitted\">[image omitted]</p>";
+
+    if (reader->slide_image_count >= PPTX_MAX_IMAGES_PER_SLIDE)
+        return pptx_html_literal(reader, omitted);
+    blip = pptx_find_descendant(reader, qw_xml_down(picture), "blip", 0u);
+    embed = blip ? qw_xml_att(blip, "r:embed") : NULL;
+    target = pptx_relationship_target(reader->slide_rels,
+                                      reader->slide_rel_count, embed);
+    if (!target ||
+        !pptx_resolve_media_path(reader->slide_path, target, media_path,
+                                 sizeof(media_path)))
+        return pptx_html_literal(reader, omitted);
+    media = pptx_extract_media(reader, media_path, &media_size);
+    if (!media) return pptx_html_literal(reader, omitted);
+    memset(&image, 0, sizeof(image));
+    if (qw_image_decode(media, media_size, &image) != QW_IMAGE_OK ||
+        !image.pixels) {
+        free(media);
+        return pptx_html_literal(reader, omitted);
+    }
+    if (qw_image_encode(&image, QW_IMAGE_ENCODE_PNG, &png, &png_size) !=
+            QW_IMAGE_OK ||
+        !png || !png_size) {
+        qw_image_free(&image);
+        free(media);
+        free(png);
+        return pptx_html_literal(reader, omitted);
+    }
+    {
+        QwXmlNode *cnv = pptx_find_descendant(reader, qw_xml_down(picture),
+                                              "cNvPr", 0u);
+        if (cnv) {
+            const char *description = qw_xml_att(cnv, "descr");
+            const char *name = qw_xml_att(cnv, "name");
+            if (description && description[0]) alt = description;
+            else if (name && name[0]) alt = name;
+        }
+    }
+    {
+        QwXmlNode *xfrm = pptx_find_descendant(reader, qw_xml_down(picture),
+                                               "xfrm", 0u);
+        QwXmlNode *extent = xfrm
+            ? pptx_find_descendant(reader, qw_xml_down(xfrm), "ext", 0u)
+            : NULL;
+        const char *cx = extent ? qw_xml_att(extent, "cx") : NULL;
+        if (cx && cx[0]) width = strtol(cx, NULL, 10);
+    }
+    if (width <= 0) width = 320 * 12700L; /* 320 pt fallback */
+    width /= 12700L;
+    if (width < 1) width = 1;
+    if (width > 2000) width = 2000;
+    ++reader->slide_image_count;
+    qw_image_free(&image);
+    free(media);
+    {
+        char width_text[32];
+        int width_length = snprintf(width_text, sizeof(width_text), "%ld",
+                                    width);
+        if (width_length <= 0 ||
+            (size_t)width_length >= sizeof(width_text) ||
+            !pptx_html_literal(reader, "<p class=\"picture\"><img alt=\"") ||
+            !pptx_html_escape(reader, alt) ||
+            !pptx_html_literal(reader, "\" width=\"") ||
+            !pptx_html_literal(reader, width_text) ||
+            !pptx_html_literal(reader, "\" src=\"data:image/png;base64,") ||
+            !pptx_html_base64(reader, png, png_size) ||
+            !pptx_html_literal(reader, "\"/></p>")) {
+            free(png);
+            return 0;
+        }
+    }
+    free(png);
+    return 1;
+}
 static char **pptx_collect_slide_paths(PptxReader *reader, size_t *out_count)
 {
     PptxRelationship *relationships = NULL;
@@ -414,8 +691,7 @@ static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
                 !pptx_render_inline(reader, qw_xml_down(node), depth + 1u) ||
                 !pptx_html_literal(reader, "</p>")) return 0;
         } else if (pptx_is_tag(node, "pic")) {
-            if (!pptx_html_literal(reader,
-                "<p class=\"omitted\">[image omitted]</p>")) return 0;
+            if (!pptx_emit_picture(reader, node, depth + 1u)) return 0;
         } else if (pptx_is_tag(node, "oleObj")) {
             if (!pptx_html_literal(reader,
                 "<p class=\"omitted\">[embedded object omitted]</p>")) return 0;
@@ -432,9 +708,19 @@ static int pptx_render_slide_part(PptxReader *reader, const char *path,
     QwXmlNode *xml = NULL;
     QwXmlNode *root = NULL;
     QwXmlNode *shape_tree = NULL;
+    PptxRelationship *slide_rels = NULL;
+    size_t slide_rel_count = 0u;
     char number[24];
     int success = 0;
     (void)snprintf(number, sizeof(number), "%zu", slide_number);
+    if (!pptx_load_slide_rels(reader, path, &slide_rels, &slide_rel_count)) {
+        reader->error = "Slide relationships exceed conversion limits";
+        goto cleanup;
+    }
+    reader->slide_rels = slide_rels;
+    reader->slide_rel_count = slide_rel_count;
+    reader->slide_path = path;
+    reader->slide_image_count = 0u;
     xml = pptx_parse_part(reader, path);
     if (!xml) {
         reader->error = "Slide XML is missing, unsupported, or too large";
@@ -465,6 +751,12 @@ static int pptx_render_slide_part(PptxReader *reader, const char *path,
     success = 1;
 
 cleanup:
+    pptx_free_relationships(slide_rels, slide_rel_count);
+    if (reader->slide_rels == slide_rels) {
+        reader->slide_rels = NULL;
+        reader->slide_rel_count = 0u;
+        reader->slide_path = NULL;
+    }
     qw_xml_drop(xml);
     return success;
 }
