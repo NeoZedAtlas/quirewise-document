@@ -341,7 +341,19 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_link_test
+    add_executable(quirewise_document_vml_image_test
+    tests/vml_image_test.c)
+target_compile_features(quirewise_document_vml_image_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_vml_image_test PRIVATE
+    QUIREWISE_VML_DOCX="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/vml-image.docx")
+target_include_directories(quirewise_document_vml_image_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_vml_image_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_vml_image
+    COMMAND quirewise_document_vml_image_test)
+
+add_executable(quirewise_document_link_test
     tests/link_test.c)
 target_compile_features(quirewise_document_link_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_link_test PRIVATE

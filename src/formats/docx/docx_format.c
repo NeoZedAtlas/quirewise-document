@@ -2525,6 +2525,26 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                 }
             } else if (!closing &&
                        xml_local_name_is(xml + name_start,
+                                         name_end - name_start,
+                                         "imagedata")) {
+                const uint8_t *relationship_id;
+                size_t relationship_id_size;
+                if (xml_attribute_value(xml, name_end, tag_end - 1u, "id",
+                                        &relationship_id,
+                                        &relationship_id_size)) {
+                    int image_rc = docx_append_image(html, archive,
+                                                     relationships,
+                                                     relationships_size,
+                                                     relationship_id,
+                                                     relationship_id_size,
+                                                     image_width_px,
+                                                     &embedded_image_size);
+                    image_width_px = 0;
+                    if (image_rc < 0) return 0;
+                    if (image_rc == 0 && omitted_images) ++*omitted_images;
+                }
+            } else if (!closing &&
+                       xml_local_name_is(xml + name_start,
                                          name_end - name_start, "blip")) {
                 const uint8_t *relationship_id;
                 size_t relationship_id_size;
