@@ -118,6 +118,7 @@ static int family_subtitle_target(QwOutputFormat format)
     case QW_FORMAT_SSA:
     case QW_FORMAT_SAMI:
     case QW_FORMAT_SCC:
+    case QW_FORMAT_TTML:
         return 1;
     default:
         return 0;
@@ -378,7 +379,7 @@ int qw_doc_convert_family_to_format(const uint8_t *data, size_t size,
         snprintf(report->note, sizeof(report->note),
                  "no writer for %s output; supported family targets: JSON, "
                  "JSON Lines, YAML, TOML, vCard, XML, SRT, WebVTT, LRC, "
-                 "MicroDVD, ASS, SSA, SAMI, SCC, CSV and TSV",
+                 "MicroDVD, ASS, SSA, SAMI, SCC, TTML, CSV and TSV",
                  qw_format_name(output_format));
     }
     return QW_STATUS_ERR_UNSUPPORTED;
