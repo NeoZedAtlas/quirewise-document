@@ -30,6 +30,13 @@ size_t qw_hwpx_document_section_count(const QwHwpxDocument *document);
 size_t qw_hwpx_document_omitted_object_count(const QwHwpxDocument *document);
 void qw_hwpx_document_free(QwHwpxDocument *document);
 
+/* Build a minimal HWPX package from an HTML fragment. Paragraphs become OWPML
+ * <p>/<t> nodes; tables are flattened. The result is malloc-owned and released
+ * with qw_hwpx_buffer_free(). */
+QwHwpxStatus qw_hwpx_create(const void *html, size_t html_size,
+                            uint8_t **out_package, size_t *out_size);
+void qw_hwpx_buffer_free(void *buffer);
+
 #ifdef __cplusplus
 }
 #endif

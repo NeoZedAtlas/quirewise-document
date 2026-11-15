@@ -10,6 +10,9 @@
 #include <quirewise/convert.h>
 #include <quirewise/docx.h>
 #include <quirewise/epub.h>
+#include <quirewise/htmlz.h>
+#include <quirewise/hwpx.h>
+#include <quirewise/text_archive.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +76,19 @@ static unsigned char *read_file(const char *path, size_t *out_size)
     fclose(file);
     *out_size = (size_t)length;
     return bytes;
+}
+
+static int contains(const unsigned char *data, size_t size,
+                    const char *needle)
+{
+    size_t needle_size = strlen(needle);
+    size_t index;
+
+    if (!needle_size || needle_size > size) return 0;
+    for (index = 0u; index + needle_size <= size; ++index) {
+        if (memcmp(data + index, needle, needle_size) == 0) return 1;
+    }
+    return 0;
 }
 
 static int html_contains(const char *html, size_t size, const char *needle)
@@ -297,6 +313,94 @@ int main(void)
         qw_epub_document_free(document);
     }
 
+    /* Container writers: HTMLZ, TXTZ and HWPX round-trip through the readers. */
+    {
+        unsigned char *bytes;
+        size_t bytes_size = 0u;
+        QwHtmlzDocument htmlz;
+        const char *error = NULL;
+
+        memset(&report, 0, sizeof(report));
+        rc = convert_file("qw_convert_family.md", "qw_convert_family.htmlz",
+                          QW_FORMAT_HTMLZ, &report);
+        if (rc != QW_STATUS_OK) {
+            fprintf(stderr, "FAIL: Markdown to HTMLZ (%s)\n", report.note);
+            return 1;
+        }
+        bytes = read_file("qw_convert_family.htmlz", &bytes_size);
+        memset(&htmlz, 0, sizeof(htmlz));
+        if (!bytes ||
+            qw_htmlz_extract_primary_document(bytes, bytes_size, &htmlz,
+                                              &error) != QW_HTMLZ_OK ||
+            !contains(htmlz.html_bytes, htmlz.html_size,
+                      "Title")) {
+            free(bytes);
+            fputs("FAIL: HTMLZ output lost its text\n", stderr);
+            return 1;
+        }
+        qw_htmlz_document_free(&htmlz);
+        free(bytes);
+    }
+    {
+        unsigned char *bytes;
+        size_t bytes_size = 0u;
+        QwTextArchiveDocument archive;
+        const char *error = NULL;
+
+        memset(&report, 0, sizeof(report));
+        rc = convert_file("qw_convert_family.md", "qw_convert_family.txtz",
+                          QW_FORMAT_TXTZ, &report);
+        if (rc != QW_STATUS_OK) {
+            fprintf(stderr, "FAIL: Markdown to TXTZ (%s)\n", report.note);
+            return 1;
+        }
+        bytes = read_file("qw_convert_family.txtz", &bytes_size);
+        memset(&archive, 0, sizeof(archive));
+        if (!bytes ||
+            qw_text_archive_extract_primary(bytes, bytes_size,
+                                            QW_TEXT_ARCHIVE_TXTZ, &archive,
+                                            &error) != QW_TEXT_ARCHIVE_OK ||
+            !contains(archive.text_bytes, archive.text_size,
+                      "Title")) {
+            free(bytes);
+            fputs("FAIL: TXTZ output lost its text\n", stderr);
+            return 1;
+        }
+        qw_text_archive_document_free(&archive);
+        free(bytes);
+    }
+    {
+        unsigned char *bytes;
+        size_t bytes_size = 0u;
+        QwHwpxDocument *document = NULL;
+        const uint8_t *html;
+        size_t html_size = 0u;
+
+        memset(&report, 0, sizeof(report));
+        rc = convert_file("qw_convert_family.md", "qw_convert_family.hwpx",
+                          QW_FORMAT_HWPX, &report);
+        if (rc != QW_STATUS_OK) {
+            fprintf(stderr, "FAIL: Markdown to HWPX (%s)\n", report.note);
+            return 1;
+        }
+        bytes = read_file("qw_convert_family.hwpx", &bytes_size);
+        if (!bytes ||
+            qw_hwpx_parse(bytes, bytes_size, &document) != QW_HWPX_OK ||
+            !document) {
+            free(bytes);
+            fputs("FAIL: HWPX output did not parse\n", stderr);
+            return 1;
+        }
+        free(bytes);
+        html = qw_hwpx_document_html(document, &html_size);
+        if (!contains(html, html_size, "Title")) {
+            qw_hwpx_document_free(document);
+            fputs("FAIL: HWPX output lost its text\n", stderr);
+            return 1;
+        }
+        qw_hwpx_document_free(document);
+    }
+
     /* PDF has no layout route, so neither office target is available. */
     memset(&report, 0, sizeof(report));
     rc = convert_file("qw_convert_family.json", "qw_convert_family.docx2",
@@ -386,6 +490,9 @@ int main(void)
     remove("qw_convert_family.docx");
     remove("qw_convert_family.docx2");
     remove("qw_convert_family.epub");
+    remove("qw_convert_family.htmlz");
+    remove("qw_convert_family.txtz");
+    remove("qw_convert_family.hwpx");
     puts("Quirewise cross-family conversion tests passed");
     return 0;
 }

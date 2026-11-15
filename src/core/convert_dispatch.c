@@ -1651,6 +1651,18 @@ int qw_convert_to_format_memory(const void *data, size_t size,
         return qw_doc_convert_epub_memory(bytes, size, NULL, out_data,
                                           out_size, report);
     }
+    if (output_format == QW_FORMAT_HTMLZ) {
+        return qw_doc_convert_htmlz_memory(bytes, size, NULL, out_data,
+                                           out_size, report);
+    }
+    if (output_format == QW_FORMAT_TXTZ) {
+        return qw_doc_convert_txtz_memory(bytes, size, NULL, out_data,
+                                          out_size, report);
+    }
+    if (output_format == QW_FORMAT_HWPX) {
+        return qw_doc_convert_hwpx_memory(bytes, size, NULL, out_data,
+                                          out_size, report);
+    }
     if (qw_image_probe(bytes, size)) {
         int image_status = qw_doc_convert_image_memory(
             bytes, size, output_format, out_data, out_size, report);

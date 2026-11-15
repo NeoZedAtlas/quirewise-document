@@ -116,9 +116,12 @@ family parser (selected by extension, or by an unambiguous content sniff for the
 memory entry point); a file from another family is refused with a
 family-specific note. PDF, TXT and PNG keep the native document routes. `QW_FORMAT_HTML` returns the
 readers' HTML intermediate (every layout reader also exposes its own
-`*_document_html`), and `QW_FORMAT_MARKDOWN` converts that HTML through
-`quirewise-text`'s `qw_markdown_from_html`. PDF, image and subtitle inputs have
-no layout HTML route and are refused with a specific note.
+`*_document_html`); `QW_FORMAT_MARKDOWN` converts that HTML through
+`quirewise-text`'s `qw_markdown_from_html`; `QW_FORMAT_DOCX`/`QW_FORMAT_EPUB`
+emit minimal office packages; `QW_FORMAT_HTMLZ`/`QW_FORMAT_TXTZ` build the
+container writers from the ebook package; and `QW_FORMAT_HWPX` emits a minimal
+OWPML package (`qw_hwpx_create`). PDF, image and subtitle inputs have no layout
+HTML route and are refused with a specific note.
 
 ## API overview
 

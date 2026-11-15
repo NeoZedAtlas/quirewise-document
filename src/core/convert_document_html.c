@@ -28,6 +28,7 @@
 #include <quirewise/pptx.h>
 #include <quirewise/rtf.h>
 #include <quirewise/spreadsheet.h>
+#include <quirewise/text_archive.h>
 
 #include "../backends/document_backend.h"
 
@@ -549,6 +550,31 @@ static int html_from_plain_text(const uint8_t *data, size_t size,
     return status;
 }
 
+static int html_from_text_archive(QwTextArchiveKind kind, const uint8_t *data,
+                                  size_t size, uint8_t **out,
+                                  size_t *out_size, QwConvertReport *report)
+{
+    QwTextArchiveDocument document;
+    const char *error = NULL;
+    int status;
+
+    memset(&document, 0, sizeof(document));
+    status = (int)qw_text_archive_extract_primary(data, size, kind, &document,
+                                                  &error);
+    if (status != 0) {
+        if (report) {
+            snprintf(report->note, sizeof(report->note),
+                     "text archive extraction failed: %s",
+                     error && error[0] ? error : "no primary member");
+        }
+        return html_status_negative(status);
+    }
+    status = html_from_plain_text(document.text_bytes, document.text_size, out,
+                                  out_size, report);
+    qw_text_archive_document_free(&document);
+    return status;
+}
+
 static int html_from_mobi(const uint8_t *data, size_t size, uint8_t **out,
                           size_t *out_size, QwConvertReport *report)
 {
@@ -945,6 +971,12 @@ int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
         return html_from_spreadsheet(format, data, size, out_html, out_size,
                                      report);
     }
+    if (html_extension_is(extension, "txtz"))
+        return html_from_text_archive(QW_TEXT_ARCHIVE_TXTZ, data, size,
+                                      out_html, out_size, report);
+    if (html_extension_is(extension, "pmlz"))
+        return html_from_text_archive(QW_TEXT_ARCHIVE_PMLZ, data, size,
+                                      out_html, out_size, report);
     if (html_extension_is(extension, "html") ||
         html_extension_is(extension, "htm") ||
         html_extension_is(extension, "xhtml"))

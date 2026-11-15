@@ -15,6 +15,9 @@
  */
 
 #include <quirewise/convert.h>
+#include <quirewise/htmlz.h>
+#include <quirewise/hwpx.h>
+#include <quirewise/text_archive.h>
 
 #include "../backends/document_backend.h"
 #include "../formats/archive/zip_native.h"
@@ -885,6 +888,178 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
         snprintf(report->note, sizeof(report->note),
                  "minimal EPUB 2 package with a single XHTML chapter and NCX "
                  "table of contents");
+    }
+    return QW_STATUS_OK;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Text archive / HTMLZ / HWPX                                               */
+/* ------------------------------------------------------------------------- */
+
+static int office_negative_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -3: return QW_STATUS_ERR_FORMAT;
+    case -4: return QW_STATUS_ERR_UNSUPPORTED;
+    case -5: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+/* Strip HTML down to readable text: block tags become line breaks, tags are
+ * removed, script/style/head content is skipped and common entities are
+ * decoded. Used to build a TXTZ index.txt from the HTML intermediate. */
+static int office_html_to_text(const uint8_t *html, size_t size,
+                               OfficeBuffer *text)
+{
+    size_t index = 0u;
+    int newline_run = 0;
+
+    while (index < size) {
+        if (html[index] != '<') {
+            size_t start = index;
+            while (index < size && html[index] != '<') ++index;
+            if (!office_append(text, html + start, index - start)) return 0;
+            newline_run = 0;
+            continue;
+        }
+        {
+            OfficeTag tag;
+            size_t consumed = office_parse_tag(html, size, index, &tag);
+            if (!consumed) {
+                if (!office_append_char(text, '<')) return 0;
+                ++index;
+                continue;
+            }
+            index += consumed;
+            if (!tag.name[0]) continue;
+            if (strcmp(tag.name, "script") == 0 ||
+                strcmp(tag.name, "style") == 0 ||
+                strcmp(tag.name, "head") == 0 ||
+                strcmp(tag.name, "title") == 0) {
+                if (!tag.closing)
+                    index = office_skip_element(html, size, index, tag.name);
+                continue;
+            }
+            if (strcmp(tag.name, "br") == 0 || strcmp(tag.name, "p") == 0 ||
+                strcmp(tag.name, "div") == 0 || strcmp(tag.name, "li") == 0 ||
+                strcmp(tag.name, "tr") == 0 || strcmp(tag.name, "pre") == 0 ||
+                strcmp(tag.name, "blockquote") == 0 ||
+                (tag.name[0] == 'h' && tag.name[1] >= '1' &&
+                 tag.name[1] <= '6' && !tag.name[2])) {
+                if (text->size && newline_run < 2 &&
+                    !office_append_char(text, '\n'))
+                    return 0;
+                if (text->size) ++newline_run;
+            }
+            if (strcmp(tag.name, "td") == 0 || strcmp(tag.name, "th") == 0) {
+                if (tag.closing && !office_text(text, "\t")) return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
+                                const char *input_extension,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report)
+{
+    uint8_t *html = NULL;
+    size_t html_size = 0u;
+    int status;
+
+    if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_data = NULL;
+    *out_size = 0u;
+    status = qw_doc_convert_html_memory(data, size, input_extension, &html,
+                                        &html_size, report);
+    if (status != QW_STATUS_OK) return status;
+    status = office_negative_status(
+        (int)qw_htmlz_create(html, html_size, out_data, out_size));
+    free(html);
+    if (status != QW_STATUS_OK)
+        return office_fail(report, status, "HTMLZ write", "");
+    if (report) {
+        report->output_format = QW_FORMAT_HTMLZ;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "HTMLZ archive with index.html");
+    }
+    return QW_STATUS_OK;
+}
+
+int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report)
+{
+    uint8_t *html = NULL;
+    size_t html_size = 0u;
+    OfficeBuffer text;
+    int status;
+
+    if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_data = NULL;
+    *out_size = 0u;
+    status = qw_doc_convert_html_memory(data, size, input_extension, &html,
+                                        &html_size, report);
+    if (status != QW_STATUS_OK) return status;
+    memset(&text, 0, sizeof(text));
+    if (!office_html_to_text(html, html_size, &text)) {
+        free(html);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "TXTZ text",
+                           "out of memory");
+    }
+    free(html);
+    if (!text.size) {
+        free(text.data);
+        return office_fail(report, QW_STATUS_ERR_FORMAT, "TXTZ text",
+                           "the input has no extractable text");
+    }
+    status = office_negative_status((int)qw_text_archive_create(
+        QW_TEXT_ARCHIVE_TXTZ, text.data, text.size, out_data, out_size));
+    free(text.data);
+    if (status != QW_STATUS_OK)
+        return office_fail(report, status, "TXTZ write", "");
+    if (report) {
+        report->output_format = QW_FORMAT_TXTZ;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "TXTZ archive with index.txt (text extracted from the HTML "
+                 "intermediate)");
+    }
+    return QW_STATUS_OK;
+}
+
+int qw_doc_convert_hwpx_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report)
+{
+    uint8_t *html = NULL;
+    size_t html_size = 0u;
+    int status;
+
+    if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_data = NULL;
+    *out_size = 0u;
+    status = qw_doc_convert_html_memory(data, size, input_extension, &html,
+                                        &html_size, report);
+    if (status != QW_STATUS_OK) return status;
+    status = office_negative_status(
+        (int)qw_hwpx_create(html, html_size, out_data, out_size));
+    free(html);
+    if (status != QW_STATUS_OK)
+        return office_fail(report, status, "HWPX write", "");
+    if (report) {
+        report->output_format = QW_FORMAT_HWPX;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "minimal HWPX package with one OWPML section");
     }
     return QW_STATUS_OK;
 }

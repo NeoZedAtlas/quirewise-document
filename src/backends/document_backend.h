@@ -65,8 +65,23 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                                const char *input_extension, uint8_t **out_data,
                                size_t *out_size, QwConvertReport *report);
 
+/* Container/text writers: HTMLZ (index.html), TXTZ (index.txt) and a minimal
+ * HWPX package, all built from the HTML intermediate. */
+int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
+                                const char *input_extension,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report);
+int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report);
+int qw_doc_convert_hwpx_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report);
+
 /* Raster re-encoding: decoded PNG/BMP/TIFF/JPEG/WebP input to an encodable
- * target. The image package currently writes PNG/BMP/TIFF. */
+ * target. The image package currently writes PNG/BMP/TIFF/JPEG/WebP. */
 int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
                                 QwOutputFormat output_format,
                                 uint8_t **out_data, size_t *out_size,

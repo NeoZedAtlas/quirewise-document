@@ -453,6 +453,15 @@ int qw_convert_file_to_format(const char *input_path,
     } else if (output_format == QW_FORMAT_EPUB) {
         rc = qw_doc_convert_epub_memory(data, size, extension, &output,
                                         &output_size, report);
+    } else if (output_format == QW_FORMAT_HTMLZ) {
+        rc = qw_doc_convert_htmlz_memory(data, size, extension, &output,
+                                         &output_size, report);
+    } else if (output_format == QW_FORMAT_TXTZ) {
+        rc = qw_doc_convert_txtz_memory(data, size, extension, &output,
+                                        &output_size, report);
+    } else if (output_format == QW_FORMAT_HWPX) {
+        rc = qw_doc_convert_hwpx_memory(data, size, extension, &output,
+                                        &output_size, report);
     } else {
         rc = qw_convert_to_format_memory(data, size, output_format, options,
                                          &output, &output_size, report);
