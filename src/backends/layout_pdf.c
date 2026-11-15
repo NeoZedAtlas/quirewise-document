@@ -14,6 +14,8 @@
 
 #include "document_backend.h"
 
+#include <quirewise/image.h>
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,9 +30,22 @@ typedef struct QwPdfText {
     size_t capacity;
 } QwPdfText;
 
+typedef struct QwPdfImage {
+    uint8_t *stream;      /* DCT payload for JPEG, raw RGB otherwise */
+    size_t stream_size;
+    uint32_t width;
+    uint32_t height;
+    int jpeg;
+    double display_width; /* CSS pixels / points, 0 selects content width */
+} QwPdfImage;
+
 typedef struct QwPdfLines {
     QwPdfText *items;
     unsigned char *heading;
+    size_t *image_refs; /* SIZE_MAX for text lines */
+    QwPdfImage *images;
+    size_t image_count;
+    size_t image_capacity;
     size_t count;
     size_t capacity;
     size_t total_bytes;
@@ -96,8 +111,16 @@ static void pdf_lines_free(QwPdfLines *lines)
     }
     free(lines->items);
     free(lines->heading);
+    free(lines->image_refs);
+    for (size_t image = 0u; image < lines->image_count; ++image)
+        free(lines->images[image].stream);
+    free(lines->images);
     lines->items = NULL;
     lines->heading = NULL;
+    lines->image_refs = NULL;
+    lines->images = NULL;
+    lines->image_count = 0u;
+    lines->image_capacity = 0u;
     lines->count = 0u;
     lines->capacity = 0u;
     lines->total_bytes = 0u;
@@ -117,6 +140,12 @@ static int pdf_lines_reserve(QwPdfLines *lines)
     heading = (unsigned char *)realloc(lines->heading, capacity);
     if (!heading) return 0;
     lines->heading = heading;
+    {
+        size_t *refs = (size_t *)realloc(lines->image_refs,
+                                         capacity * sizeof(*refs));
+        if (!refs) return 0;
+        lines->image_refs = refs;
+    }
     lines->capacity = capacity;
     return 1;
 }
@@ -129,6 +158,7 @@ static int pdf_lines_flush(QwPdfLines *lines, QwPdfText *current,
     if (!pdf_lines_reserve(lines)) return 0;
     lines->items[lines->count] = *current;
     lines->heading[lines->count] = level;
+    lines->image_refs[lines->count] = SIZE_MAX;
     lines->total_bytes += current->size;
     lines->count += 1u;
     current->data = NULL;
@@ -137,6 +167,238 @@ static int pdf_lines_flush(QwPdfLines *lines, QwPdfText *current,
     return 1;
 }
 
+#define QW_PDF_MAX_IMAGES 64u
+#define QW_PDF_MAX_IMAGE_BYTES ((size_t)16u * 1024u * 1024u)
+
+static int pdf_base64_value(unsigned char value)
+{
+    if (value >= 'A' && value <= 'Z') return value - 'A';
+    if (value >= 'a' && value <= 'z') return value - 'a' + 26;
+    if (value >= '0' && value <= '9') return value - '0' + 52;
+    if (value == '+') return 62;
+    if (value == '/') return 63;
+    return -1;
+}
+
+static uint8_t *pdf_base64_decode(const unsigned char *text, size_t size,
+                                  size_t *out_size)
+{
+    uint8_t *out;
+    size_t capacity = (size / 4u + 1u) * 3u;
+    size_t written = 0u;
+    uint32_t accumulator = 0u;
+    int bits = 0;
+    size_t index;
+
+    if (!size || capacity > QW_PDF_MAX_IMAGE_BYTES) return NULL;
+    out = (uint8_t *)malloc(capacity);
+    if (!out) return NULL;
+    for (index = 0u; index < size; ++index) {
+        int value = pdf_base64_value(text[index]);
+        if (value < 0) {
+            if (text[index] == '=') break;
+            if (text[index] == '\n' || text[index] == '\r' ||
+                text[index] == ' ' || text[index] == '\t')
+                continue;
+            free(out);
+            return NULL;
+        }
+        accumulator = (accumulator << 6) | (uint32_t)value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[written++] = (uint8_t)((accumulator >> bits) & 0xffu);
+        }
+    }
+    *out_size = written;
+    return out;
+}
+
+static int pdf_tag_attr(const char *tag, size_t size, const char *name,
+                        char *out, size_t out_capacity)
+{
+    size_t name_size = strlen(name);
+    size_t index = 0u;
+
+    if (!tag || !name_size || !out || out_capacity < 2u) return 0;
+    while (index + name_size + 2u <= size) {
+        if (tag[index] != name[0] ||
+            memcmp(tag + index, name, name_size) != 0) {
+            ++index;
+            continue;
+        }
+        if (index > 0u && tag[index - 1u] != ' ' && tag[index - 1u] != '\t' &&
+            tag[index - 1u] != '\n' && tag[index - 1u] != '\r') {
+            ++index;
+            continue;
+        }
+        index += name_size;
+        while (index < size && (tag[index] == ' ' || tag[index] == '\t'))
+            ++index;
+        if (index >= size || tag[index] != '=') continue;
+        ++index;
+        while (index < size && (tag[index] == ' ' || tag[index] == '\t'))
+            ++index;
+        if (index >= size) return 0;
+        if (tag[index] == '"' || tag[index] == '\'') {
+            char quote = tag[index++];
+            size_t copy = 0u;
+            while (index < size && tag[index] != quote && copy + 1u < out_capacity)
+                out[copy++] = tag[index++];
+            out[copy] = '\0';
+            return copy > 0u;
+        }
+        {
+            size_t copy = 0u;
+            while (index < size && tag[index] != ' ' && tag[index] != '\t' &&
+                   tag[index] != '>' && copy + 1u < out_capacity)
+                out[copy++] = tag[index++];
+            out[copy] = '\0';
+            return copy > 0u;
+        }
+    }
+    return 0;
+}
+
+/* Parse an <img src="data:...;base64,..."> tag and append an image line. */
+static int pdf_append_image(QwPdfLines *lines, const char *tag, size_t size,
+                            QwPdfText *current)
+{
+    const char *value = NULL;
+    const char *value_end = NULL;
+    const char *marker = NULL;
+    size_t position;
+    size_t value_size;
+    uint8_t *encoded;
+    size_t encoded_size = 0u;
+    QwImage image;
+    QwPdfImage stored;
+    char width_text[32];
+    long display = 0;
+
+    if (!lines || !tag || !size) return 1;
+    for (position = 0u; position + 5u <= size; ++position) {
+        if (tag[position] != 's' || memcmp(tag + position, "src=", 4u) != 0)
+            continue;
+        if (position > 0u && tag[position - 1u] != ' ' &&
+            tag[position - 1u] != '\t' && tag[position - 1u] != '\n')
+            continue;
+        {
+            size_t scan = position + 4u;
+            char quote;
+            while (scan < size && (tag[scan] == ' ' || tag[scan] == '\t'))
+                ++scan;
+            if (scan >= size) return 1;
+            quote = tag[scan];
+            if (quote != '"' && quote != '\'') return 1;
+            ++scan;
+            value = tag + scan;
+            while (scan < size && tag[scan] != quote) ++scan;
+            if (scan >= size) return 1;
+            value_end = tag + scan;
+            break;
+        }
+    }
+    if (!value || value_end <= value) return 1;
+    if ((size_t)(value_end - value) < 8u || memcmp(value, "data:", 5u) != 0)
+        return 1;
+    value_size = (size_t)(value_end - value);
+    for (position = 5u; position + 7u <= value_size; ++position) {
+        if (memcmp(value + position, "base64,", 7u) == 0) {
+            marker = value + position + 7u;
+            break;
+        }
+    }
+    if (!marker) return 1;
+    encoded = pdf_base64_decode((const unsigned char *)marker,
+                                (size_t)(value_end - marker), &encoded_size);
+    if (!encoded || !encoded_size) {
+        free(encoded);
+        return 1;
+    }
+    memset(&image, 0, sizeof(image));
+    if (qw_image_decode(encoded, encoded_size, &image) != QW_IMAGE_OK ||
+        !image.pixels || !image.width || !image.height) {
+        free(encoded);
+        if (image.pixels) qw_image_free(&image);
+        return 1;
+    }
+    memset(&stored, 0, sizeof(stored));
+    stored.width = image.width;
+    stored.height = image.height;
+    stored.display_width = (double)image.width;
+    if (pdf_tag_attr(tag, size, "width", width_text, sizeof(width_text))) {
+        display = strtol(width_text, NULL, 10);
+        if (display > 0) stored.display_width = (double)display;
+    }
+    if (encoded_size > 2u && encoded[0] == 0xffu && encoded[1] == 0xd8u) {
+        stored.stream = encoded;
+        stored.stream_size = encoded_size;
+        stored.jpeg = 1;
+        qw_image_free(&image);
+    } else {
+        size_t pixel_bytes;
+        if (image.width > SIZE_MAX / image.height ||
+            image.width * image.height > QW_PDF_MAX_IMAGE_BYTES / 3u) {
+            free(encoded);
+            qw_image_free(&image);
+            return 1;
+        }
+        pixel_bytes = (size_t)image.width * image.height * 3u;
+        stored.stream = (uint8_t *)malloc(pixel_bytes);
+        if (!stored.stream) {
+            free(encoded);
+            qw_image_free(&image);
+            return 0;
+        }
+        for (uint32_t row = 0u; row < image.height; ++row) {
+            const uint8_t *source = image.pixels + (size_t)row * image.stride;
+            uint8_t *target = stored.stream + (size_t)row * image.width * 3u;
+            for (uint32_t column = 0u; column < image.width; ++column) {
+                if (image.format == QW_IMAGE_PIXEL_GRAY8) {
+                    target[column * 3u] = source[column];
+                    target[column * 3u + 1u] = source[column];
+                    target[column * 3u + 2u] = source[column];
+                } else {
+                    target[column * 3u] = source[column * 3u];
+                    target[column * 3u + 1u] = source[column * 3u + 1u];
+                    target[column * 3u + 2u] = source[column * 3u + 2u];
+                }
+            }
+        }
+        stored.stream_size = pixel_bytes;
+        stored.jpeg = 0;
+        qw_image_free(&image);
+        free(encoded);
+    }
+    if (!pdf_lines_flush(lines, current, 0u)) {
+        free(stored.stream);
+        return 0;
+    }
+    if (lines->image_count >= QW_PDF_MAX_IMAGES) {
+        free(stored.stream);
+        return 1;
+    }
+    if (lines->image_count >= lines->image_capacity) {
+        size_t capacity = lines->image_capacity ? lines->image_capacity * 2u : 8u;
+        QwPdfImage *grown = (QwPdfImage *)realloc(
+            lines->images, capacity * sizeof(*grown));
+        if (!grown) {
+            free(stored.stream);
+            return 0;
+        }
+        lines->images = grown;
+        lines->image_capacity = capacity;
+    }
+    lines->images[lines->image_count] = stored;
+    if (!pdf_lines_reserve(lines)) return 0;
+    memset(&lines->items[lines->count], 0, sizeof(lines->items[lines->count]));
+    lines->heading[lines->count] = 0u;
+    lines->image_refs[lines->count] = lines->image_count;
+    lines->count += 1u;
+    lines->image_count += 1u;
+    return 1;
+}
 static int pdf_is_space(unsigned char value)
 {
     return value == ' ' || value == '\t' || value == '\r' || value == '\n' ||
@@ -320,6 +582,21 @@ static int pdf_parse_html(const char *html, size_t size, QwPdfLines *lines)
                 }
                 while (scan < cursor.size && cursor.data[scan] != '>') ++scan;
                 cursor.position = scan < cursor.size ? scan + 1u : cursor.size;
+                if (!closing && name_length == 3u &&
+                    (cursor.data[name_start] == 'i' ||
+                     cursor.data[name_start] == 'I') &&
+                    (cursor.data[name_start + 1u] == 'm' ||
+                     cursor.data[name_start + 1u] == 'M') &&
+                    (cursor.data[name_start + 2u] == 'g' ||
+                     cursor.data[name_start + 2u] == 'G')) {
+                    if (!pdf_append_image(
+                            lines,
+                            (const char *)cursor.data + start - 1u,
+                            cursor.position - (start - 1u), &current)) {
+                        ok = 0;
+                    }
+                    continue;
+                }
                 if (name_length == 5u &&
                     memcmp(cursor.data + name_start, "style", 5u) == 0 && !closing) {
                     (void)pdf_skip_until(&cursor, "</style");
@@ -652,6 +929,24 @@ static int pdf_write_text_line(QwPdfOut *out, const QwPdfGlyphRun *runs,
     return pdf_out_printf(out, "ET\n");
 }
 
+static int pdf_build_xobject_resources(const QwPdfLines *lines, size_t base,
+                                       QwPdfText *out)
+{
+    size_t image;
+
+    memset(out, 0, sizeof(*out));
+    if (!lines->image_count) return 1;
+    if (!pdf_text_append(out, " /XObject <<", 12u)) return 0;
+    for (image = 0u; image < lines->image_count; ++image) {
+        char entry[48];
+        int length = snprintf(entry, sizeof(entry), " /Im%zu %zu 0 R", image,
+                              base + image);
+        if (length <= 0 || (size_t)length >= sizeof(entry) ||
+            !pdf_text_append(out, entry, (size_t)length))
+            return 0;
+    }
+    return pdf_text_append(out, " >>", 3u);
+}
 static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                              double page_height, QwPdfText *output,
                              size_t *out_pages)
@@ -662,7 +957,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         size_t line_index;
         size_t start;
         size_t end;
+        size_t image_index; /* SIZE_MAX for text */
         double font_size;
+        double space;      /* vertical space consumed, in points */
     } QwPdfSegment;
     QwPdfOut out;
     QwPdfSegment *segments = NULL;
@@ -680,11 +977,42 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     page_line_capacity = (size_t)((page_height - 2.0 * margin) / (12.0 * line_gap));
     if (page_line_capacity < 8u) page_line_capacity = 8u;
 
-    /* Pass 1: wrap every logical line into layout segments. */
+    /* Pass 1: wrap every logical line into layout segments. Image lines
+     * become one segment sized to the content width. */
     for (line_index = 0u; ok && line_index < lines->count; ++line_index) {
         const QwPdfText *item = &lines->items[line_index];
         double font_size = pdf_font_size(lines->heading[line_index]);
         size_t *breaks = NULL;
+        if (lines->image_refs && lines->image_refs[line_index] != SIZE_MAX) {
+            const QwPdfImage *image =
+                &lines->images[lines->image_refs[line_index]];
+            double content_width = page_width - 2.0 * margin;
+            double width = image->display_width > 0.0
+                               ? image->display_width : content_width;
+            double height;
+            if (width > content_width) width = content_width;
+            if (!image->width) continue;
+            height = width * (double)image->height / (double)image->width;
+            if (height > page_height - 2.0 * margin)
+                height = page_height - 2.0 * margin;
+            if (segment_count >= segment_capacity) {
+                size_t grown = segment_capacity ? segment_capacity * 2u : 64u;
+                QwPdfSegment *resized = (QwPdfSegment *)realloc(
+                    segments, grown * sizeof(*resized));
+                if (!resized) { ok = 0; break; }
+                segments = resized;
+                segment_capacity = grown;
+            }
+            segments[segment_count].line_index = line_index;
+            segments[segment_count].start = 0u;
+            segments[segment_count].end = 0u;
+            segments[segment_count].image_index =
+                lines->image_refs[line_index];
+            segments[segment_count].font_size = 0.0;
+            segments[segment_count].space = height + 6.0;
+            segment_count += 1u;
+            continue;
+        }
         size_t break_count = 0u;
         size_t segment_start = 0u;
         size_t break_index;
@@ -708,7 +1036,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             segments[segment_count].line_index = line_index;
             segments[segment_count].start = segment_start;
             segments[segment_count].end = segment_end;
+            segments[segment_count].image_index = SIZE_MAX;
             segments[segment_count].font_size = font_size;
+            segments[segment_count].space = font_size * line_gap;
             segment_count += 1u;
             segment_start = segment_end < item->size ? segment_end + 1u : item->size;
             if (segment_start > item->size) segment_start = item->size;
@@ -716,25 +1046,36 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         free(breaks);
     }
 
-    /* Pass 2: pack segments into pages. */
-    for (line_index = 0u; ok && line_index < segment_count;) {
-        size_t remaining = segment_count - line_index;
-        size_t take = remaining < page_line_capacity ? remaining : page_line_capacity;
-        if (page_count >= page_capacity_total) {
-            size_t grown = page_capacity_total ? page_capacity_total * 2u : 16u;
-            size_t *first = (size_t *)realloc(page_first, grown * sizeof(*first));
-            size_t *counts;
-            if (!first) { ok = 0; break; }
-            page_first = first;
-            counts = (size_t *)realloc(page_count_lines, grown * sizeof(*counts));
-            if (!counts) { ok = 0; break; }
-            page_count_lines = counts;
-            page_capacity_total = grown;
+    /* Pass 2: pack segments into pages by their vertical space. */
+    {
+        double usable = page_height - 2.0 * margin;
+        double minimum = (double)page_line_capacity * 12.0 * line_gap;
+        if (usable < minimum) usable = minimum;
+        for (line_index = 0u; ok && line_index < segment_count;) {
+            size_t first_segment = line_index;
+            double used = 0.0;
+
+            while (line_index < segment_count) {
+                double space = segments[line_index].space;
+                if (used > 0.0 && used + space > usable) break;
+                used += space;
+                line_index += 1u;
+            }
+            if (page_count >= page_capacity_total) {
+                size_t grown = page_capacity_total ? page_capacity_total * 2u : 16u;
+                size_t *first = (size_t *)realloc(page_first, grown * sizeof(*first));
+                size_t *counts;
+                if (!first) { ok = 0; break; }
+                page_first = first;
+                counts = (size_t *)realloc(page_count_lines, grown * sizeof(*counts));
+                if (!counts) { ok = 0; break; }
+                page_count_lines = counts;
+                page_capacity_total = grown;
+            }
+            page_first[page_count] = first_segment;
+            page_count_lines[page_count] = line_index - first_segment;
+            page_count += 1u;
         }
-        page_first[page_count] = line_index;
-        page_count_lines[page_count] = take;
-        page_count += 1u;
-        line_index += take;
     }
 
     if (!ok) {
@@ -751,6 +1092,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         size_t font_descriptor = 6u;
         size_t pages_object = 2u;
         size_t first_page_object = 7u;
+        size_t image_object_base = first_page_object + page_count * 2u;
+        QwPdfText resources;
         size_t object;
 
         ok = pdf_out_printf(&out, "%%PDF-1.4\n%%\xE2\xE3\xCF\xD3\n");
@@ -787,6 +1130,10 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             "/FontBBox [-25 -254 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 "
             "/CapHeight 880 /StemV 80 >>\nendobj\n");
 
+        if (ok && !pdf_build_xobject_resources(lines, image_object_base,
+                                               &resources)) {
+            ok = 0;
+        }
         for (object = 0u; ok && object < page_count; ++object) {
             QwPdfOut stream;
             size_t first = page_first[object];
@@ -798,6 +1145,29 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 const QwPdfSegment *segment = &segments[segment_index];
                 const QwPdfText *item = &lines->items[segment->line_index];
                 const char *text = (item->data ? item->data : "") + segment->start;
+                if (segment->image_index != SIZE_MAX) {
+                    const QwPdfImage *image =
+                        &lines->images[segment->image_index];
+                    double content_width = page_width - 2.0 * margin;
+                    double width = image->display_width > 0.0
+                                       ? image->display_width : content_width;
+                    double height;
+                    if (width > content_width) width = content_width;
+                    if (!image->width) continue;
+                    height = width * (double)image->height /
+                             (double)image->width;
+                    if (height > page_height - 2.0 * margin)
+                        height = page_height - 2.0 * margin;
+                    y -= height;
+                    if (!pdf_out_printf(
+                            &stream, "q %.2f 0 0 %.2f %.2f %.2f cm /Im%zu Do Q\n",
+                            width, height, margin, y, segment->image_index)) {
+                        ok = 0;
+                        break;
+                    }
+                    y -= 6.0;
+                    continue;
+                }
                 size_t size = segment->end > segment->start
                     ? segment->end - segment->start : 0u;
                 QwPdfGlyphRun *runs = NULL;
@@ -819,10 +1189,12 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 if (!pdf_out_track(&out, out.bytes.size) ||
                     !pdf_out_printf(&out,
                         "%zu 0 obj\n<< /Type /Page /Parent %zu 0 R /MediaBox [0 0 %.2f %.2f] "
-                        "/Resources << /Font << /F1 %zu 0 R /F2 %zu 0 R >> >> "
+                        "/Resources << /Font << /F1 %zu 0 R /F2 %zu 0 R >>%s >> "
                         "/Contents %zu 0 R >>\nendobj\n",
                         page_object, pages_object, page_width, page_height,
-                        font_ascii, font_cjk, content_object) ||
+                        font_ascii, font_cjk,
+                        resources.data ? (const char *)resources.data : "",
+                        content_object) ||
                     !pdf_out_track(&out, out.bytes.size) ||
                     !pdf_out_printf(&out, "%zu 0 obj\n<< /Length %zu >>\nstream\n",
                                     content_object, stream.bytes.size) ||
@@ -835,6 +1207,24 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             free(stream.bytes.data);
             free(stream.offsets);
         }
+        for (object = 0u; ok && object < lines->image_count; ++object) {
+            const QwPdfImage *image = &lines->images[object];
+            size_t image_object = image_object_base + object;
+            if (!pdf_out_track(&out, out.bytes.size) ||
+                !pdf_out_printf(&out,
+                    "%zu 0 obj\n<< /Type /XObject /Subtype /Image /Width %u "
+                    "/Height %u /ColorSpace /DeviceRGB /BitsPerComponent 8%s "
+                    "/Length %zu >>\nstream\n",
+                    image_object, image->width, image->height,
+                    image->jpeg ? " /Filter /DCTDecode" : "",
+                    image->stream_size) ||
+                (image->stream_size &&
+                 !pdf_out_append(&out, image->stream, image->stream_size)) ||
+                !pdf_out_printf(&out, "\nendstream\nendobj\n")) {
+                ok = 0;
+            }
+        }
+        free(resources.data);
         if (ok && page_count == 0u) {
             size_t page_object = first_page_object;
             size_t content_object = first_page_object + 1u;

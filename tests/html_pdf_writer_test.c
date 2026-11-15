@@ -1,5 +1,7 @@
 #include "document_backend.h"
 
+#include <quirewise/pdf.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,6 +106,54 @@ int main(void)
     snprintf(trailer, sizeof(trailer), "startxref\n%zu\n", startxref_offset);
     CHECK(contains_ascii(pdf, size, trailer));
 
+    /* A data-URI image becomes an image XObject and is painted on the page. */
+    {
+        static const char image_html[] =
+            "<html><body><p>before</p>"
+            "<img src=\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIA"
+            "AAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQEDgslx/wAAAABJ"
+            "RU5ErkJggg==\" width=\"96\"/>"
+            "<p>after</p></body></html>";
+        uint8_t *image_pdf = NULL;
+        size_t image_pdf_size = 0u;
+        QwPdfDocument *document = NULL;
+        size_t pages = 0u;
+        QwPageImage page;
+        int red = 0;
+
+        CHECK(qw_doc_convert_html(image_html, strlen(image_html), &image_pdf,
+                                  &image_pdf_size, NULL) == QW_STATUS_OK);
+        CHECK(image_pdf != NULL && image_pdf_size > 200u);
+        CHECK(contains_ascii(image_pdf, image_pdf_size, "/Subtype /Image"));
+        CHECK(contains_ascii(image_pdf, image_pdf_size, "/XObject"));
+        memset(&page, 0, sizeof(page));
+        CHECK(qw_pdf_open(image_pdf, image_pdf_size, &document, &pages, NULL) ==
+              QW_STATUS_OK);
+        CHECK(document != NULL && pages == 1u);
+        CHECK(qw_pdf_render_page(document, 0u, 144u, &page, NULL) ==
+              QW_STATUS_OK);
+        CHECK(page.data != NULL && page.width > 0u && page.height > 0u);
+        {
+            uint32_t row;
+            for (row = 0u; row < page.height && !red; ++row) {
+                uint32_t column;
+                for (column = 0u; column < page.width; ++column) {
+                    const uint8_t *pixel =
+                        page.data + (size_t)row * (size_t)page.width * 3u +
+                        (size_t)column * 3u;
+                    if (pixel[0] > 150u && pixel[1] < 100u &&
+                        pixel[2] < 100u) {
+                        red = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        CHECK(red);
+        qw_pdf_page_free(&page);
+        qw_pdf_close(document);
+        free(image_pdf);
+    }
     /* Invalid arguments are rejected. */
     CHECK(qw_doc_convert_html(SAMPLE_HTML, strlen(SAMPLE_HTML), NULL, &size,
                                 NULL) == QW_STATUS_ERR_INVALID_ARGUMENT);
