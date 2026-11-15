@@ -1,9 +1,8 @@
 /* Image re-encoding for the document conversion entry points.
  *
- * A decoded raster can be written back as PNG, BMP or baseline TIFF (the image
- * package's encoders). JPEG and WebP remain unsupported by that package; the
- * note explains the gap instead of mislabeling bytes. PDF page rasterization
- * stays in the PDF route and is not affected.
+ * A decoded raster can be written back with the image package's encoders:
+ * PNG, BMP, TIFF, JPEG and lossless WebP. PDF page rasterization stays in the
+ * PDF route and is not affected.
  */
 
 #include <quirewise/convert.h>
