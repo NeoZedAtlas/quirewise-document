@@ -750,6 +750,23 @@ static const OdtStyle *odt_style_for_node(OdtRenderContext *context,
 static int odt_render_nodes(OdtRenderContext *context, QwXmlNode *node,
                             size_t depth);
 
+
+static int odt_url_is_safe(const char *href)
+{
+    size_t i;
+    if (!href) return 0;
+    for (i = 0u; href[i]; ++i) {
+        if (href[i] == ' ' || href[i] == '\n' || href[i] == '\r' ||
+            href[i] == '\t' || href[i] == '"' || href[i] == '\'')
+            return 0;
+    }
+    if (strncmp(href, "http://", 7u) == 0) return 1;
+    if (strncmp(href, "https://", 8u) == 0) return 1;
+    if (strncmp(href, "mailto:", 7u) == 0) return 1;
+    if (strncmp(href, "ftp://", 6u) == 0) return 1;
+    return 0;
+}
+
 static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
                               size_t depth)
 {
@@ -819,7 +836,17 @@ static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
     } else if (strcmp(tag, "frame") == 0) {
         return odt_render_nodes(context, qw_xml_down(node), depth + 1u);
     } else if (strcmp(tag, "a") == 0) {
-        /* Keep link labels but do not emit active external URLs. */
+        const char *href = qw_xml_att(node, "xlink:href");
+        if (href && odt_url_is_safe(href)) {
+            if (!odt_html_literal(context->html, "<a href=\"") ||
+                !odt_html_escape(context->html, href) ||
+                !odt_html_literal(context->html, "\">"))
+                return 0;
+            if (!odt_render_nodes(context, qw_xml_down(node), depth + 1u))
+                return 0;
+            return odt_html_literal(context->html, "</a>");
+        }
+        /* Unsafe or relative links keep their labels only. */
         return odt_render_nodes(context, qw_xml_down(node), depth + 1u);
     } else {
         return odt_render_nodes(context, qw_xml_down(node), depth + 1u);

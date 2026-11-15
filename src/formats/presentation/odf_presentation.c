@@ -190,6 +190,23 @@ static int odp_append_spaces(OdpReader *reader, size_t count)
     return 1;
 }
 
+
+static int odp_url_is_safe(const char *href)
+{
+    size_t i;
+    if (!href) return 0;
+    for (i = 0u; href[i]; ++i) {
+        if (href[i] == ' ' || href[i] == '\n' || href[i] == '\r' ||
+            href[i] == '\t' || href[i] == '"' || href[i] == '\'')
+            return 0;
+    }
+    if (strncmp(href, "http://", 7u) == 0) return 1;
+    if (strncmp(href, "https://", 8u) == 0) return 1;
+    if (strncmp(href, "mailto:", 7u) == 0) return 1;
+    if (strncmp(href, "ftp://", 6u) == 0) return 1;
+    return 0;
+}
+
 static int odp_render_inline(OdpReader *reader, QwXmlNode *node, size_t depth)
 {
     if (depth > ODP_MAX_XML_DEPTH) return 0;
@@ -207,6 +224,19 @@ static int odp_render_inline(OdpReader *reader, QwXmlNode *node, size_t depth)
             size_t count;
             if (!odp_parse_space_count(qw_xml_att(node, "text:c"), &count) ||
                 !odp_append_spaces(reader, count)) return 0;
+        } else if (odp_is_tag(node, "a")) {
+            const char *href = qw_xml_att(node, "xlink:href");
+            if (href && odp_url_is_safe(href)) {
+                if (!odp_html_literal(reader, "<a href=\"") ||
+                    !odp_html_escape(reader, href) ||
+                    !odp_html_literal(reader, "\">") ||
+                    !odp_render_inline(reader, qw_xml_down(node), depth + 1u) ||
+                    !odp_html_literal(reader, "</a>"))
+                    return 0;
+            } else if (!odp_render_inline(reader, qw_xml_down(node),
+                                          depth + 1u)) {
+                return 0;
+            }
         } else if (!odp_render_inline(reader, qw_xml_down(node), depth + 1u)) {
             return 0;
         }
