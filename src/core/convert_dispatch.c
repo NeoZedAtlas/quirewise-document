@@ -1088,6 +1088,20 @@ static int convert_email_to_pdf(const uint8_t *data, size_t size,
     return rc;
 }
 
+static int convert_msg_to_pdf(const uint8_t *data, size_t size,
+                             uint8_t **out_pdf, size_t *out_size,
+                             QwConvertReport *report)
+{
+    uint8_t *html = NULL;
+    size_t html_size = 0u;
+    int rc = qw_msg_to_html(data, size, &html, &html_size, report);
+    if (rc == QW_STATUS_OK && html) {
+        rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+        free(html);
+    }
+    return rc;
+}
+
 static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
                                 uint8_t **out_pdf, size_t *out_size,
                                 QwConvertReport *report)
@@ -1411,6 +1425,10 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
                              "SVG input is routed by the vector package, "
                              "not the document package");
         return QW_STATUS_ERR_UNSUPPORTED;
+    }
+    else if (qw_msg_probe(data, size) ||
+             convert_extension_contains(extension, "msg")) {
+        return convert_msg_to_pdf(data, size, out_pdf, out_size, report);
     }
     else if (qw_email_probe(data, size) ||
              convert_extension_contains(extension, "eml")) {

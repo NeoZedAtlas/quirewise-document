@@ -46,6 +46,11 @@ int qw_doc_convert_family_to_format(const uint8_t *data, size_t size,
  * because they have no layout route. The extension selects the reader, and a
  * content sniff is used when no extension is available.
  */
+/* Outlook MSG (compound file) text/attachment extraction. */
+int qw_msg_probe(const uint8_t *data, size_t size);
+int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
+                   size_t *out_size, QwConvertReport *report);
+
 int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
                                const char *input_extension, uint8_t **out_html,
                                size_t *out_size, QwConvertReport *report);

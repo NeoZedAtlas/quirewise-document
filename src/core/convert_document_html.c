@@ -1011,6 +1011,9 @@ int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
     }
     if (html_extension_is(extension, "hwpx"))
         return html_from_hwpx(data, size, out_html, out_size, report);
+    if (html_extension_is(extension, "msg") ||
+        qw_msg_probe(data, size))
+        return qw_msg_to_html(data, size, out_html, out_size, report);
     if (html_extension_is(extension, "eml"))
         return html_from_email(data, size, out_html, out_size, report);
     if (html_extension_is(extension, "fb2"))
