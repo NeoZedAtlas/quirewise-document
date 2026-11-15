@@ -4,6 +4,15 @@
 #include <quirewise/mdx.h>
 
 #include "format_registry.h"
+
+#include <quirewise/asciidoc.h>
+#include <quirewise/latex.h>
+#include <quirewise/man.h>
+#include <quirewise/mediawiki.h>
+#include <quirewise/org.h>
+#include <quirewise/rst.h>
+#include <quirewise/textile.h>
+#include <quirewise/typst.h>
 #include "../backends/document_backend.h"
 
 #include <stdint.h>
@@ -407,6 +416,138 @@ const char *qw_format_name(QwInputFormat format)
     return "unknown";
 }
 
+
+/* Lightweight markup inputs are read by quirewise-text and then flow through
+ * the Markdown/document pipeline; Man pages become HTML instead. */
+static int qw_markup_supported(const char *extension)
+{
+    static const char *const extensions[] = {
+        "adoc", "asciidoc", "org", "rst", "textile", "mediawiki", "wiki",
+        "typst", "tex", "latex", "man", "roff"
+    };
+    size_t index;
+    if (!extension) return 0;
+    for (index = 0u; index < sizeof(extensions) / sizeof(extensions[0]);
+         ++index) {
+        if (strcmp(extension, extensions[index]) == 0) return 1;
+    }
+    return 0;
+}
+
+static int qw_copy_bytes(char **out, size_t *out_size, const char *text,
+                         size_t size)
+{
+    char *copy;
+    if (!text || !size) return QW_STATUS_ERR_FORMAT;
+    copy = (char *)malloc(size);
+    if (!copy) return QW_STATUS_ERR_OUT_OF_MEMORY;
+    memcpy(copy, text, size);
+    *out = copy;
+    *out_size = size;
+    return QW_STATUS_OK;
+}
+
+static int qw_markup_to_document(const uint8_t *data, size_t size,
+                                 const char *extension, uint8_t **out_data,
+                                 size_t *out_size, char *out_extension,
+                                 size_t out_extension_capacity)
+{
+    int rc = QW_STATUS_ERR_UNSUPPORTED;
+
+    if (strcmp(extension, "adoc") == 0 ||
+        strcmp(extension, "asciidoc") == 0) {
+        QwAsciiDocDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_asciidoc_parse_markdown(data, size, &document) !=
+            QW_ASCIIDOC_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_asciidoc_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "org") == 0) {
+        QwOrgDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_org_parse_markdown(data, size, &document) != QW_ORG_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_org_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "rst") == 0) {
+        QwRstDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_rst_parse_markdown(data, size, &document) != QW_RST_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_rst_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "textile") == 0) {
+        QwTextileDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_textile_parse_markdown(data, size, &document) !=
+            QW_TEXTILE_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_textile_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "mediawiki") == 0 || strcmp(extension, "wiki") == 0) {
+        QwMediaWikiDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_mediawiki_parse_markdown(data, size, &document) !=
+            QW_MEDIAWIKI_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_mediawiki_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "typst") == 0) {
+        QwTypstDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_typst_parse_markdown(data, size, &document) != QW_TYPST_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_typst_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "tex") == 0 || strcmp(extension, "latex") == 0) {
+        QwLatexDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_latex_parse_markdown(data, size, &document) != QW_LATEX_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.markdown,
+                           document.markdown_size);
+        qw_latex_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "md");
+        return rc;
+    }
+    if (strcmp(extension, "man") == 0 || strcmp(extension, "roff") == 0) {
+        QwManDocument document;
+        memset(&document, 0, sizeof(document));
+        if (qw_man_parse_html(data, size, &document) != QW_MAN_OK)
+            return QW_STATUS_ERR_FORMAT;
+        rc = qw_copy_bytes((char **)out_data, out_size, document.html_utf8,
+                           document.html_size);
+        qw_man_document_free(&document);
+        snprintf(out_extension, out_extension_capacity, "html");
+        return rc;
+    }
+    return QW_STATUS_ERR_UNSUPPORTED;
+}
 int qw_convert_file_to_format(const char *input_path,
                               const char *output_path,
                               QwOutputFormat output_format,
@@ -435,6 +576,22 @@ int qw_convert_file_to_format(const char *input_path,
     if (rc != QW_STATUS_OK) return rc;
 
     qw_path_extension(input_path, extension, sizeof(extension));
+    if (qw_markup_supported(extension)) {
+        uint8_t *markup_output = NULL;
+        size_t markup_size = 0u;
+        char markup_extension[16] = {0};
+        int markup_status = qw_markup_to_document(
+            data, size, extension, &markup_output, &markup_size,
+            markup_extension, sizeof(markup_extension));
+        if (markup_status != QW_STATUS_OK) {
+            free(data);
+            return markup_status;
+        }
+        free(data);
+        data = markup_output;
+        size = markup_size;
+        snprintf(extension, sizeof(extension), "%s", markup_extension);
+    }
     if (strcmp(extension, "epub") == 0) reflow = 1;
 
     /* PDF inputs go through the memory dispatch first so that a user password
@@ -562,6 +719,22 @@ int qw_check_file(const char *input_path,
     }
     report->format = format;
     qw_path_extension(input_path, extension, sizeof(extension));
+    if (qw_markup_supported(extension)) {
+        uint8_t *markdown = NULL;
+        size_t markdown_size = 0u;
+        char markdown_extension[16] = {0};
+        int markup_status = qw_markup_to_document(
+            data, size, extension, &markdown, &markdown_size,
+            markdown_extension, sizeof(markdown_extension));
+        free(data);
+        if (markup_status != QW_STATUS_OK) return markup_status;
+        free(markdown);
+        report->format = QW_FORMAT_MARKDOWN;
+        snprintf(report->note, sizeof(report->note),
+                 "lightweight markup parsed to %s (%s input)",
+                 markdown_extension, extension);
+        return QW_STATUS_OK;
+    }
     if (strcmp(extension, "epub") == 0) reflow = 1;
 
     if (format == QW_FORMAT_PDF) {
