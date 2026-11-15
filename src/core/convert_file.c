@@ -563,9 +563,34 @@ int qw_convert_file_to_format(const char *input_path,
     char extension[16];
     int reflow = 0;
     int rc;
+    QwConvertOptions effective;
+    const QwConvertOptions *active_options;
+    QwMddDocument *owned_mdd = NULL;
 
     if (!input_path || !output_path) return QW_STATUS_ERR_INVALID_ARGUMENT;
     if (!options) options = &defaults;
+    effective = *options;
+    active_options = options;
+    if (effective.mdd_path && effective.mdd_path[0]) {
+        uint8_t *mdd_bytes = NULL;
+        size_t mdd_size = 0u;
+        QwMddStatus mdd_status;
+        rc = qw_read_input_file(effective.mdd_path, &mdd_bytes, &mdd_size,
+                                report);
+        if (rc != QW_STATUS_OK) return rc;
+        mdd_status = qw_mdd_parse(mdd_bytes, mdd_size, &owned_mdd, NULL, 0u);
+        free(mdd_bytes);
+        if (mdd_status != QW_MDD_OK || !owned_mdd) {
+            if (report)
+                snprintf(report->note, sizeof(report->note),
+                         "MDD resource file could not be parsed (status %d)",
+                         (int)mdd_status);
+            return QW_STATUS_ERR_FORMAT;
+        }
+        effective.mdd_resources = owned_mdd;
+        active_options = &effective;
+    }
+    options = active_options;
     if (!report) {
         memset(&local_report, 0, sizeof(local_report));
         report = &local_report;
@@ -613,11 +638,11 @@ int qw_convert_file_to_format(const char *input_path,
                                    &output,
                                    &output_size, report);
     } else if (output_format == QW_FORMAT_HTML) {
-        rc = qw_doc_convert_html_memory(data, size, extension, &output,
-                                        &output_size, report);
+        rc = qw_doc_convert_html_memory_with_options(
+            data, size, extension, options, &output, &output_size, report);
     } else if (output_format == QW_FORMAT_MARKDOWN) {
-        rc = qw_doc_convert_markdown_memory(data, size, extension, &output,
-                                            &output_size, report);
+        rc = qw_doc_convert_markdown_memory_with_options(
+            data, size, extension, options, &output, &output_size, report);
     } else if (output_format == QW_FORMAT_DOCX) {
         rc = qw_doc_convert_docx_memory(data, size, extension, &output,
                                         &output_size, report);
@@ -649,6 +674,7 @@ int qw_convert_file_to_format(const char *input_path,
     }
 finish:
     free(data);
+    if (owned_mdd) qw_mdd_document_free(owned_mdd);
     if (rc != QW_STATUS_OK) {
         free(output);
         return rc;

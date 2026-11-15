@@ -1231,6 +1231,7 @@ static int convert_mobi_to_pdf(const uint8_t *data, size_t size,
 }
 
 static int convert_mdx_to_pdf(const uint8_t *data, size_t size,
+                              const QwConvertOptions *options,
                               uint8_t **out_pdf, size_t *out_size,
                               QwConvertReport *report)
 {
@@ -1251,7 +1252,10 @@ static int convert_mdx_to_pdf(const uint8_t *data, size_t size,
         }
         return convert_map_standard_status((int)status);
     }
-    status = qw_mdx_document_html(document, &html, &html_size);
+    status = qw_mdx_document_html_with_resources(
+        document, options ? (const QwMddDocument *)options->mdd_resources
+                          : NULL,
+        &html, &html_size);
     if (status != QW_MDX_OK) {
         if (report) {
             snprintf(report->note, sizeof(report->note),
@@ -1411,7 +1415,8 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
         return status;
     }
     else if (qw_mdx_probe(data, size)) {
-        return convert_mdx_to_pdf(data, size, out_pdf, out_size, report);
+        return convert_mdx_to_pdf(data, size, options, out_pdf,
+                                  out_size, report);
     }
     else if (qw_mdd_probe(data, size)) {
         if (report) snprintf(report->note, sizeof(report->note),

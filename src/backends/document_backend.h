@@ -51,6 +51,14 @@ int qw_msg_probe(const uint8_t *data, size_t size);
 int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                    size_t *out_size, QwConvertReport *report);
 
+int qw_doc_convert_html_memory_with_options(
+    const uint8_t *data, size_t size, const char *input_extension,
+    const QwConvertOptions *options, uint8_t **out_html, size_t *out_size,
+    QwConvertReport *report);
+int qw_doc_convert_markdown_memory_with_options(
+    const uint8_t *data, size_t size, const char *input_extension,
+    const QwConvertOptions *options, uint8_t **out_markdown,
+    size_t *out_size, QwConvertReport *report);
 int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
                                const char *input_extension, uint8_t **out_html,
                                size_t *out_size, QwConvertReport *report);

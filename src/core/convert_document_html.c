@@ -677,7 +677,8 @@ static int html_from_mobi(const uint8_t *data, size_t size, uint8_t **out,
     return status;
 }
 
-static int html_from_mdx(const uint8_t *data, size_t size, uint8_t **out,
+static int html_from_mdx(const uint8_t *data, size_t size,
+                         const QwMddDocument *resources, uint8_t **out,
                          size_t *out_size, QwConvertReport *report)
 {
     QwMdxDocument *document = NULL;
@@ -691,7 +692,8 @@ static int html_from_mdx(const uint8_t *data, size_t size, uint8_t **out,
     if (status != 0 || !document)
         return html_fail(report, html_status_negative(status), "MDX parse",
                          error);
-    status = (int)qw_mdx_document_html(document, &html, &html_size);
+    status = (int)qw_mdx_document_html_with_resources(
+        document, resources, &html, &html_size);
     if (status != 0 || !html) {
         qw_mdx_document_free(document);
         return html_fail(report, html_status_negative(status), "MDX render",
@@ -954,11 +956,14 @@ static int html_from_zip(const uint8_t *data, size_t size,
                      "HTMLZ/EPUB/spreadsheet)");
 }
 
-int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
-                               const char *input_extension, uint8_t **out_html,
-                               size_t *out_size, QwConvertReport *report)
+int qw_doc_convert_html_memory_with_options(
+    const uint8_t *data, size_t size, const char *input_extension,
+    const QwConvertOptions *options, uint8_t **out_html, size_t *out_size,
+    QwConvertReport *report)
 {
     const char *extension = input_extension ? input_extension : "";
+    const QwMddDocument *mdd_resources =
+        options ? (const QwMddDocument *)options->mdd_resources : NULL;
 
     if (!out_html || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_html = NULL;
@@ -1034,7 +1039,8 @@ int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
         html_extension_is(extension, "mdown"))
         return html_from_markdown(data, size, out_html, out_size, report);
     if (html_extension_is(extension, "mdx"))
-        return html_from_mdx(data, size, out_html, out_size, report);
+        return html_from_mdx(data, size, mdd_resources, out_html,
+                             out_size, report);
     if (html_extension_is(extension, "mdd"))
         return html_fail(report, QW_STATUS_ERR_UNSUPPORTED, "layout HTML",
                          "MDD is a resource container; convert the companion "
@@ -1089,7 +1095,8 @@ int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
         html_contains(data, 1024u, "<html"))
         return html_copy_bytes(data, size, out_html, out_size);
     if (qw_mdx_probe(data, size))
-        return html_from_mdx(data, size, out_html, out_size, report);
+        return html_from_mdx(data, size, mdd_resources, out_html,
+                             out_size, report);
     if (qw_mobi_probe(data, size))
         return html_from_mobi(data, size, out_html, out_size, report);
 
@@ -1098,10 +1105,18 @@ int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
                      "extension");
 }
 
-int qw_doc_convert_markdown_memory(const uint8_t *data, size_t size,
-                                   const char *input_extension,
-                                   uint8_t **out_markdown, size_t *out_size,
-                                   QwConvertReport *report)
+int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
+                               const char *input_extension, uint8_t **out_html,
+                               size_t *out_size, QwConvertReport *report)
+{
+    return qw_doc_convert_html_memory_with_options(
+        data, size, input_extension, NULL, out_html, out_size, report);
+}
+
+int qw_doc_convert_markdown_memory_with_options(
+    const uint8_t *data, size_t size, const char *input_extension,
+    const QwConvertOptions *options, uint8_t **out_markdown,
+    size_t *out_size, QwConvertReport *report)
 {
     uint8_t *html = NULL;
     size_t html_size = 0u;
@@ -1111,8 +1126,8 @@ int qw_doc_convert_markdown_memory(const uint8_t *data, size_t size,
     if (!out_markdown || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_markdown = NULL;
     *out_size = 0u;
-    status = qw_doc_convert_html_memory(data, size, input_extension, &html,
-                                        &html_size, report);
+    status = qw_doc_convert_html_memory_with_options(
+        data, size, input_extension, options, &html, &html_size, report);
     if (status != QW_STATUS_OK) return status;
     memset(&converted, 0, sizeof(converted));
     status = (int)qw_markdown_from_html(html, html_size, &converted);
@@ -1138,4 +1153,13 @@ int qw_doc_convert_markdown_memory(const uint8_t *data, size_t size,
         }
     }
     return QW_STATUS_OK;
+}
+
+int qw_doc_convert_markdown_memory(const uint8_t *data, size_t size,
+                                   const char *input_extension,
+                                   uint8_t **out_markdown, size_t *out_size,
+                                   QwConvertReport *report)
+{
+    return qw_doc_convert_markdown_memory_with_options(
+        data, size, input_extension, NULL, out_markdown, out_size, report);
 }
