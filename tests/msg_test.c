@@ -73,7 +73,8 @@ int main(void)
         return 1;
     }
     if (!contains(html, html_size, "Outlook MSG sample") ||
-        !contains(html, html_size, "Second body line") ||
+        !contains(html, html_size, "Outlook HTML body") ||
+        contains(html, html_size, "Hello from an Outlook message") ||
         !contains(html, html_size, "Sample Sender") ||
         !contains(html, html_size, "note.txt") ||
         !contains(html, html_size, "Attachments")) {
@@ -100,7 +101,7 @@ int main(void)
         qw_pdf_extract_text(document, &text, &text_size, NULL) !=
             QW_STATUS_OK ||
         !text || !contains(text, text_size, "Outlook MSG sample") ||
-        !contains(text, text_size, "Second body line")) {
+        !contains(text, text_size, "Outlook HTML body")) {
         fputs("FAIL: MSG PDF text is missing the message body\n", stderr);
         qw_pdf_free(text);
         qw_pdf_close(document);

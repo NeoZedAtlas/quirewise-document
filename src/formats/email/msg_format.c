@@ -599,6 +599,66 @@ static int msg_append_attachments(const MsgCfb *cfb, QwTextBuffer *html,
     return 1;
 }
 
+
+/* MSG HTML bodies (10130102) are stored as raw 8-bit HTML; take the inner
+ * body when a full document is provided, and ignore UTF-16 looking payloads. */
+static int msg_html_body_payload(const uint8_t *data, size_t size,
+                                 const uint8_t **out, size_t *out_size)
+{
+    size_t end = size;
+    size_t i;
+    size_t start = 0u;
+    if (!data || !out || !out_size) return 0;
+    while (end > 0u && data[end - 1u] == 0u) --end;
+    if (end == 0u) return 0;
+    for (i = 0u; i + 1u < end && i < 512u; i += 2u) {
+        if (data[i] != 0u && data[i + 1u] == 0u) return 0;
+    }
+    for (i = 0u; i < end && i < 64u; ++i) {
+        if (data[i] == '<') break;
+    }
+    if (i >= end || i >= 64u) return 0;
+    start = i;
+    if (end - start >= 6u &&
+        (memcmp(data + start, "<html>", 6u) == 0 ||
+         memcmp(data + start, "<HTML>", 6u) == 0)) {
+        size_t body = start;
+        int found = 0;
+        for (; body + 5u < end; ++body) {
+            if ((data[body] == '<') &&
+                (data[body + 1u] == 'b' || data[body + 1u] == 'B') &&
+                (data[body + 2u] == 'o' || data[body + 2u] == 'O') &&
+                (data[body + 3u] == 'd' || data[body + 3u] == 'D') &&
+                (data[body + 4u] == 'y' || data[body + 4u] == 'Y')) {
+                found = 1;
+                break;
+            }
+        }
+        if (found) {
+            while (body < end && data[body] != '>') ++body;
+            if (body < end) ++body;
+            start = body;
+            {
+                size_t close = start;
+                for (; close + 7u <= end; ++close) {
+                    if (data[close] == '<' && data[close + 1u] == '/' &&
+                        (data[close + 2u] == 'b' || data[close + 2u] == 'B') &&
+                        (data[close + 3u] == 'o' || data[close + 3u] == 'O') &&
+                        (data[close + 4u] == 'd' || data[close + 4u] == 'D') &&
+                        (data[close + 5u] == 'y' || data[close + 5u] == 'Y')) {
+                        end = close;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (end <= start) return 0;
+    *out = data + start;
+    *out_size = end - start;
+    return 1;
+}
+
 static int msg_append_text_property(const MsgCfb *cfb, QwTextBuffer *html,
                                     const char *stream_name,
                                     const char *prefix, const char *suffix)
@@ -649,6 +709,7 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
     MsgCfb cfb;
     QwTextBuffer html = {0};
     int body_index;
+    int used_html_body = 0;
     uint8_t *body_raw = NULL;
     size_t body_size = 0u;
     char *body = NULL;
@@ -698,13 +759,43 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
         rc = QW_STATUS_ERR_OUT_OF_MEMORY;
         goto finish;
     }
+    {
+        int html_body_index = msg_find_stream(&cfb,
+                                              "__substg1.0_10130102");
+        uint8_t *html_body_raw = NULL;
+        size_t html_body_size = 0u;
+        const uint8_t *html_payload = NULL;
+        size_t html_payload_size = 0u;
+        int used_html = 0;
+        if (html_body_index >= 0)
+            html_body_raw = msg_read_stream(
+                &cfb, (size_t)html_body_index, &html_body_size);
+        if (html_body_raw &&
+            msg_html_body_payload(html_body_raw, html_body_size,
+                                  &html_payload, &html_payload_size)) {
+            if (!qw_text_buffer_append(&html, (const char *)html_payload,
+                                       html_payload_size)) {
+                free(html_body_raw);
+                rc = QW_STATUS_ERR_OUT_OF_MEMORY;
+                goto finish;
+            }
+            used_html = 1;
+        }
+        free(html_body_raw);
+        if (used_html) {
+            used_html_body = 1;
+            free(body);
+            body = NULL;
+        }
+    }
     body_index = msg_find_stream(&cfb, "__substg1.0_1000001F");
-    if (body_index >= 0)
+    if (!used_html_body && body_index >= 0)
         body_raw = msg_read_stream(&cfb, (size_t)body_index, &body_size);
-    if (body_raw)
+    if (!used_html_body && body_raw)
         (void)msg_utf16_to_utf8(body_raw, body_size, &body, &body_text_size);
     free(body_raw);
-    if (body && body_text_size > 0u) {
+    body_raw = NULL;
+    if (!used_html_body && body && body_text_size > 0u) {
         size_t cursor = 0u;
         while (cursor < body_text_size) {
             size_t start = cursor;
@@ -728,7 +819,9 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                 goto finish;
             }
         }
-    } else if (!qw_text_buffer_append(&html,
+    }
+    if (!used_html_body && !body &&
+        !qw_text_buffer_append(&html,
                    "<p class=\"empty\">[no text body]</p>",
                    strlen("<p class=\"empty\">[no text body]</p>"))) {
         rc = QW_STATUS_ERR_OUT_OF_MEMORY;
