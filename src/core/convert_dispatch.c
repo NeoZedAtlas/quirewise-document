@@ -272,6 +272,52 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                       strlen("<div style=\"page-break-before:always\"></div>"));
             }
             if (!ok) break;
+            if (paragraph.run_count) {
+                QwEpubRunView first;
+                memset(&first, 0, sizeof(first));
+                if (qw_epub_run_at(document, section_index, paragraph_index,
+                                   0u, &first) == QW_EPUB_OK &&
+                    (first.style_flags & QW_EPUB_STYLE_TABLE_ROW)) {
+                    int cell_open = 0;
+                    ok = epub_html_append(&html, &length, &capacity,
+                                          "<table><tr>",
+                                          strlen("<table><tr>"));
+                    for (run_index = 0u; ok && run_index < paragraph.run_count;
+                         ++run_index) {
+                        QwEpubRunView run;
+                        memset(&run, 0, sizeof(run));
+                        if (qw_epub_run_at(document, section_index,
+                                           paragraph_index, run_index,
+                                           &run) != QW_EPUB_OK) {
+                            ok = 0;
+                            break;
+                        }
+                        if (run.style_flags & QW_EPUB_STYLE_TABLE_CELL) {
+                            if (cell_open)
+                                ok = epub_html_append(&html, &length,
+                                                      &capacity, "</td>",
+                                                      strlen("</td>"));
+                            if (ok)
+                                ok = epub_html_append(&html, &length,
+                                                      &capacity, "<td>",
+                                                      strlen("<td>"));
+                            cell_open = 1;
+                        }
+                        if (ok && run.utf8_text && run.text_size)
+                            ok = epub_html_escape(&html, &length, &capacity,
+                                                  (const char *)run.utf8_text,
+                                                  run.text_size);
+                    }
+                    if (ok && cell_open)
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "</td>", strlen("</td>"));
+                    if (ok)
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "</tr></table>",
+                                              strlen("</tr></table>"));
+                    continue;
+                }
+            }
             if (paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "<h%u>",
                          paragraph.heading_level > 6u ? 6u

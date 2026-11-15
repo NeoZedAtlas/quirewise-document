@@ -147,7 +147,8 @@ static int check_structural_epub(void)
         return 2;
     }
     if (memcmp(pdf, "%PDF-", 5u) != 0 ||
-        !extract_first_chapter_text(pdf, pdf_size, "Only table | Second cell") ||
+        !extract_first_chapter_text(pdf, pdf_size, "Only table") ||
+        !extract_first_chapter_text(pdf, pdf_size, "Second cell") ||
         !extract_first_chapter_text(pdf, pdf_size, "First item") ||
         !extract_first_chapter_text(pdf, pdf_size, "Diagram alt")) {
         fputs("structural EPUB text missing\n", stderr);

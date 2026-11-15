@@ -408,7 +408,7 @@ static int pdf_is_space(unsigned char value)
 static int pdf_tag_is_block(const char *name, size_t length)
 {
     static const char *const block_tags[] = {
-        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "tr",
+        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "br", "tr", "td", "th",
         "table", "blockquote", "pre", "dt", "dd", "hr", "section", "article",
         "header", "footer", "figcaption", "caption", "ul", "ol"
     };
