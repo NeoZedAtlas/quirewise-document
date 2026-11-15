@@ -500,6 +500,45 @@ static const char *msg_image_mime(const char *name)
     return NULL;
 }
 
+
+static int msg_html_body_payload(const uint8_t *data, size_t size,
+                                 const uint8_t **out, size_t *out_size);
+
+static int msg_ascii_ci(const char *text, size_t size, const char *word)
+{
+    size_t i;
+    size_t word_size = strlen(word);
+    if (size != word_size) return 0;
+    for (i = 0u; i < size; ++i) {
+        unsigned char a = (unsigned char)text[i];
+        unsigned char b = (unsigned char)word[i];
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+/* 0 binary, 1 plain text, 2 HTML. */
+static int msg_text_attachment_kind(const char *name)
+{
+    const char *dot;
+    size_t length;
+    if (!name) return 0;
+    dot = strrchr(name, '.');
+    if (!dot) return 0;
+    length = strlen(dot);
+    if (msg_ascii_ci(dot, length, ".txt") ||
+        msg_ascii_ci(dot, length, ".log") ||
+        msg_ascii_ci(dot, length, ".csv") ||
+        msg_ascii_ci(dot, length, ".md"))
+        return 1;
+    if (msg_ascii_ci(dot, length, ".htm") ||
+        msg_ascii_ci(dot, length, ".html"))
+        return 2;
+    return 0;
+}
+
 static int msg_append_attachments(const MsgCfb *cfb, QwTextBuffer *html,
                                   size_t *out_count)
 {
@@ -569,7 +608,44 @@ static int msg_append_attachments(const MsgCfb *cfb, QwTextBuffer *html,
                 return 0;
             }
         }
-        if (!qw_text_buffer_append(html, " bytes)</li>", strlen(" bytes)</li>"))) {
+        if (!qw_text_buffer_append(html, " bytes)", strlen(" bytes)"))) {
+            free(name);
+            free(payload);
+            return 0;
+        }
+        {
+            int kind = payload ? msg_text_attachment_kind(name) : 0;
+            if (kind == 1 && payload_size > 0u &&
+                payload_size <= 256u * 1024u) {
+                if (!qw_text_buffer_append(html,
+                        "<pre class=\"attachment-body\">",
+                        strlen("<pre class=\"attachment-body\">")) ||
+                    !msg_html_escape(html, (const char *)payload,
+                                     payload_size) ||
+                    !qw_text_buffer_append(html, "</pre>", 6u)) {
+                    free(name);
+                    free(payload);
+                    return 0;
+                }
+            } else if (kind == 2 && payload_size > 0u &&
+                       payload_size <= 512u * 1024u) {
+                const uint8_t *inner = NULL;
+                size_t inner_size = 0u;
+                if (msg_html_body_payload(payload, payload_size, &inner,
+                                          &inner_size)) {
+                    if (!qw_text_buffer_append(html,
+                            "<div class=\"attachment-body\">", 29u) ||
+                        !qw_text_buffer_append(html,
+                            (const char *)inner, inner_size) ||
+                        !qw_text_buffer_append(html, "</div>", 6u)) {
+                        free(name);
+                        free(payload);
+                        return 0;
+                    }
+                }
+            }
+        }
+        if (!qw_text_buffer_append(html, "</li>", 5u)) {
             free(name);
             free(payload);
             return 0;

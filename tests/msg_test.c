@@ -77,6 +77,9 @@ int main(void)
         contains(html, html_size, "Hello from an Outlook message") ||
         !contains(html, html_size, "Sample Sender") ||
         !contains(html, html_size, "note.txt") ||
+        !contains(html, html_size, "MSG attachment payload") ||
+        !contains(html, html_size, "note.html") ||
+        !contains(html, html_size, "HTML attachment body") ||
         !contains(html, html_size, "Attachments")) {
         fputs("FAIL: MSG HTML is missing properties or attachments\n",
               stderr);
