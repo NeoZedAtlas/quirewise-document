@@ -80,12 +80,17 @@ int main(void)
     CHECK(read_be32(out + 16) > 0u && read_be32(out + 20) > 0u);
     qw_buffer_free(out);
 
-    /* JPEG needs an encoder this package does not ship: refuse with a note. */
+    /* JPEG renders page 1 and encodes a real SOI/EOI stream. */
     out = NULL;
     out_size = 0u;
     rc = qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_JPG, NULL, &out,
                                      &out_size, &report);
-    CHECK(rc == QW_STATUS_ERR_UNSUPPORTED && out == NULL);
+    CHECK(rc == QW_STATUS_OK && out && out_size > 4u);
+    CHECK(out[0] == 0xffu && out[1] == 0xd8u);
+    CHECK(out[out_size - 2u] == 0xffu && out[out_size - 1u] == 0xd9u);
+    free(out);
+    out = NULL;
+    out_size = 0u;
 
     /* Non-PDF input: PDF output still works through the layout converter. */
     out = NULL;

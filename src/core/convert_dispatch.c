@@ -21,6 +21,7 @@
  * No MuPDF code is involved. */
 
 #include <quirewise/convert.h>
+#include <quirewise/image.h>
 #include <quirewise/pdf.h>
 #include <quirewise/email.h>
 #include <quirewise/hwpx.h>
@@ -1589,6 +1590,77 @@ static int pdf_route_to_png(const uint8_t *data, size_t size,
     return rc;
 }
 
+static int pdf_image_status(int status)
+{
+    switch (status) {
+    case QW_IMAGE_ERR_UNSUPPORTED: return QW_STATUS_ERR_UNSUPPORTED;
+    case QW_IMAGE_ERR_RESOURCE_LIMIT: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    case QW_IMAGE_ERR_OUT_OF_MEMORY: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
+}
+
+static int pdf_route_to_image(const uint8_t *data, size_t size,
+                              QwImageEncodeFormat target, const char *label,
+                              uint8_t **out_data, size_t *out_size,
+                              QwConvertReport *report)
+{
+    QwPdfDocument *document = NULL;
+    size_t pages = 0u;
+    QwPageImage page;
+    QwImage image;
+    QwImage decoded;
+    const QwImage *source = &image;
+    int decoded_ready = 0;
+    int rc;
+
+    memset(&page, 0, sizeof(page));
+    memset(&image, 0, sizeof(image));
+    memset(&decoded, 0, sizeof(decoded));
+    rc = qw_pdf_open(data, size, &document, &pages, report);
+    if (rc != QW_STATUS_OK) return rc;
+    rc = qw_pdf_render_page(document, 0u, QW_PDF_ROUTE_DPI, &page, report);
+    if (rc == QW_STATUS_OK) {
+        if (page.kind == QW_PAGE_IMAGE_RGB24 && page.data) {
+            image.pixels = (uint8_t *)(uintptr_t)page.data;
+            image.size = page.size;
+            image.stride = (size_t)page.width * 3u;
+            image.width = page.width;
+            image.height = page.height;
+            image.format = QW_IMAGE_PIXEL_RGB24;
+        } else if (page.data && page.size &&
+                   qw_image_decode(page.data, page.size, &decoded) ==
+                       QW_IMAGE_OK) {
+            source = &decoded;
+            decoded_ready = 1;
+        } else {
+            rc = QW_STATUS_ERR_FORMAT;
+        }
+    }
+    if (rc == QW_STATUS_OK) {
+        uint8_t *encoded = NULL;
+        size_t encoded_size = 0u;
+        int encode = qw_image_encode(source, target, &encoded, &encoded_size);
+        if (encode == QW_IMAGE_OK) {
+            *out_data = encoded;
+            *out_size = encoded_size;
+        } else {
+            rc = pdf_image_status(encode);
+        }
+    }
+    if (decoded_ready) qw_image_free(&decoded);
+    qw_pdf_page_free(&page);
+    qw_pdf_close(document);
+    if (rc == QW_STATUS_OK && report) {
+        report->pages_written = 1u;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "%s output rendered the first of %zu page(s) at %u dpi "
+                 "(QW_ROUTE_LOSS_RASTERIZATION)",
+                 label, pages, (unsigned)QW_PDF_ROUTE_DPI);
+    }
+    return rc;
+}
 int qw_convert_to_format_memory(const void *data, size_t size,
                                 QwOutputFormat output_format,
                                 const QwConvertOptions *options,
@@ -1623,12 +1695,23 @@ int qw_convert_to_format_memory(const void *data, size_t size,
             return qw_doc_office_epub_from_pdf(bytes, size, out_data,
                                                out_size, report);
         case QW_FORMAT_JPG:
-            if (report) {
-                snprintf(report->note, sizeof(report->note),
-                         "JPEG output needs an encoder this package does not "
-                         "ship; request PNG or TXT instead");
-            }
-            return QW_STATUS_ERR_UNSUPPORTED;
+            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_JPEG,
+                                      "JPEG", out_data, out_size, report);
+        case QW_FORMAT_BMP:
+            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_BMP, "BMP",
+                                      out_data, out_size, report);
+        case QW_FORMAT_TIFF:
+            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_TIFF,
+                                      "TIFF", out_data, out_size, report);
+        case QW_FORMAT_WEBP:
+            return pdf_route_to_image(bytes, size, QW_IMAGE_ENCODE_WEBP,
+                                      "WebP", out_data, out_size, report);
+        case QW_FORMAT_HTML:
+            return qw_doc_convert_html_memory(bytes, size, NULL, out_data,
+                                              out_size, report);
+        case QW_FORMAT_MARKDOWN:
+            return qw_doc_convert_markdown_memory(bytes, size, NULL, out_data,
+                                                  out_size, report);
         default:
             if (report) {
                 snprintf(report->note, sizeof(report->note),
@@ -1663,6 +1746,10 @@ int qw_convert_to_format_memory(const void *data, size_t size,
     }
     if (output_format == QW_FORMAT_TXTZ) {
         return qw_doc_convert_txtz_memory(bytes, size, NULL, out_data,
+                                          out_size, report);
+    }
+    if (output_format == QW_FORMAT_PMLZ) {
+        return qw_doc_convert_pmlz_memory(bytes, size, NULL, out_data,
                                           out_size, report);
     }
     if (output_format == QW_FORMAT_HWPX) {

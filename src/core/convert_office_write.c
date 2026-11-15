@@ -1000,11 +1000,15 @@ int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
     return QW_STATUS_OK;
 }
 
-int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
-                               const char *input_extension,
-                               uint8_t **out_data, size_t *out_size,
-                               QwConvertReport *report)
+int qw_doc_convert_text_archive_memory(QwTextArchiveKind kind,
+                                           const uint8_t *data, size_t size,
+                                           const char *input_extension,
+                                           uint8_t **out_data,
+                                           size_t *out_size,
+                                           QwConvertReport *report)
 {
+    const char *label = kind == QW_TEXT_ARCHIVE_PMLZ ? "PMLZ" : "TXTZ";
+    const char *member = kind == QW_TEXT_ARCHIVE_PMLZ ? "index.pml" : "index.txt";
     uint8_t *html = NULL;
     size_t html_size = 0u;
     OfficeBuffer text;
@@ -1019,26 +1023,29 @@ int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
     memset(&text, 0, sizeof(text));
     if (!office_html_to_text(html, html_size, &text)) {
         free(html);
-        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "TXTZ text",
-                           "out of memory");
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                           "text archive", "out of memory");
     }
     free(html);
     if (!text.size) {
         free(text.data);
-        return office_fail(report, QW_STATUS_ERR_FORMAT, "TXTZ text",
+        return office_fail(report, QW_STATUS_ERR_FORMAT, "text archive",
                            "the input has no extractable text");
     }
-    status = office_negative_status((int)qw_text_archive_create(
-        QW_TEXT_ARCHIVE_TXTZ, text.data, text.size, out_data, out_size));
+    status = office_negative_status(
+        (int)qw_text_archive_create(kind, text.data, text.size, out_data,
+                                    out_size));
     free(text.data);
     if (status != QW_STATUS_OK)
-        return office_fail(report, status, "TXTZ write", "");
+        return office_fail(report, status, "text archive write", "");
     if (report) {
-        report->output_format = QW_FORMAT_TXTZ;
+        report->output_format = kind == QW_TEXT_ARCHIVE_PMLZ ? QW_FORMAT_PMLZ
+                                                              : QW_FORMAT_TXTZ;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
-                 "TXTZ archive with index.txt (text extracted from the HTML "
-                 "intermediate)");
+                 "%s archive with %s (text extracted from the HTML "
+                 "intermediate)",
+                 label, member);
     }
     return QW_STATUS_OK;
 }
@@ -1070,4 +1077,23 @@ int qw_doc_convert_hwpx_memory(const uint8_t *data, size_t size,
                  "minimal HWPX package with one OWPML section");
     }
     return QW_STATUS_OK;
+}
+int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report)
+{
+    return qw_doc_convert_text_archive_memory(QW_TEXT_ARCHIVE_TXTZ, data, size,
+                                              input_extension, out_data,
+                                              out_size, report);
+}
+
+int qw_doc_convert_pmlz_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report)
+{
+    return qw_doc_convert_text_archive_memory(QW_TEXT_ARCHIVE_PMLZ, data, size,
+                                              input_extension, out_data,
+                                              out_size, report);
 }

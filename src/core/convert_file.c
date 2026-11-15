@@ -459,6 +459,9 @@ int qw_convert_file_to_format(const char *input_path,
     } else if (output_format == QW_FORMAT_TXTZ) {
         rc = qw_doc_convert_txtz_memory(data, size, extension, &output,
                                         &output_size, report);
+    } else if (output_format == QW_FORMAT_PMLZ) {
+        rc = qw_doc_convert_pmlz_memory(data, size, extension, &output,
+                                        &output_size, report);
     } else if (output_format == QW_FORMAT_HWPX) {
         rc = qw_doc_convert_hwpx_memory(data, size, extension, &output,
                                         &output_size, report);

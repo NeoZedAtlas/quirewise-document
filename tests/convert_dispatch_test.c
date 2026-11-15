@@ -83,6 +83,47 @@ int main(void)
         pdf_size = 0u;
     }
 
+    /* PDF raster targets beyond PNG, plus the text-backed HTML/Markdown
+     * memory routes. */
+    {
+        static const char html[] =
+            "<html><body><h1>PDF raster dispatch</h1><p>body</p></body></html>";
+        uint8_t *output = NULL;
+        size_t output_size = 0u;
+        int rc = qw_convert_to_pdf_memory(html, sizeof(html) - 1u, &options,
+                                          &pdf, &pdf_size, &report);
+        CHECK(rc == QW_STATUS_OK);
+        CHECK(is_pdf(pdf, pdf_size));
+        rc = qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_JPG,
+                                         &options, &output, &output_size,
+                                         &report);
+        CHECK(rc == QW_STATUS_OK);
+        CHECK(output && output_size > 2u && output[0] == 0xffu &&
+              output[1] == 0xd8u);
+        free(output);
+        output = NULL;
+        output_size = 0u;
+        rc = qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_HTML,
+                                         &options, &output, &output_size,
+                                         &report);
+        CHECK(rc == QW_STATUS_OK);
+        CHECK(output && strstr((const char *)output, "PDF raster dispatch") !=
+                            NULL);
+        qw_buffer_free(output);
+        output = NULL;
+        output_size = 0u;
+        rc = qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_MARKDOWN,
+                                         &options, &output, &output_size,
+                                         &report);
+        CHECK(rc == QW_STATUS_OK);
+        CHECK(output && strstr((const char *)output, "PDF raster dispatch") !=
+                            NULL);
+        qw_buffer_free(output);
+        free(pdf);
+        pdf = NULL;
+        pdf_size = 0u;
+    }
+
     /* EML is routed through the email reader and the layout writer. */
     {
         static const char eml[] =

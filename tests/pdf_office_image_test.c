@@ -53,6 +53,18 @@ int main(void)
         fail("cannot build the source PDF", &report);
     if (memcmp(pdf, "%PDF-", 5u) != 0) fail("source is not a PDF", &report);
 
+    {
+        uint8_t *jpeg = NULL;
+        size_t jpeg_size = 0u;
+        memset(&report, 0, sizeof(report));
+        if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_JPG, NULL,
+                                        &jpeg, &jpeg_size, &report) !=
+                QW_STATUS_OK ||
+            !jpeg || jpeg_size < 2u || jpeg[0] != 0xffu || jpeg[1] != 0xd8u)
+            fail("PDF to JPEG failed", &report);
+        free(jpeg);
+    }
+
     memset(&report, 0, sizeof(report));
     if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_DOCX, NULL, &docx,
                                     &docx_size, &report) != QW_STATUS_OK ||

@@ -4,6 +4,7 @@
 #include "quirewise/convert.h"
 #include "quirewise/document.h"
 #include "quirewise/image.h"
+#include "quirewise/text_archive.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -79,6 +80,15 @@ int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
                                 const char *input_extension,
                                 uint8_t **out_data, size_t *out_size,
                                 QwConvertReport *report);
+int qw_doc_convert_text_archive_memory(QwTextArchiveKind kind,
+                                       const uint8_t *data, size_t size,
+                                       const char *input_extension,
+                                       uint8_t **out_data, size_t *out_size,
+                                       QwConvertReport *report);
+int qw_doc_convert_pmlz_memory(const uint8_t *data, size_t size,
+                               const char *input_extension,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report);
 int qw_doc_convert_txtz_memory(const uint8_t *data, size_t size,
                                const char *input_extension,
                                uint8_t **out_data, size_t *out_size,
