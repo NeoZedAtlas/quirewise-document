@@ -1438,7 +1438,8 @@ static int docx_cell_properties(const uint8_t *xml,
                                 size_t content_offset,
                                 uint32_t *out_span,
                                 char out_fill[7],
-                                char out_vertical_align[7])
+                                char out_vertical_align[7],
+                                unsigned *out_vmerge)
 {
     size_t cursor = content_offset;
     size_t depth = 1u;
@@ -1450,6 +1451,7 @@ static int docx_cell_properties(const uint8_t *xml,
     *out_span = 1u;
     out_fill[0] = '\0';
     out_vertical_align[0] = '\0';
+    if (out_vmerge) *out_vmerge = 0u;
     next = docx_xml_next_tag(xml, xml_size, &cursor, &tag);
     if (next <= 0 || tag.closing ||
         !xml_local_name_is(xml + tag.name_start, tag.name_size, "tcPr")) {
@@ -1497,6 +1499,18 @@ static int docx_cell_properties(const uint8_t *xml,
                     out_fill[fill_size] = '\0';
                 }
             }
+        } else if (!tag.closing && depth == 1u &&
+                   xml_local_name_is(xml + tag.name_start, tag.name_size,
+                                     "vMerge")) {
+            const uint8_t *value = NULL;
+            size_t value_size = 0u;
+            unsigned state = 2u;
+            if (xml_attribute_value(xml, tag.name_start + tag.name_size,
+                                    tag.tag_end - 1u, "val", &value,
+                                    &value_size) &&
+                value_size == 7u && memcmp(value, "restart", 7u) == 0)
+                state = 1u;
+            if (out_vmerge) *out_vmerge = state;
         } else if (!tag.closing && depth == 1u &&
                    xml_local_name_is(xml + tag.name_start, tag.name_size,
                                      "vAlign")) {
@@ -1946,6 +1960,163 @@ static int docx_ensure_plain_paragraph(QwDocxHtml *html,
     return 1;
 }
 
+typedef struct DocxCellMergeInfo {
+    unsigned colspan;
+    unsigned rowspan;
+    int skip;
+} DocxCellMergeInfo;
+
+typedef struct DocxTableMergeInfo {
+    DocxCellMergeInfo *cells;
+    size_t count;
+    size_t capacity;
+} DocxTableMergeInfo;
+
+static int docx_table_merge_add(DocxTableMergeInfo *table,
+                                const DocxCellMergeInfo *cell,
+                                size_t *out_index)
+{
+    if (!table || !cell || !out_index) return 0;
+    if (table->count == table->capacity) {
+        size_t capacity = table->capacity ? table->capacity * 2u : 16u;
+        DocxCellMergeInfo *grown = (DocxCellMergeInfo *)realloc(
+            table->cells, capacity * sizeof(*grown));
+        if (!grown) return 0;
+        table->cells = grown;
+        table->capacity = capacity;
+    }
+    table->cells[table->count] = *cell;
+    *out_index = table->count;
+    ++table->count;
+    return 1;
+}
+
+/* Scan one table subtree once so vertical merges can be emitted as rowspan. */
+static int docx_table_analyze(const uint8_t *xml, size_t xml_size,
+                              size_t content_offset,
+                              DocxTableMergeInfo *out_table)
+{
+    size_t cursor = content_offset;
+    int depth = 0;
+    int in_row = 0;
+    int in_cell = 0;
+    unsigned colspan = 1u;
+    unsigned vmerge = 0u;
+    unsigned column = 0u;
+    size_t cell_index = (size_t)-1;
+    long restart_cells[64];
+    size_t i;
+    QwDocxXmlTag tag;
+    int next;
+
+    memset(out_table, 0, sizeof(*out_table));
+    for (i = 0u; i < 64u; ++i) restart_cells[i] = -1;
+    for (;;) {
+        next = docx_xml_next_tag(xml, xml_size, &cursor, &tag);
+        if (next <= 0) break;
+        if (!tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tbl")) {
+            if (depth == 0 && !in_cell) {
+                /* Nested table outside a cell: skip it wholesale. */
+            }
+            ++depth;
+            continue;
+        }
+        if (tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tbl")) {
+            if (depth == 0) break;
+            --depth;
+            continue;
+        }
+        if (depth > 0) continue;
+        if (!tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tr")) {
+            in_row = 1;
+            column = 0u;
+            continue;
+        }
+        if (tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tr")) {
+            in_row = 0;
+            continue;
+        }
+        if (!in_row) continue;
+        if (!tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tc")) {
+            DocxCellMergeInfo cell;
+            cell.colspan = 1u;
+            cell.rowspan = 1u;
+            cell.skip = 0;
+            if (!docx_table_merge_add(out_table, &cell, &cell_index))
+                return 0;
+            in_cell = 1;
+            colspan = 1u;
+            vmerge = 0u;
+            continue;
+        }
+        if (tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size, "tc")) {
+            if (in_cell && cell_index != (size_t)-1) {
+                unsigned span = colspan ? colspan : 1u;
+                unsigned c;
+                if (span > 64u) span = 64u;
+                if (vmerge == 1u) {
+                    for (c = column; c < column + span && c < 64u; ++c)
+                        restart_cells[c] = (long)cell_index;
+                } else if (vmerge == 2u) {
+                    long incremented = -1;
+                    for (c = column; c < column + span && c < 64u; ++c) {
+                        long restart = restart_cells[c];
+                        if (restart < 0) continue;
+                        out_table->cells[cell_index].skip = 1;
+                        if (restart != incremented) {
+                            out_table->cells[restart].rowspan += 1u;
+                            incremented = restart;
+                        }
+                    }
+                } else {
+                    for (c = column; c < column + span && c < 64u; ++c)
+                        restart_cells[c] = -1;
+                }
+                out_table->cells[cell_index].colspan = colspan ? colspan : 1u;
+                column += colspan ? colspan : 1u;
+            }
+            in_cell = 0;
+            cell_index = (size_t)-1;
+            continue;
+        }
+        if (!in_cell) continue;
+        if (!tag.closing &&
+            xml_local_name_is(xml + tag.name_start, tag.name_size,
+                              "gridSpan")) {
+            uint32_t span = 1u;
+            if (docx_get_attribute_u32(xml, &tag, "val", &span) &&
+                span > 0u && span <= 64u)
+                colspan = (unsigned)span;
+        } else if (!tag.closing &&
+                   xml_local_name_is(xml + tag.name_start, tag.name_size,
+                                     "vMerge")) {
+            const uint8_t *value = NULL;
+            size_t value_size = 0u;
+            unsigned state = 2u;
+            if (xml_attribute_value(xml, tag.name_start + tag.name_size,
+                                    tag.tag_end - 1u, "val", &value,
+                                    &value_size) &&
+                value_size == 7u && memcmp(value, "restart", 7u) == 0)
+                state = 1u;
+            vmerge = state;
+        }
+    }
+    return 1;
+}
+
+static void docx_table_merge_dispose(DocxTableMergeInfo *table)
+{
+    if (!table) return;
+    free(table->cells);
+    memset(table, 0, sizeof(*table));
+}
+
 static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                                      QwZipArchive *archive,
                                      const uint8_t *relationships,
@@ -1994,11 +2165,17 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
     const char *paragraph_alignment = NULL;
     uint32_t image_width_px = 0;
     size_t embedded_image_size = 0;
+    DocxTableMergeInfo table_merges[16];
+    unsigned char table_merge_tracked[16];
+    size_t table_merge_depth = 0u;
+    size_t table_merge_cell_index[16];
+    int cell_merge_skip = 0;
     QwDocxListState list = {0};
     int bold = 0;
     int italic = 0;
     int underline = 0;
     int strike = 0;
+    memset(table_merges, 0, sizeof(table_merges));
     if (!page_layout ||
         !html_append(html, prefix_start, sizeof(prefix_start) - 1u) ||
         !docx_append_page_rule(html, page_layout) ||
@@ -2400,31 +2577,81 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                                          name_end - name_start, "tbl")) {
                 if (!closing && !in_paragraph && !docx_close_list(html, &list)) return 0;
                 if (!html_literal(html, closing ? "</table>" : "<table>")) return 0;
+                if (closing) {
+                    if (table_merge_depth > 0u) {
+                        --table_merge_depth;
+                        if (table_merge_tracked[table_merge_depth])
+                            docx_table_merge_dispose(
+                                &table_merges[table_merge_depth]);
+                    }
+                } else if (table_merge_depth < 16u) {
+                    size_t slot = table_merge_depth;
+                    int tracked = 0;
+                    if (slot < 8u)
+                        tracked = docx_table_analyze(xml, xml_size, tag_end,
+                                                     &table_merges[slot]);
+                    table_merge_tracked[slot] = (unsigned char)tracked;
+                    table_merge_cell_index[slot] = 0u;
+                    ++table_merge_depth;
+                }
             } else if (xml_local_name_is(xml + name_start,
                                          name_end - name_start, "tr")) {
                 if (!html_literal(html, closing ? "</tr>" : "<tr>")) return 0;
             } else if (xml_local_name_is(xml + name_start,
                                          name_end - name_start, "tc")) {
                 if (closing) {
-                    if (!html_literal(html, "</td>")) return 0;
+                    if (!cell_merge_skip &&
+                        !html_literal(html, "</td>")) return 0;
+                    cell_merge_skip = 0;
                 } else {
                     uint32_t colspan = 1u;
+                    uint32_t rowspan = 1u;
+                    unsigned vmerge = 0u;
+                    (void)vmerge;
+                    int skip = 0;
                     char fill[7];
                     char vertical_align[7];
                     char style[80];
                     size_t style_size = 0;
                     if (!docx_cell_properties(xml, xml_size, tag_end,
                                               &colspan, fill,
-                                              vertical_align)) return 0;
-                    if (!html_literal(html, "<td")) return 0;
-                    if (colspan > 1u) {
-                        char attribute[40];
-                        int length = snprintf(attribute, sizeof(attribute),
-                                              " colspan=\"%lu\"",
-                                              (unsigned long)colspan);
-                        if (length < 0 || (size_t)length >= sizeof(attribute) ||
-                            !html_literal(html, attribute)) return 0;
+                                              vertical_align, &vmerge))
+                        return 0;
+                    if (table_merge_depth > 0u &&
+                        table_merge_tracked[table_merge_depth - 1u]) {
+                        DocxTableMergeInfo *table =
+                            &table_merges[table_merge_depth - 1u];
+                        size_t index =
+                            table_merge_cell_index[table_merge_depth - 1u]++;
+                        if (index < table->count) {
+                            colspan = table->cells[index].colspan
+                                          ? table->cells[index].colspan : 1u;
+                            rowspan = table->cells[index].rowspan
+                                          ? table->cells[index].rowspan : 1u;
+                            skip = table->cells[index].skip;
+                        }
                     }
+                    cell_merge_skip = skip;
+                    if (!skip) {
+                        if (!html_literal(html, "<td")) return 0;
+                        if (colspan > 1u) {
+                            char attribute[40];
+                            int length = snprintf(attribute, sizeof(attribute),
+                                                  " colspan=\"%lu\"",
+                                                  (unsigned long)colspan);
+                            if (length < 0 ||
+                                (size_t)length >= sizeof(attribute) ||
+                                !html_literal(html, attribute)) return 0;
+                        }
+                        if (rowspan > 1u) {
+                            char attribute[40];
+                            int length = snprintf(attribute, sizeof(attribute),
+                                                  " rowspan=\"%lu\"",
+                                                  (unsigned long)rowspan);
+                            if (length < 0 ||
+                                (size_t)length >= sizeof(attribute) ||
+                                !html_literal(html, attribute)) return 0;
+                        }
                     if (fill[0]) {
                         int length = snprintf(style, sizeof(style),
                                               "background-color:#%s", fill);
@@ -2446,7 +2673,8 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                             !html_append(html, style, style_size) ||
                             !html_literal(html, "\"")) return 0;
                     }
-                    if (!html_literal(html, ">")) return 0;
+                        if (!html_literal(html, ">")) return 0;
+                    }
                 }
             } else if (!closing && xml_local_name_is(xml + name_start,
                                                      name_end - name_start, "tab")) {
