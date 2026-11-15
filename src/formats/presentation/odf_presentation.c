@@ -472,6 +472,42 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
     return 1;
 }
 
+
+static int odp_has_text_node(QwXmlNode *node)
+{
+    for (; node; node = qw_xml_next(node)) {
+        const char *text = qw_xml_text(node);
+        if (text) {
+            while (*text == ' ' || *text == '\t' || *text == '\r' ||
+                   *text == '\n')
+                ++text;
+            if (*text) return 1;
+        }
+        if (odp_has_text_node(qw_xml_down(node))) return 1;
+    }
+    return 0;
+}
+
+/* draw:page carries its speaker notes in a presentation:notes child; the main
+ * block renderer skips that subtree, so render it explicitly. */
+static int odp_render_notes(OdpReader *reader, QwXmlNode *slide)
+{
+    QwXmlNode *node;
+    QwXmlNode *notes = NULL;
+
+    for (node = qw_xml_down(slide); node; node = qw_xml_next(node)) {
+        if (odp_is_tag(node, "notes")) {
+            notes = node;
+            break;
+        }
+    }
+    if (!notes || !odp_has_text_node(qw_xml_down(notes))) return 1;
+    if (!odp_html_literal(reader, "<section class=\"notes\"><h3>Notes</h3>") ||
+        !odp_render_blocks(reader, qw_xml_down(notes), 0u) ||
+        !odp_html_literal(reader, "</section>"))
+        return 0;
+    return 1;
+}
 static int odp_render_slide(OdpReader *reader, QwXmlNode *slide)
 {
     const char *name = qw_xml_att(slide, "draw:name");
@@ -489,9 +525,12 @@ static int odp_render_slide(OdpReader *reader, QwXmlNode *slide)
                           !odp_html_escape(reader, name))) return 0;
     if (!odp_html_literal(reader, "</h2></header><div class=\"slide-content\">"))
         return 0;
-    if (!odp_render_blocks(reader, qw_xml_down(slide), 0u))
+    if (!odp_render_blocks(reader, qw_xml_down(slide), 0u) ||
+        !odp_html_literal(reader, "</div>") ||
+        !odp_render_notes(reader, slide) ||
+        !odp_html_literal(reader, "</section>"))
         return 0;
-    return odp_html_literal(reader, "</div></section>");
+    return 1;
 }
 
 static void odp_set_error(char *error, size_t error_capacity,

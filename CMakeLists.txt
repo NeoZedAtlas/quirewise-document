@@ -341,7 +341,17 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_markup_export_test
+    add_executable(quirewise_document_odp_notes_test
+    tests/odp_notes_test.c)
+target_compile_features(quirewise_document_odp_notes_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_odp_notes_test PRIVATE
+    QUIREWISE_ODP_NOTES_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/notes-slide.odp")
+target_link_libraries(quirewise_document_odp_notes_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_odp_notes
+    COMMAND quirewise_document_odp_notes_test)
+
+add_executable(quirewise_document_markup_export_test
     tests/markup_export_test.c)
 target_compile_features(quirewise_document_markup_export_test PRIVATE c_std_11)
 target_link_libraries(quirewise_document_markup_export_test PRIVATE
