@@ -65,6 +65,13 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                                const char *input_extension, uint8_t **out_data,
                                size_t *out_size, QwConvertReport *report);
 
+/* Raster re-encoding: decoded PNG/BMP/TIFF/JPEG/WebP input to an encodable
+ * target. The image package currently writes PNG/BMP/TIFF. */
+int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
+                                QwOutputFormat output_format,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report);
+
 int qw_doc_convert_memory(const uint8_t *data,
                             size_t size,
                             const char *input_extension,

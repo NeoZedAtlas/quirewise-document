@@ -1651,6 +1651,11 @@ int qw_convert_to_format_memory(const void *data, size_t size,
         return qw_doc_convert_epub_memory(bytes, size, NULL, out_data,
                                           out_size, report);
     }
+    if (qw_image_probe(bytes, size)) {
+        int image_status = qw_doc_convert_image_memory(
+            bytes, size, output_format, out_data, out_size, report);
+        if (image_status != QW_STATUS_ERR_UNSUPPORTED) return image_status;
+    }
     if (output_format == QW_FORMAT_HTML) {
         int html_status = qw_doc_convert_html_memory(
             bytes, size, NULL, out_data, out_size, report);
