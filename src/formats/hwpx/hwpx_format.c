@@ -4,6 +4,7 @@
 #include "../archive/archive_detect.h"
 #endif
 #include "quirewise/hwpx.h"
+#include "quirewise/image.h"
 #include "quirewise/xml.h"
 #include "../archive/zip_native.h"
 
@@ -43,6 +44,14 @@ typedef struct HwpxManifestItem {
     char href[1024];
     int is_section;
 } HwpxManifestItem;
+
+typedef struct HwpxRenderContext {
+    QwZipArchive *zip;
+    const HwpxManifestItem *items;
+    size_t item_count;
+    size_t image_count;
+    size_t image_bytes;
+} HwpxRenderContext;
 
 static int hwpx_html_append(HwpxHtml *html, const char *data, size_t size)
 {
@@ -234,8 +243,37 @@ static QwXmlNode *hwpx_find_descendant(QwXmlNode *node, const char *local_name,
     return NULL;
 }
 
+static int hwpx_html_base64(HwpxHtml *html, const uint8_t *data, size_t size)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char chunk[260];
+    size_t used = 0u;
+    size_t index;
+
+    for (index = 0u; index < size; index += 3u) {
+        uint32_t value = (uint32_t)data[index] << 16;
+        if (index + 1u < size) value |= (uint32_t)data[index + 1u] << 8;
+        if (index + 2u < size) value |= (uint32_t)data[index + 2u];
+        chunk[used++] = alphabet[(value >> 18) & 0x3fu];
+        chunk[used++] = alphabet[(value >> 12) & 0x3fu];
+        chunk[used++] = index + 1u < size
+                            ? alphabet[(value >> 6) & 0x3fu] : '=';
+        chunk[used++] = index + 2u < size ? alphabet[value & 0x3fu] : '=';
+        if (used >= 256u) {
+            if (!hwpx_html_append(html, chunk, used)) return 0;
+            used = 0u;
+        }
+    }
+    if (used && !hwpx_html_append(html, chunk, used)) return 0;
+    return 1;
+}
+
+static const HwpxManifestItem *hwpx_manifest_find(
+    const HwpxManifestItem *items, size_t count, const char *id);
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
-                             size_t *visited, size_t *omitted_objects)
+                             size_t *visited, size_t *omitted_objects,
+                             HwpxRenderContext *context)
 {
     if (depth > HWPX_MAX_XML_DEPTH || !visited || !omitted_objects) return 0;
     for (; node; node = qw_xml_next(node)) {
@@ -269,8 +307,89 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
         } else if (strcmp(tag, "tab") == 0) {
             if (!hwpx_html_literal(html, "&#9;")) return 0;
             continue;
-        } else if (strcmp(tag, "pic") == 0 ||
-                   strcmp(tag, "ole") == 0 ||
+        } else if (strcmp(tag, "pic") == 0) {
+            int rendered = 0;
+            if (context && context->zip && context->item_count) {
+                size_t search_nodes = 0u;
+                QwXmlNode *image = hwpx_find_descendant(
+                    qw_xml_down(node), "img", 0u, &search_nodes);
+                const char *reference =
+                    image ? qw_xml_att(image, "binaryItemIDRef") : NULL;
+                const HwpxManifestItem *item =
+                    hwpx_manifest_find(context->items, context->item_count,
+                                       reference);
+                if (item && item->href[0] &&
+                    context->image_count < 64u) {
+                    size_t entry_index = qw_zip_reader_locate_file(
+                        context->zip, item->href, NULL, QW_ZIP_CASE_SENSITIVE);
+                    QwZipEntryInfo stat;
+                    if (entry_index != (size_t)-1 &&
+                        qw_zip_reader_file_stat(context->zip, entry_index,
+                                                &stat) &&
+                        stat.uncompressed_size &&
+                        stat.uncompressed_size <= 8u * 1024u * 1024u &&
+                        stat.uncompressed_size <=
+                            32u * 1024u * 1024u - context->image_bytes &&
+                        qw_zip_reader_is_file_supported(context->zip,
+                                                        entry_index)) {
+                        size_t media_size = 0u;
+                        uint8_t *media = (uint8_t *)
+                            qw_zip_reader_extract_to_heap(context->zip,
+                                                          entry_index,
+                                                          &media_size, 0u);
+                        if (media && media_size == stat.uncompressed_size) {
+                            QwImage decoded;
+                            uint8_t *png = NULL;
+                            size_t png_size = 0u;
+                            memset(&decoded, 0, sizeof(decoded));
+                            if (qw_image_decode(media, media_size, &decoded) ==
+                                    QW_IMAGE_OK &&
+                                decoded.pixels &&
+                                qw_image_encode(&decoded, QW_IMAGE_ENCODE_PNG,
+                                                &png, &png_size) ==
+                                    QW_IMAGE_OK &&
+                                png && png_size) {
+                                unsigned width = decoded.width > 480u
+                                                     ? 480u : decoded.width;
+                                char width_text[16];
+                                int length;
+                                if (width < 8u) width = 8u;
+                                length = snprintf(width_text,
+                                                  sizeof(width_text), "%u",
+                                                  width);
+                                qw_image_free(&decoded);
+                                if (length > 0 &&
+                                    (size_t)length < sizeof(width_text) &&
+                                    hwpx_html_literal(
+                                        html, "<figure><img alt=\"hwp image\" "
+                                              "width=\"") &&
+                                    hwpx_html_append(html, width_text,
+                                                     (size_t)length) &&
+                                    hwpx_html_literal(
+                                        html, "\" src=\"data:image/png;base64,") &&
+                                    hwpx_html_base64(html, png, png_size) &&
+                                    hwpx_html_literal(html, "\"/></figure>")) {
+                                    context->image_count += 1u;
+                                    context->image_bytes += media_size;
+                                    rendered = 1;
+                                }
+                                free(png);
+                            } else {
+                                qw_image_free(&decoded);
+                            }
+                        }
+                        free(media);
+                    }
+                }
+            }
+            if (!rendered) {
+                ++*omitted_objects;
+                if (!hwpx_html_literal(
+                        html, "<span>[embedded object omitted]</span>"))
+                    return 0;
+            }
+            continue;
+        } else if (strcmp(tag, "ole") == 0 ||
                    strcmp(tag, "chart") == 0 ||
                    strcmp(tag, "equation") == 0) {
             ++*omitted_objects;
@@ -280,7 +399,7 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
         }
         if (open && !hwpx_html_literal(html, open)) return 0;
         if (!hwpx_render_nodes(html, qw_xml_down(node), depth + 1u,
-                               visited, omitted_objects)) return 0;
+                               visited, omitted_objects, context)) return 0;
         if (close && !hwpx_html_literal(html, close)) return 0;
     }
     return 1;
@@ -492,6 +611,11 @@ static QwHwpxStatus hwpx_parse_archive(
                            "HWPX HTML output exceeds the conversion limit");
             goto cleanup;
         }
+        HwpxRenderContext image_context;
+        memset(&image_context, 0, sizeof(image_context));
+        image_context.zip = &zip;
+        image_context.items = items;
+        image_context.item_count = item_count;
         for (QwXmlNode *ref = qw_xml_down(spine); ref; ref = qw_xml_next(ref)) {
             const HwpxManifestItem *item;
             const char *idref;
@@ -534,7 +658,8 @@ static QwHwpxStatus hwpx_parse_archive(
             section_root = qw_xml_root(section_xml);
             if (!section_root || !hwpx_html_literal(&owner->html, "<section>") ||
                 !hwpx_render_nodes(&owner->html, qw_xml_down(section_root),
-                                   0u, &visited, &omitted_objects) ||
+                                   0u, &visited, &omitted_objects,
+                                   &image_context) ||
                 !hwpx_html_literal(&owner->html, "</section>")) {
                 rc = QW_HWPX_ERR_RESOURCE_LIMIT;
                 hwpx_set_error(error, error_capacity,
@@ -612,7 +737,7 @@ static int hwpx_native_open_layout(const void *input, size_t size,
     out_document->dispose = hwpx_owner_dispose;
     if (report) {
         (void)snprintf(report->note, sizeof(report->note),
-            "HWPX OWPML spine order preserved across %zu section(s); paragraph text and simple tables mapped to layout HTML; styles, pagination, images, headers, footers and metadata are not preserved%s",
+            "HWPX OWPML spine order preserved across %zu section(s); paragraph text, simple tables and BinData images mapped to layout HTML; styles, pagination, headers, footers and metadata are not preserved%s",
             document->section_count, document->omitted_object_count
                 ? "; embedded objects omitted" : "");
     }
