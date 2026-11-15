@@ -579,6 +579,98 @@ static int odt_base64(const uint8_t *data, size_t size,
     return 1;
 }
 
+
+static const char *odt_binary_image_mime(const char *base64)
+{
+    if (!base64) return NULL;
+    if (strncmp(base64, "iVBORw0KGgo", 11u) == 0) return "image/png";
+    if (strncmp(base64, "/9j/", 4u) == 0) return "image/jpeg";
+    if (strncmp(base64, "R0lGOD", 6u) == 0) return "image/gif";
+    if (strncmp(base64, "Qk", 2u) == 0) return "image/bmp";
+    if (strncmp(base64, "UklGR", 5u) == 0) return "image/webp";
+    return NULL;
+}
+
+/* Flat ODT/FODT embeds images as office:binary-data base64 inside draw:image. */
+static int odt_render_flat_image(OdtRenderContext *context, QwXmlNode *node)
+{
+    QwXmlNode *child;
+    QwXmlNode *binary = NULL;
+    QwXmlNode *text_node;
+    char *raw;
+    size_t raw_size = 0u;
+    char *compact;
+    size_t compact_size = 0u;
+    size_t index;
+    const char *mime;
+
+    for (child = qw_xml_down(node); child; child = qw_xml_next(child)) {
+        const char *name = qw_xml_local_name(child);
+        if (name && strcmp(name, "binary-data") == 0) {
+            binary = child;
+            break;
+        }
+    }
+    if (!binary) return 0;
+    raw = NULL;
+    for (text_node = qw_xml_down(binary); text_node;
+         text_node = qw_xml_next(text_node)) {
+        const char *value = qw_xml_text(text_node);
+        size_t value_size;
+        char *grown;
+        if (!value) continue;
+        value_size = strlen(value);
+        if (value_size == 0u || value_size > ODT_IMAGE_LIMIT * 2u - raw_size) {
+            free(raw);
+            return 0;
+        }
+        grown = (char *)realloc(raw, raw_size + value_size + 1u);
+        if (!grown) {
+            free(raw);
+            return 0;
+        }
+        raw = grown;
+        memcpy(raw + raw_size, value, value_size);
+        raw_size += value_size;
+        raw[raw_size] = '\0';
+    }
+    if (!raw || raw_size == 0u ||
+        raw_size > ODT_IMAGE_TOTAL_LIMIT - context->embedded_image_bytes) {
+        free(raw);
+        return 0;
+    }
+    compact = (char *)malloc(raw_size + 1u);
+    if (!compact) {
+        free(raw);
+        return 0;
+    }
+    for (index = 0u; index < raw_size; ++index) {
+        char value = raw[index];
+        if (value == ' ' || value == '\t' || value == '\r' ||
+            value == '\n')
+            continue;
+        compact[compact_size++] = value;
+    }
+    compact[compact_size] = '\0';
+    free(raw);
+    mime = odt_binary_image_mime(compact);
+    if (!mime || compact_size == 0u) {
+        free(compact);
+        return 0;
+    }
+    if (!odt_html_literal(context->html, "<img src=\"data:") ||
+        !odt_html_literal(context->html, mime) ||
+        !odt_html_literal(context->html, ";base64,") ||
+        !odt_html_append(context->html, compact, compact_size) ||
+        !odt_html_literal(context->html, "\" alt=\"\"/>")) {
+        free(compact);
+        return 0;
+    }
+    context->embedded_image_bytes += compact_size;
+    free(compact);
+    return 1;
+}
+
 static int odt_render_image(OdtRenderContext *context, QwXmlNode *node)
 {
     char path[2048];
@@ -591,7 +683,8 @@ static int odt_render_image(OdtRenderContext *context, QwXmlNode *node)
     char *encoded = NULL;
     size_t encoded_size = 0;
     int ok;
-    if (!context->zip) {
+    if (!context->zip || !href) {
+        if (odt_render_flat_image(context, node)) return 1;
         ++context->skipped_images;
         return 1;
     }
