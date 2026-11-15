@@ -14,8 +14,11 @@
 #include <quirewise/subtitle.h>
 
 #include "../backends/document_backend.h"
+#include "text_buffer.h"
 
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int family_name_is(const char *extension, const char *name)
@@ -351,6 +354,232 @@ static int family_convert_spreadsheet(const uint8_t *data, size_t size,
     return rc;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* Markdown-source exports: IPYNB notebook and OPML outline.          */
+/* ------------------------------------------------------------------ */
+
+static int family_export_json_escape(QwTextBuffer *output, const char *text,
+                                     size_t size)
+{
+    size_t index;
+    for (index = 0u; index < size; ++index) {
+        unsigned char value = (unsigned char)text[index];
+        char escaped[8];
+        size_t length = 0u;
+        switch (value) {
+        case '"': memcpy(escaped, "\\\"", 2u); length = 2u; break;
+        case '\\': memcpy(escaped, "\\\\", 2u); length = 2u; break;
+        case '\n': memcpy(escaped, "\\n", 2u); length = 2u; break;
+        case '\r': memcpy(escaped, "\\r", 2u); length = 2u; break;
+        case '\t': memcpy(escaped, "\\t", 2u); length = 2u; break;
+        default:
+            if (value < 0x20u) {
+                int written = snprintf(escaped, sizeof(escaped), "\\u%04x",
+                                       (unsigned)value);
+                if (written <= 0) return 0;
+                length = (size_t)written;
+            } else {
+                escaped[0] = (char)value;
+                length = 1u;
+            }
+            break;
+        }
+        if (!qw_text_buffer_append(output, escaped, length)) return 0;
+    }
+    return 1;
+}
+
+static int family_export_xml_escape(QwTextBuffer *output, const char *text,
+                                    size_t size)
+{
+    size_t index;
+    for (index = 0u; index < size; ++index) {
+        const char *entity = NULL;
+        switch (text[index]) {
+        case '&': entity = "&amp;"; break;
+        case '<': entity = "&lt;"; break;
+        case '>': entity = "&gt;"; break;
+        case '"': entity = "&quot;"; break;
+        case '\'': entity = "&apos;"; break;
+        default: break;
+        }
+        if (entity) {
+            if (!qw_text_buffer_append(output, entity, strlen(entity)))
+                return 0;
+        } else if (!qw_text_buffer_append(output, text + index, 1u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int family_export_ipynb(const uint8_t *data, size_t size,
+                               uint8_t **out_data, size_t *out_size,
+                               QwConvertReport *report)
+{
+    QwTextBuffer output = {0};
+    size_t cursor = 0u;
+    int first = 1;
+
+    output.limit = 128u * 1024u * 1024u;
+    if (memchr(data, 0, size) != NULL)
+        return QW_STATUS_ERR_FORMAT;
+    if (size >= 3u && data[0] == 0xefu && data[1] == 0xbbu &&
+        data[2] == 0xbfu) {
+        data += 3;
+        size -= 3u;
+    }
+    if (!qw_text_buffer_append(
+            &output,
+            "{\"cells\":[{\"cell_type\":\"markdown\",\"metadata\":{},"
+            "\"source\":[",
+            strlen("{\"cells\":[{\"cell_type\":\"markdown\",\"metadata\":{},"
+                   "\"source\":["))) {
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    while (cursor < size) {
+        size_t start = cursor;
+        size_t end;
+        while (cursor < size && data[cursor] != '\n') ++cursor;
+        end = cursor;
+        if (cursor < size) ++cursor; /* keep the newline with the line */
+        if (!first && !qw_text_buffer_append(&output, ",", 1u)) {
+            free(output.data);
+            return QW_STATUS_ERR_OUT_OF_MEMORY;
+        }
+        first = 0;
+        if (!qw_text_buffer_append(&output, "\"", 1u) ||
+            !family_export_json_escape(&output, (const char *)data + start,
+                                       end - start) ||
+            (cursor > end && !qw_text_buffer_append(&output, "\\n", 2u)) ||
+            !qw_text_buffer_append(&output, "\"", 1u)) {
+            free(output.data);
+            return QW_STATUS_ERR_OUT_OF_MEMORY;
+        }
+    }
+    if (!qw_text_buffer_append(
+            &output,
+            "]}],\"metadata\":{\"language_info\":{\"name\":\"markdown\"}},"
+            "\"nbformat\":4,\"nbformat_minor\":5}",
+            strlen("]}],\"metadata\":{\"language_info\":{\"name\":\"markdown\"}},"
+                   "\"nbformat\":4,\"nbformat_minor\":5}"))) {
+        free(output.data);
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    *out_data = (uint8_t *)output.data;
+    *out_size = output.size;
+    if (report) {
+        snprintf(report->note, sizeof(report->note),
+                 "IPYNB output: Markdown source written as one markdown "
+                 "cell (nbformat 4.5)");
+        report->format = QW_FORMAT_IPYNB;
+    }
+    return QW_STATUS_OK;
+}
+
+static int family_export_opml(const uint8_t *data, size_t size,
+                              uint8_t **out_data, size_t *out_size,
+                              QwConvertReport *report)
+{
+    QwTextBuffer output = {0};
+    size_t cursor = 0u;
+    unsigned open_levels[8];
+    size_t depth = 0u;
+    size_t outline_count = 0u;
+
+    output.limit = 128u * 1024u * 1024u;
+    if (memchr(data, 0, size) != NULL)
+        return QW_STATUS_ERR_FORMAT;
+    if (size >= 3u && data[0] == 0xefu && data[1] == 0xbbu &&
+        data[2] == 0xbfu) {
+        data += 3;
+        size -= 3u;
+    }
+    if (!qw_text_buffer_append(
+            &output,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+            "<opml version=\"2.0\">\n<head><title>Quirewise outline</title>"
+            "</head>\n<body>\n",
+            strlen("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                   "<opml version=\"2.0\">\n<head><title>Quirewise outline</title>"
+                   "</head>\n<body>\n"))) {
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    while (cursor < size) {
+        size_t start = cursor;
+        size_t end;
+        unsigned level = 0u;
+        size_t text_start;
+        while (cursor < size && data[cursor] != '\n') ++cursor;
+        end = cursor;
+        if (cursor < size) ++cursor;
+        if (end > start && data[end - 1u] == '\r') --end;
+        text_start = start;
+        while (text_start < end && data[text_start] == '#') {
+            ++text_start;
+            ++level;
+        }
+        if (level == 1u || level > 6u) level = level > 6u ? 0u : 1u;
+        if (level && text_start < end && data[text_start] != ' ') level = 0u;
+        if (text_start < end && data[text_start] == ' ') ++text_start;
+        if (text_start >= end && !level) continue;
+        if (level) {
+            while (depth > 0u && open_levels[depth - 1u] >= level) {
+                if (!qw_text_buffer_append(&output, "</outline>\n", 11u)) {
+                    free(output.data);
+                    return QW_STATUS_ERR_OUT_OF_MEMORY;
+                }
+                --depth;
+            }
+            if (depth >= sizeof(open_levels) / sizeof(open_levels[0])) {
+                free(output.data);
+                return QW_STATUS_ERR_RESOURCE_LIMIT;
+            }
+            if (!qw_text_buffer_append(&output, "<outline text=\"", 15u) ||
+                !family_export_xml_escape(&output,
+                                          (const char *)data + text_start,
+                                          end - text_start) ||
+                !qw_text_buffer_append(&output, "\">\n", 3u)) {
+                free(output.data);
+                return QW_STATUS_ERR_OUT_OF_MEMORY;
+            }
+            open_levels[depth++] = level;
+        } else {
+            if (!qw_text_buffer_append(&output, "<outline text=\"", 15u) ||
+                !family_export_xml_escape(&output,
+                                          (const char *)data + text_start,
+                                          end - text_start) ||
+                !qw_text_buffer_append(&output, "\"/>\n", 4u)) {
+                free(output.data);
+                return QW_STATUS_ERR_OUT_OF_MEMORY;
+            }
+            ++outline_count;
+        }
+    }
+    while (depth > 0u) {
+        if (!qw_text_buffer_append(&output, "</outline>\n", 11u)) {
+            free(output.data);
+            return QW_STATUS_ERR_OUT_OF_MEMORY;
+        }
+        --depth;
+    }
+    if (!qw_text_buffer_append(&output, "</body>\n</opml>\n",
+                               strlen("</body>\n</opml>\n"))) {
+        free(output.data);
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    *out_data = (uint8_t *)output.data;
+    *out_size = output.size;
+    if (report) {
+        snprintf(report->note, sizeof(report->note),
+                 "OPML output: Markdown headings became nested outlines "
+                 "(%zu leaf outline(s))",
+                 outline_count);
+        report->format = QW_FORMAT_OPML;
+    }
+    return QW_STATUS_OK;
+}
 /* Non-PDF target dispatch: try the owning package's writer, then report a
  * precise unsupported pair. */
 int qw_doc_convert_family_to_format(const uint8_t *data, size_t size,
@@ -364,6 +593,12 @@ int qw_doc_convert_family_to_format(const uint8_t *data, size_t size,
     *out_data = NULL;
     *out_size = 0u;
     if (!data || !size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (output_format == QW_FORMAT_IPYNB) {
+        return family_export_ipynb(data, size, out_data, out_size, report);
+    }
+    if (output_format == QW_FORMAT_OPML) {
+        return family_export_opml(data, size, out_data, out_size, report);
+    }
     if (family_data_target(output_format))
         return family_convert_data(data, size, input_extension, output_format,
                                    options, out_data, out_size, report);
