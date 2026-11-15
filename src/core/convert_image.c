@@ -1,7 +1,7 @@
 /* Image re-encoding for the document conversion entry points.
  *
  * A decoded raster can be written back with the image package's encoders:
- * PNG, BMP, TIFF, JPEG and lossless WebP. PDF page rasterization stays in the
+ * PNG, BMP, TIFF, JPEG, lossless WebP, TGA, QOI, PPM and single-frame GIF. PDF page rasterization stays in the
  * PDF route and is not affected.
  */
 
@@ -21,6 +21,7 @@ static int image_target(QwOutputFormat target, QwImageEncodeFormat *out)
     case QW_FORMAT_TIFF: *out = QW_IMAGE_ENCODE_TIFF; return 1;
     case QW_FORMAT_JPG: *out = QW_IMAGE_ENCODE_JPEG; return 1;
     case QW_FORMAT_WEBP: *out = QW_IMAGE_ENCODE_WEBP; return 1;
+    case QW_FORMAT_GIF: *out = QW_IMAGE_ENCODE_GIF; return 1;
     case QW_FORMAT_TGA: *out = QW_IMAGE_ENCODE_TGA; return 1;
     case QW_FORMAT_QOI: *out = QW_IMAGE_ENCODE_QOI; return 1;
     case QW_FORMAT_PPM: *out = QW_IMAGE_ENCODE_PPM; return 1;
