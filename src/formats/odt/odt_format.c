@@ -812,6 +812,35 @@ static int odt_set_error(QwConvertReport *report, int code,
     return code;
 }
 
+
+static int odt_emit_header_footer(OdtRenderContext *render, QwXmlNode *node,
+                                  int want_header, size_t depth)
+{
+    if (depth > 128u) return 0;
+    for (; node; node = qw_xml_next(node)) {
+        const char *tag = qw_xml_tag(node);
+        if (tag) {
+            const char *colon = strrchr(tag, ':');
+            const char *name = colon ? colon + 1u : tag;
+            int is_header = strcmp(name, "header") == 0;
+            int is_footer = strcmp(name, "footer") == 0;
+            if ((is_header && want_header) || (is_footer && !want_header)) {
+                if (!odt_html_literal(render->html,
+                                      is_header
+                                          ? "<section class=\"odt-header\">"
+                                          : "<section class=\"odt-footer\">") ||
+                    !odt_render_nodes(render, qw_xml_down(node), depth + 1u) ||
+                    !odt_html_literal(render->html, "</section>"))
+                    return 0;
+                continue;
+            }
+        }
+        if (!odt_emit_header_footer(render, qw_xml_down(node), want_header,
+                                    depth + 1u))
+            return 0;
+    }
+    return 1;
+}
 static int odt_build_layout_html(const void *data, size_t size,
                                 QwInputFormat input_format,
                                 OdtHtml *out_html,
@@ -904,6 +933,7 @@ static int odt_build_layout_html(const void *data, size_t size,
             "table{border-collapse:collapse;width:100%}"
             "td{border:1px solid #888;padding:3pt;vertical-align:top}"
             "img{max-width:100%;height:auto}li{margin:2pt 0}"
+            ".odt-header,.odt-footer{color:#555;font-size:9pt}"
             "</style></head><body>")) {
         odt_set_error(report, QW_STATUS_ERR_DECODE,
                       "Could not allocate ODT HTML output");
@@ -914,11 +944,31 @@ static int odt_build_layout_html(const void *data, size_t size,
     render.zip = flat_xml ? NULL : &zip;
     render.html = &html;
     render.styles = &styles;
+    {
+        QwXmlNode *style_root = styles_xml ? qw_xml_root(styles_xml)
+                                           : qw_xml_root(content_xml);
+        if (!odt_emit_header_footer(&render, style_root, 1, 0u)) {
+            odt_set_error(report, QW_STATUS_ERR_DECODE,
+                          "ODT headers exceed conversion limits");
+            rc = QW_STATUS_ERR_DECODE;
+            goto cleanup;
+        }
+    }
     if (!odt_render_nodes(&render, qw_xml_down(office_text), 0u)) {
         odt_set_error(report, QW_STATUS_ERR_DECODE,
                       "ODT document exceeds conversion limits or could not be rendered");
         rc = QW_STATUS_ERR_DECODE;
         goto cleanup;
+    }
+    {
+        QwXmlNode *style_root = styles_xml ? qw_xml_root(styles_xml)
+                                           : qw_xml_root(content_xml);
+        if (!odt_emit_header_footer(&render, style_root, 0, 0u)) {
+            odt_set_error(report, QW_STATUS_ERR_DECODE,
+                          "ODT footers exceed conversion limits");
+            rc = QW_STATUS_ERR_DECODE;
+            goto cleanup;
+        }
     }
     if (!odt_html_literal(&html, "</body></html>")) {
         odt_set_error(report, QW_STATUS_ERR_DECODE,
