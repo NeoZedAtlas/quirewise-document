@@ -4,6 +4,8 @@
 #include "text_buffer.h"
 #ifndef QUIREWISE_STANDALONE_EMAIL_PARSER
 #include "writer_registry.h"
+
+#include <quirewise/image.h>
 #endif
 
 #include <ctype.h>
@@ -1147,6 +1149,85 @@ static int eml_append_metadata_row(QwTextBuffer *html,
     return ok;
 }
 
+
+static int eml_media_type_starts_with(const char *media_type,
+                                      const char *prefix)
+{
+    size_t i = 0u;
+    if (!media_type || !prefix) return 0;
+    while (prefix[i]) {
+        unsigned char left = (unsigned char)media_type[i];
+        unsigned char right = (unsigned char)prefix[i];
+        if (left >= 'A' && left <= 'Z') left = (unsigned char)(left + 32);
+        if (left != right) return 0;
+        ++i;
+    }
+    return 1;
+}
+
+static int eml_append_base64(QwTextBuffer *output, const uint8_t *data,
+                             size_t size);
+
+/* Text attachments are shown inline and images become PNG data URIs so the
+ * HTML/PDF routes can represent them; other payloads stay metadata-only. */
+static int eml_append_attachment_content(EmlOwner *owner, QwTextBuffer *html,
+                                         const QwAttachment *attachment)
+{
+    if (eml_media_type_starts_with(attachment->media_type, "text/")) {
+        size_t shown = attachment->size > 256u * 1024u
+                           ? 256u * 1024u : attachment->size;
+        if (!eml_append_literal(html, "<pre class=\"attachment-text\">") ||
+            !eml_append_html_escaped(html, (const char *)attachment->data,
+                                     shown) ||
+            !eml_append_literal(html, "</pre>"))
+            return 0;
+        return 1;
+    }
+    if (eml_media_type_starts_with(attachment->media_type, "image/") &&
+        attachment->size <= 8u * 1024u * 1024u) {
+        QwImage image;
+        uint8_t *png = NULL;
+        size_t png_size = 0u;
+        unsigned width;
+        char width_text[16];
+        int width_length;
+        memset(&image, 0, sizeof(image));
+        if (qw_image_decode(attachment->data, attachment->size, &image) !=
+                QW_IMAGE_OK ||
+            !image.pixels)
+            return 1; /* keep the metadata entry only */
+        if (qw_image_encode(&image, QW_IMAGE_ENCODE_PNG, &png, &png_size) !=
+                QW_IMAGE_OK ||
+            !png || !png_size) {
+            qw_image_free(&image);
+            free(png);
+            return 1;
+        }
+        width = image.width > 480u ? 480u : image.width;
+        if (width < 8u) width = 8u;
+        qw_image_free(&image);
+        width_length = snprintf(width_text, sizeof(width_text), "%u", width);
+        if (width_length <= 0 || (size_t)width_length >= sizeof(width_text) ||
+            !eml_append_literal(html, "<figure><img alt=\"") ||
+            !eml_append_html_escaped(html, attachment->name,
+                                     strlen(attachment->name)) ||
+            !eml_append_literal(html, "\" width=\"") ||
+            !qw_text_buffer_append(html, width_text, (size_t)width_length) ||
+            !eml_append_literal(html, "\" src=\"data:image/png;base64,") ||
+            !eml_append_base64(html, png, png_size) ||
+            !eml_append_literal(html, "\"/><figcaption>") ||
+            !eml_append_html_escaped(html, attachment->name,
+                                     strlen(attachment->name)) ||
+            !eml_append_literal(html, "</figcaption></figure>")) {
+            free(png);
+            return 0;
+        }
+        free(png);
+        (void)owner;
+        return 1;
+    }
+    return 1;
+}
 static int eml_build_html(EmlOwner *owner, const EmlHeaders *headers)
 {
     QwTextBuffer html = {0};
@@ -1161,6 +1242,8 @@ static int eml_build_html(EmlOwner *owner, const EmlHeaders *headers)
             "td{padding:3pt 0;overflow-wrap:anywhere}pre{font-family:sans-serif;"
             "white-space:pre-wrap;overflow-wrap:anywhere}li{margin:3pt 0}"
             ".note{color:#555;font-size:9pt;margin-top:10pt}"
+            ".attachment-text{background:#f5f5f5;padding:6pt;border:1px solid #ddd}"
+            "figure{margin:8pt 0}figcaption{color:#555;font-size:9pt}"
             "</style></head><body><h1>")) return 0;
     if (headers->subject[0]) {
         QwTextBuffer subject = {0};
@@ -1211,10 +1294,14 @@ static int eml_build_html(EmlOwner *owner, const EmlHeaders *headers)
                     !qw_text_buffer_append(&html, size_text, (size_t)size))
                     goto fail;
             }
-            if (!eml_append_literal(&html, ")</span></li>")) goto fail;
+            if (!eml_append_literal(&html, ")</span>") ||
+                !eml_append_attachment_content(owner, &html, attachment) ||
+                !eml_append_literal(&html, "</li>")) goto fail;
         }
-        if (!eml_append_literal(&html, "</ul><p class=\"note\">Attachment data "
-                "is retained in the layout document but is not embedded in PDF output.</p>"))
+        if (!eml_append_literal(&html, "</ul><p class=\"note\">Text "
+                "attachments are shown inline and image attachments are "
+                "embedded as PNG data URIs; other data is retained in the "
+                "layout document but is not embedded in PDF output.</p>"))
             goto fail;
     }
     if (owner->had_unsupported_part || owner->had_charset_fallback ||
@@ -1293,7 +1380,7 @@ int qw_eml_native_open_layout(const void *data,
     out_document->dispose = eml_owner_dispose;
     if (report) {
         (void)snprintf(report->note, sizeof(report->note),
-            "EML headers and %s text body extracted; %zu attachment(s) retained as metadata but not embedded in PDF%s%s%s",
+            "EML headers and %s text body extracted; %zu attachment(s) rendered (text inline, images as PNG data URIs)%s%s%s",
             owner->body_priority == 2 ? "plain-text" :
             owner->body_priority == 1 ? "escaped HTML-source" : "no supported",
             owner->attachment_count,

@@ -955,7 +955,7 @@ static int convert_email_to_pdf(const uint8_t *data, size_t size,
     qw_email_document_free(document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
-                 "EML layout: selected body rendered; attachments are listed, "
+                 "EML layout: selected body rendered; text attachments inline, images embedded, "
                  "not exported");
     }
     return rc;

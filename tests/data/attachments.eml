@@ -1,0 +1,30 @@
+Subject: Attachment test
+From: sender@example.com
+To: receiver@example.com
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============5750821121901659802=="
+
+--===============5750821121901659802==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Body text
+
+--===============5750821121901659802==
+Content-Type: text/plain
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="notes.txt"
+MIME-Version: 1.0
+
+QXR0YWNoZWQgbm90ZSB0ZXh0
+
+--===============5750821121901659802==
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="logo.png"
+MIME-Version: 1.0
+
+iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR4nGP8zwACTGCSAQANHQED
+gslx/wAAAABJRU5ErkJggg==
+
+--===============5750821121901659802==--

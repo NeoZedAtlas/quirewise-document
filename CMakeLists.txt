@@ -341,7 +341,17 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_odt_header_footer_test
+    add_executable(quirewise_document_eml_attachment_test
+    tests/eml_attachment_test.c)
+target_compile_features(quirewise_document_eml_attachment_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_eml_attachment_test PRIVATE
+    QUIREWISE_EML_ATTACHMENT_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/attachments.eml")
+target_link_libraries(quirewise_document_eml_attachment_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_eml_attachment
+    COMMAND quirewise_document_eml_attachment_test)
+
+add_executable(quirewise_document_odt_header_footer_test
     tests/odt_header_footer_test.c)
 target_compile_features(quirewise_document_odt_header_footer_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_odt_header_footer_test PRIVATE
