@@ -341,7 +341,17 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_hwpx_image_test
+    add_executable(quirewise_document_epub_image_test
+    tests/epub_image_test.c)
+target_compile_features(quirewise_document_epub_image_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_epub_image_test PRIVATE
+    QUIREWISE_EPUB_IMAGE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/image.epub")
+target_link_libraries(quirewise_document_epub_image_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_epub_image
+    COMMAND quirewise_document_epub_image_test)
+
+add_executable(quirewise_document_hwpx_image_test
     tests/hwpx_image_test.c)
 target_compile_features(quirewise_document_hwpx_image_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_hwpx_image_test PRIVATE

@@ -337,10 +337,24 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                             ok = 0;
                             break;
                         }
-                        if (run.utf8_text && run.text_size)
+                        if (run.style_flags & QW_EPUB_STYLE_IMAGE) {
+                            if (ok && run.utf8_text && run.text_size)
+                                ok = epub_html_append(
+                                         &html, &length, &capacity,
+                                         "<img src=\"",
+                                         strlen("<img src=\"")) &&
+                                     epub_html_escape(
+                                         &html, &length, &capacity,
+                                         (const char *)run.utf8_text,
+                                         run.text_size) &&
+                                     epub_html_append(&html, &length,
+                                                      &capacity, "\"/>",
+                                                      strlen("\"/>"));
+                        } else if (run.utf8_text && run.text_size) {
                             ok = epub_html_escape(&html, &length, &capacity,
                                                   (const char *)run.utf8_text,
                                                   run.text_size);
+                        }
                     }
                     if (ok)
                         ok = epub_html_append(&html, &length, &capacity,
@@ -367,6 +381,18 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                    run_index, &run) != QW_EPUB_OK) {
                     ok = 0;
                     break;
+                }
+                if (run.style_flags & QW_EPUB_STYLE_IMAGE) {
+                    if (ok && run.utf8_text && run.text_size)
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "<img src=\"",
+                                              strlen("<img src=\"")) &&
+                             epub_html_escape(&html, &length, &capacity,
+                                              (const char *)run.utf8_text,
+                                              run.text_size) &&
+                             epub_html_append(&html, &length, &capacity,
+                                              "\"/>", strlen("\"/>"));
+                    continue;
                 }
                 if (run.link_target && run.link_target_size)
                     ok = epub_html_append(&html, &length, &capacity,

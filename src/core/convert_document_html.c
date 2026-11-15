@@ -470,10 +470,19 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                                            paragraph_index, run_index,
                                            &run) != QW_EPUB_OK)
                             continue;
-                        if (run.utf8_text && run.text_size &&
-                            !html_append_escaped(&buffer, run.utf8_text,
-                                                 run.text_size))
+                        if (run.style_flags & QW_EPUB_STYLE_IMAGE) {
+                            if (run.utf8_text && run.text_size &&
+                                (!html_append_text(&buffer, "<img src=\"") ||
+                                 !html_append_escaped(&buffer, run.utf8_text,
+                                                      run.text_size) ||
+                                 !html_append_text(&buffer, "\"/>")))
+                                goto out_of_memory;
+                        } else if (run.utf8_text && run.text_size &&
+                                   !html_append_escaped(&buffer,
+                                                        run.utf8_text,
+                                                        run.text_size)) {
                             goto out_of_memory;
+                        }
                     }
                     if (!html_append_text(&buffer,
                                           list_item ? "</li></ul>" : "</pre>"))
@@ -511,6 +520,14 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                 if (run.style_flags & QW_EPUB_STYLE_CODE) {
                     if (!html_append_text(&buffer, "<code>"))
                         goto out_of_memory;
+                }
+                if (run.style_flags & QW_EPUB_STYLE_IMAGE) {
+                    if (!html_append_text(&buffer, "<img src=\"") ||
+                        !html_append_escaped(&buffer, run.utf8_text,
+                                             run.text_size) ||
+                        !html_append_text(&buffer, "\"/>"))
+                        goto out_of_memory;
+                    continue;
                 }
                 if (run.link_target && run.link_target_size) {
                     if (!html_append_text(&buffer, "<a href=\"") ||
