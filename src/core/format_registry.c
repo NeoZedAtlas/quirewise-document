@@ -75,6 +75,7 @@ static const QwFormatDescriptor *const qw_format_registry[] = {
     &qw_format_fodp,
     &qw_format_fodt,
     &qw_format_hwpx,
+    &qw_format_xps,
     &qw_format_odp,
     &qw_format_odt,
     &qw_format_otp,

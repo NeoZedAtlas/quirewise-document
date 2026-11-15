@@ -40,6 +40,7 @@
 #include "../backends/document_backend.h"
 #include "../formats/odt/odt_format.h"
 #include "../formats/docx/docx_format.h"
+#include "../formats/xps/xps_package.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -934,6 +935,28 @@ static int convert_hwpx_to_pdf(const uint8_t *data, size_t size,
     return rc;
 }
 
+static int convert_xps_to_pdf(const uint8_t *data, size_t size,
+                              uint8_t **out_pdf, size_t *out_size,
+                              QwConvertReport *report)
+{
+    QwLayoutDocument document;
+    int rc;
+
+    memset(&document, 0, sizeof(document));
+    rc = qw_xps_native_open_layout(data, size, QW_FORMAT_XPS, NULL,
+                                   &document, report);
+    if (rc == QW_STATUS_OK) {
+        rc = convert_html_to_pdf(document.html_utf8, document.html_size,
+                                 out_pdf, out_size, report);
+        if (rc == QW_STATUS_OK && report) {
+            snprintf(report->note, sizeof(report->note),
+                     "XPS layout: page text rendered; images, vector paths "
+                     "and exact positioning are not preserved");
+        }
+    }
+    if (document.dispose) document.dispose(document.context);
+    return rc;
+}
 static int convert_email_to_pdf(const uint8_t *data, size_t size,
                                 uint8_t **out_pdf, size_t *out_size,
                                 QwConvertReport *report)
@@ -1341,6 +1364,10 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
                           "application/vnd.oasis.opendocument.presentation")) {
             return convert_odp_to_pdf(data, size, extension, out_pdf, out_size,
                                       report);
+        }
+        if (convert_extension_contains(extension, "xps") ||
+            contains_text(data, size, "FixedDocumentSequence.fdseq")) {
+            return convert_xps_to_pdf(data, size, out_pdf, out_size, report);
         }
         if (convert_extension_contains(extension, "hwpx") ||
             contains_text(data, size, "Contents/section")) {

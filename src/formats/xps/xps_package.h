@@ -2,6 +2,7 @@
 #define QUIREWISE_XPS_PACKAGE_H
 
 #include "quirewise/convert.h"
+#include "../../core/layout_document.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -21,5 +22,12 @@ int qw_xps_package_read_page(QwXpsPackage *package,
                              double *out_height,
                              QwConvertReport *report);
 void qw_xps_package_close(QwXpsPackage *package);
+
+/* Layout adapter used by the unified PDF route (xps_layout.c). */
+int qw_xps_native_open_layout(const void *data, size_t size,
+                              QwInputFormat input_format,
+                              const QwConvertOptions *options,
+                              QwLayoutDocument *out_document,
+                              QwConvertReport *report);
 
 #endif
