@@ -317,6 +317,38 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                               strlen("</tr></table>"));
                     continue;
                 }
+                if (qw_epub_run_at(document, section_index, paragraph_index,
+                                   0u, &first) == QW_EPUB_OK &&
+                    (first.style_flags &
+                     (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE))) {
+                    int list_item = (first.style_flags &
+                                     QW_EPUB_STYLE_LIST_ITEM) != 0;
+                    ok = epub_html_append(&html, &length, &capacity,
+                                          list_item ? "<ul><li>" : "<pre>",
+                                          strlen(list_item ? "<ul><li>"
+                                                           : "<pre>"));
+                    for (run_index = 0u; ok && run_index < paragraph.run_count;
+                         ++run_index) {
+                        QwEpubRunView run;
+                        memset(&run, 0, sizeof(run));
+                        if (qw_epub_run_at(document, section_index,
+                                           paragraph_index, run_index,
+                                           &run) != QW_EPUB_OK) {
+                            ok = 0;
+                            break;
+                        }
+                        if (run.utf8_text && run.text_size)
+                            ok = epub_html_escape(&html, &length, &capacity,
+                                                  (const char *)run.utf8_text,
+                                                  run.text_size);
+                    }
+                    if (ok)
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              list_item ? "</li></ul>" : "</pre>",
+                                              strlen(list_item ? "</li></ul>"
+                                                               : "</pre>"));
+                    continue;
+                }
             }
             if (paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "<h%u>",

@@ -453,6 +453,33 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         goto out_of_memory;
                     continue;
                 }
+                if (qw_epub_run_at(document, section_index, paragraph_index,
+                                   0u, &first) == QW_EPUB_OK &&
+                    (first.style_flags &
+                     (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE))) {
+                    int list_item = (first.style_flags &
+                                     QW_EPUB_STYLE_LIST_ITEM) != 0;
+                    if (!html_append_text(&buffer,
+                                          list_item ? "<ul><li>" : "<pre>"))
+                        goto out_of_memory;
+                    for (run_index = 0u; run_index < paragraph.run_count;
+                         ++run_index) {
+                        QwEpubRunView run;
+                        memset(&run, 0, sizeof(run));
+                        if (qw_epub_run_at(document, section_index,
+                                           paragraph_index, run_index,
+                                           &run) != QW_EPUB_OK)
+                            continue;
+                        if (run.utf8_text && run.text_size &&
+                            !html_append_escaped(&buffer, run.utf8_text,
+                                                 run.text_size))
+                            goto out_of_memory;
+                    }
+                    if (!html_append_text(&buffer,
+                                          list_item ? "</li></ul>" : "</pre>"))
+                        goto out_of_memory;
+                    continue;
+                }
             }
             heading = paragraph.heading_level >= 1u &&
                       paragraph.heading_level <= 6u
