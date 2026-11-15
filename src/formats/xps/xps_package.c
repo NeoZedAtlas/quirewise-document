@@ -466,6 +466,20 @@ int qw_xps_package_read_page(QwXpsPackage *package,
     return QW_STATUS_OK;
 }
 
+int qw_xps_package_read_page_resource(QwXpsPackage *package,
+                                      size_t page_index,
+                                      const char *source,
+                                      uint8_t **out_data,
+                                      size_t *out_size)
+{
+    char resolved[XPS_PACKAGE_MAX_PATH];
+    if (!package || page_index >= package->page_count || !source ||
+        !out_data || !out_size)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (!xps_normalize_path(package->pages[page_index].path, source, resolved))
+        return QW_STATUS_ERR_FORMAT;
+    return xps_extract_entry(package, resolved, out_data, out_size);
+}
 void qw_xps_package_close(QwXpsPackage *package)
 {
     if (!package) return;

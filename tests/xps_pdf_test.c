@@ -15,6 +15,9 @@
 #ifndef QUIREWISE_XPS_FIXTURE
 #error "QUIREWISE_XPS_FIXTURE must be defined"
 #endif
+#ifndef QUIREWISE_XPS_IMAGE_FIXTURE
+#error "QUIREWISE_XPS_IMAGE_FIXTURE must be defined"
+#endif
 
 static int read_file(const char *path, uint8_t **out, size_t *out_size)
 {
@@ -118,6 +121,75 @@ int main(void)
         qw_pdf_close(document);
     }
     free(pdf);
-    puts("Quirewise XPS to PDF tests passed");
+
+    /* ImageBrush pages embed the resource as a PNG data URI and paint it. */
+    {
+        uint8_t *image_xps = NULL;
+        size_t image_xps_size = 0u;
+        uint8_t *image_pdf = NULL;
+        size_t image_pdf_size = 0u;
+        QwPdfDocument *document = NULL;
+        size_t pages = 0u;
+        QwPageImage page;
+        int red = 0;
+
+        if (!read_file(QUIREWISE_XPS_IMAGE_FIXTURE, &image_xps,
+                       &image_xps_size) ||
+            !image_xps || !image_xps_size) {
+            fputs("FAIL: cannot read the XPS image fixture\n", stderr);
+            return 1;
+        }
+        memset(&report, 0, sizeof(report));
+        if (qw_convert_to_format_memory(image_xps, image_xps_size,
+                                        QW_FORMAT_PDF, NULL, &image_pdf,
+                                        &image_pdf_size, &report) !=
+                QW_STATUS_OK ||
+            !image_pdf || image_pdf_size < 8u) {
+            fprintf(stderr, "FAIL: XPS image to PDF (%s)\n", report.note);
+            free(image_xps);
+            return 1;
+        }
+        free(image_xps);
+        if (!contains(image_pdf, image_pdf_size, "/Subtype /Image")) {
+            fputs("FAIL: XPS PDF has no image XObject\n", stderr);
+            free(image_pdf);
+            return 1;
+        }
+        memset(&page, 0, sizeof(page));
+        if (qw_pdf_open(image_pdf, image_pdf_size, &document, &pages, NULL) !=
+                QW_STATUS_OK ||
+            !document || pages < 1u ||
+            qw_pdf_render_page(document, 0u, 144u, &page, NULL) !=
+                QW_STATUS_OK ||
+            !page.data) {
+            fputs("FAIL: XPS image PDF does not render\n", stderr);
+            qw_pdf_close(document);
+            free(image_pdf);
+            return 1;
+        }
+        {
+            uint32_t row;
+            for (row = 0u; row < page.height && !red; ++row) {
+                uint32_t column;
+                for (column = 0u; column < page.width; ++column) {
+                    const uint8_t *pixel =
+                        page.data + (size_t)row * (size_t)page.width * 3u +
+                        (size_t)column * 3u;
+                    if (pixel[0] > 150u && pixel[1] < 100u &&
+                        pixel[2] < 100u) {
+                        red = 1;
+                        break;
+                    }
+                }
+            }
+        }
+        qw_pdf_page_free(&page);
+        qw_pdf_close(document);
+        free(image_pdf);
+        if (!red) {
+            fputs("FAIL: XPS image was not painted\n", stderr);
+            return 1;
+        }
+    }    puts("Quirewise XPS to PDF tests passed");
     return 0;
 }

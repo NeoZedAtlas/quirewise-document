@@ -345,7 +345,8 @@ if(BUILD_TESTING)
     tests/xps_pdf_test.c)
 target_compile_features(quirewise_document_xps_pdf_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_xps_pdf_test PRIVATE
-    QUIREWISE_XPS_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sample.xps")
+    QUIREWISE_XPS_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sample.xps"
+    QUIREWISE_XPS_IMAGE_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/image.xps")
 target_link_libraries(quirewise_document_xps_pdf_test PRIVATE
     quirewise_document)
 add_test(NAME quirewise_document_xps_pdf

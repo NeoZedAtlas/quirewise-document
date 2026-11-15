@@ -21,6 +21,13 @@ int qw_xps_package_read_page(QwXpsPackage *package,
                              double *out_width,
                              double *out_height,
                              QwConvertReport *report);
+/* Read an image/resource referenced by a page, resolving the source path
+ * relative to that page part. */
+int qw_xps_package_read_page_resource(QwXpsPackage *package,
+                                      size_t page_index,
+                                      const char *source,
+                                      uint8_t **out_data,
+                                      size_t *out_size);
 void qw_xps_package_close(QwXpsPackage *package);
 
 /* Layout adapter used by the unified PDF route (xps_layout.c). */
