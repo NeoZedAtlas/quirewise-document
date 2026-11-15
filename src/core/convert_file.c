@@ -1,5 +1,7 @@
 #include <quirewise/convert.h>
 #include <quirewise/pdf.h>
+#include <quirewise/mdd.h>
+#include <quirewise/mdx.h>
 
 #include "format_registry.h"
 #include "../backends/document_backend.h"
@@ -315,6 +317,8 @@ QwInputFormat qw_detect_format(const void *data, size_t size)
     const QwFormatDescriptor *descriptor;
 
     if (!bytes || !size) return QW_FORMAT_UNKNOWN;
+    if (qw_mdx_probe(bytes, size)) return QW_FORMAT_MDX;
+    if (qw_mdd_probe(bytes, size)) return QW_FORMAT_MDD;
     if (qw_region_equals(bytes, size, 0u, "%PDF-")) return QW_FORMAT_PDF;
     if (qw_region_equals(bytes, size, 0u, "AT&TFORM")) return QW_FORMAT_DJVU;
     if (qw_region_equals(bytes, size, 0u, "\x89PNG\r\n\x1a\n"))
@@ -392,6 +396,8 @@ const char *qw_format_name(QwInputFormat format)
     case QW_FORMAT_M4A: return "M4A";
     case QW_FORMAT_CSV: return "CSV";
     case QW_FORMAT_JSON: return "JSON";
+    case QW_FORMAT_MDX: return "MDict dictionary";
+    case QW_FORMAT_MDD: return "MDict resources";
     default: break;
     }
     {
@@ -435,9 +441,28 @@ int qw_convert_file_to_format(const char *input_path,
         rc = qw_doc_convert_memory_with_options(data, size, extension, reflow, options,
                                    &output,
                                    &output_size, report);
+    } else if (output_format == QW_FORMAT_HTML) {
+        rc = qw_doc_convert_html_memory(data, size, extension, &output,
+                                        &output_size, report);
+    } else if (output_format == QW_FORMAT_MARKDOWN) {
+        rc = qw_doc_convert_markdown_memory(data, size, extension, &output,
+                                            &output_size, report);
+    } else if (output_format == QW_FORMAT_DOCX) {
+        rc = qw_doc_convert_docx_memory(data, size, extension, &output,
+                                        &output_size, report);
+    } else if (output_format == QW_FORMAT_EPUB) {
+        rc = qw_doc_convert_epub_memory(data, size, extension, &output,
+                                        &output_size, report);
     } else {
         rc = qw_convert_to_format_memory(data, size, output_format, options,
                                          &output, &output_size, report);
+        if (rc == QW_STATUS_ERR_UNSUPPORTED) {
+            /* The native routes (PDF text/PNG, MDX text) declined; the data,
+             * subtitle and spreadsheet families own the remaining writers. */
+            rc = qw_doc_convert_family_to_format(
+                data, size, extension, output_format, options, &output,
+                &output_size, report);
+        }
     }
     free(data);
     if (rc != QW_STATUS_OK) {
@@ -456,6 +481,22 @@ int qw_convert_file(const char *input_path,
 {
     return qw_convert_file_to_format(input_path, output_path, QW_FORMAT_PDF,
                                      options, report);
+}
+
+/* MDict reader status values share the package convention: 0 ok, -1 argument,
+ * -2 memory, -4 format, -5 unsupported, -6 decode, -11 resource limit. */
+static int qw_check_parse_status(int status)
+{
+    switch (status) {
+    case 0: return QW_STATUS_OK;
+    case -1: return QW_STATUS_ERR_INVALID_ARGUMENT;
+    case -2: return QW_STATUS_ERR_OUT_OF_MEMORY;
+    case -4: return QW_STATUS_ERR_FORMAT;
+    case -5: return QW_STATUS_ERR_UNSUPPORTED;
+    case -6: return QW_STATUS_ERR_DECODE;
+    case -11: return QW_STATUS_ERR_RESOURCE_LIMIT;
+    default: return QW_STATUS_ERR_FORMAT;
+    }
 }
 
 int qw_check_file(const char *input_path,
@@ -484,8 +525,14 @@ int qw_check_file(const char *input_path,
     rc = qw_read_input_file(input_path, &data, &size, report);
     if (rc != QW_STATUS_OK) return rc;
 
-    descriptor = qw_format_detect(data, size);
-    format = descriptor ? descriptor->id : QW_FORMAT_UNKNOWN;
+    if (qw_mdx_probe(data, size)) {
+        format = QW_FORMAT_MDX;
+    } else if (qw_mdd_probe(data, size)) {
+        format = QW_FORMAT_MDD;
+    } else {
+        descriptor = qw_format_detect(data, size);
+        format = descriptor ? descriptor->id : QW_FORMAT_UNKNOWN;
+    }
     report->format = format;
     qw_path_extension(input_path, extension, sizeof(extension));
     if (strcmp(extension, "epub") == 0) reflow = 1;
@@ -505,6 +552,44 @@ int qw_check_file(const char *input_path,
             }
             report->pages_written = pages;
             qw_pdf_close(document);
+        }
+    } else if (format == QW_FORMAT_MDX) {
+        QwMdxDocument *document = NULL;
+        char error[192];
+        int reader_status;
+        error[0] = '\0';
+        reader_status = (int)qw_mdx_parse(data, size, &document, error,
+                                          sizeof(error));
+        if (reader_status == QW_MDX_OK) {
+            size_t entries = qw_mdx_document_entry_count(document);
+            qw_mdx_document_free(document);
+            snprintf(report->note, sizeof(report->note),
+                     "MDict dictionary: %zu entries and their records validated",
+                     entries);
+            rc = QW_STATUS_OK;
+        } else {
+            snprintf(report->note, sizeof(report->note), "MDX: %s",
+                     error[0] ? error : "dictionary could not be parsed");
+            rc = qw_check_parse_status(reader_status);
+        }
+    } else if (format == QW_FORMAT_MDD) {
+        QwMddDocument *document = NULL;
+        char error[192];
+        int reader_status;
+        error[0] = '\0';
+        reader_status = (int)qw_mdd_parse(data, size, &document, error,
+                                          sizeof(error));
+        if (reader_status == QW_MDD_OK) {
+            size_t resources = qw_mdd_document_resource_count(document);
+            qw_mdd_document_free(document);
+            snprintf(report->note, sizeof(report->note),
+                     "MDict resource file: %zu resources validated",
+                     resources);
+            rc = QW_STATUS_OK;
+        } else {
+            snprintf(report->note, sizeof(report->note), "MDD: %s",
+                     error[0] ? error : "resource file could not be parsed");
+            rc = qw_check_parse_status(reader_status);
         }
     } else if (qw_is_audio_format(format)) {
         if (report)

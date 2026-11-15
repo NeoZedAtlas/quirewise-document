@@ -34,6 +34,9 @@ if(NOT TARGET Quirewise::Spreadsheet)
     find_package(QuirewiseSpreadsheet CONFIG REQUIRED)
 find_package(QuirewiseText CONFIG REQUIRED)
 endif()
+if(NOT TARGET Quirewise::Subtitle)
+    find_package(QuirewiseSubtitle CONFIG REQUIRED)
+endif()
 file(GLOB_RECURSE QW_SOURCES CONFIGURE_DEPENDS src/*.c src/*.cpp)
 add_library(quirewise_document ${QW_LIBRARY_TYPE} ${QW_SOURCES})
 add_library(Quirewise::Document ALIAS quirewise_document)
@@ -45,7 +48,7 @@ target_include_directories(quirewise_document PUBLIC
     "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>"
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/src/core ${CMAKE_CURRENT_SOURCE_DIR}/src/formats ${CMAKE_CURRENT_SOURCE_DIR}/src/backends)
-target_link_libraries(quirewise_document PRIVATE Quirewise::Archive Quirewise::Data Quirewise::Compression Quirewise::Ebook Quirewise::Image Quirewise::Crypto Quirewise::Spreadsheet Quirewise::Text)
+target_link_libraries(quirewise_document PRIVATE Quirewise::Archive Quirewise::Data Quirewise::Compression Quirewise::Ebook Quirewise::Image Quirewise::Crypto Quirewise::Spreadsheet Quirewise::Subtitle Quirewise::Text)
 install(TARGETS quirewise_document EXPORT QuirewiseDocumentTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -267,6 +270,14 @@ if(BUILD_TESTING)
         quirewise_document)
     add_test(NAME quirewise_document_convert_file
         COMMAND quirewise_document_convert_file_test)
+
+    add_executable(quirewise_document_convert_family_test
+        tests/convert_family_test.c)
+    target_compile_features(quirewise_document_convert_family_test PRIVATE c_std_11)
+    target_link_libraries(quirewise_document_convert_family_test PRIVATE
+        quirewise_document Quirewise::Ebook)
+    add_test(NAME quirewise_document_convert_family
+        COMMAND quirewise_document_convert_family_test)
 
     add_executable(quirewise_document_format_registry_test
         tests/format_registry_test.c)

@@ -25,6 +25,8 @@
 #include <quirewise/email.h>
 #include <quirewise/hwpx.h>
 #include <quirewise/htmlz.h>
+#include <quirewise/mdd.h>
+#include <quirewise/mdx.h>
 #include <quirewise/mobi.h>
 #include <quirewise/odf_presentation.h>
 #include <quirewise/pml.h>
@@ -1086,6 +1088,97 @@ static int convert_mobi_to_pdf(const uint8_t *data, size_t size,
     return rc;
 }
 
+static int convert_mdx_to_pdf(const uint8_t *data, size_t size,
+                              uint8_t **out_pdf, size_t *out_size,
+                              QwConvertReport *report)
+{
+    QwMdxDocument *document = NULL;
+    const uint8_t *html = NULL;
+    size_t html_size = 0u;
+    size_t entries = 0u;
+    char error[192];
+    QwMdxStatus status;
+    int rc;
+
+    error[0] = '\0';
+    status = qw_mdx_parse(data, size, &document, error, sizeof(error));
+    if (status != QW_MDX_OK || !document) {
+        if (report) {
+            snprintf(report->note, sizeof(report->note), "MDX: %s",
+                     error[0] ? error : "dictionary could not be parsed");
+        }
+        return convert_map_standard_status((int)status);
+    }
+    status = qw_mdx_document_html(document, &html, &html_size);
+    if (status != QW_MDX_OK) {
+        if (report) {
+            snprintf(report->note, sizeof(report->note),
+                     "MDX rendering failed with status %d", (int)status);
+        }
+        qw_mdx_document_free(document);
+        return convert_map_standard_status((int)status);
+    }
+    entries = qw_mdx_document_entry_count(document);
+    rc = qw_doc_convert_html((const char *)html, html_size, out_pdf, out_size,
+                             report);
+    qw_mdx_document_free(document);
+    if (rc == QW_STATUS_OK && report) {
+        snprintf(report->note, sizeof(report->note),
+                 "MDict dictionary layout: %zu entries rendered as headings "
+                 "and articles; MDD image resources and entry links are not "
+                 "embedded (QW_ROUTE_LOSS_TEXT_LAYOUT)", entries);
+    }
+    return rc;
+}
+
+static int mdx_route_to_text(const uint8_t *data, size_t size,
+                             uint8_t **out_data, size_t *out_size,
+                             QwConvertReport *report)
+{
+    QwMdxDocument *document = NULL;
+    const uint8_t *text = NULL;
+    size_t text_size = 0u;
+    char error[192];
+    QwMdxStatus status;
+    uint8_t *copy;
+
+    error[0] = '\0';
+    status = qw_mdx_parse(data, size, &document, error, sizeof(error));
+    if (status != QW_MDX_OK || !document) {
+        if (report) {
+            snprintf(report->note, sizeof(report->note), "MDX: %s",
+                     error[0] ? error : "dictionary could not be parsed");
+        }
+        return convert_map_standard_status((int)status);
+    }
+    status = qw_mdx_document_text(document, &text, &text_size);
+    if (status != QW_MDX_OK) {
+        if (report) {
+            snprintf(report->note, sizeof(report->note),
+                     "MDX text rendering failed with status %d", (int)status);
+        }
+        qw_mdx_document_free(document);
+        return convert_map_standard_status((int)status);
+    }
+    copy = (uint8_t *)malloc(text_size ? text_size : 1u);
+    if (!copy) {
+        qw_mdx_document_free(document);
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    memcpy(copy, text, text_size);
+    qw_mdx_document_free(document);
+    *out_data = copy;
+    *out_size = text_size;
+    if (report) {
+        report->output_size = text_size;
+        snprintf(report->note, sizeof(report->note),
+                 "MDict dictionary text: one key line and its tag-stripped "
+                 "article per entry; MDD image resources are not extracted "
+                 "(QW_ROUTE_LOSS_TEXT_LAYOUT)");
+    }
+    return QW_STATUS_OK;
+}
+
 static int convert_rtf_to_pdf(const uint8_t *data, size_t size,
                               uint8_t **out_pdf, size_t *out_size,
                               QwConvertReport *report)
@@ -1174,6 +1267,16 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
             out_pdf, out_size, report);
         qw_image_free(&image);
         return status;
+    }
+    else if (qw_mdx_probe(data, size)) {
+        return convert_mdx_to_pdf(data, size, out_pdf, out_size, report);
+    }
+    else if (qw_mdd_probe(data, size)) {
+        if (report) snprintf(report->note, sizeof(report->note),
+                             "MDD is the MDict resource container for a "
+                             "dictionary; convert the companion MDX and use "
+                             "--check to validate this file");
+        return QW_STATUS_ERR_UNSUPPORTED;
     }
     else if (convert_looks_like_svg(data, size)) {
         if (report) snprintf(report->note, sizeof(report->note),
@@ -1294,6 +1397,15 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
         is_fb2 = 1;
     } else if (strstr(extension, "csv") || strstr(extension, "tsv")) {
         is_csv = 1;
+    } else if (convert_extension_contains(extension, "mdx") ||
+               convert_extension_contains(extension, "mdd")) {
+        /* Both extensions contain "md", so without this guard a broken or
+         * legacy dictionary would be laid out as Markdown. */
+        if (report) snprintf(report->note, sizeof(report->note),
+                             "MDict input without a recognized container "
+                             "header; engine 1.2 MDX files and register-code "
+                             "encryption are not supported");
+        return QW_STATUS_ERR_FORMAT;
     } else if (convert_text_extension(extension)) {
         is_text = 1;
     } else if (convert_region_equals(data, size, 0u, "<?xml") ||
@@ -1519,9 +1631,38 @@ int qw_convert_to_format_memory(const void *data, size_t size,
             return QW_STATUS_ERR_UNSUPPORTED;
         }
     }
+    if (output_format == QW_FORMAT_TXT && qw_mdx_probe(bytes, size)) {
+        if (report) report->format = QW_FORMAT_MDX;
+        return mdx_route_to_text(bytes, size, out_data, out_size, report);
+    }
     if (output_format == QW_FORMAT_PDF) {
         return qw_doc_convert_memory(bytes, size, NULL, 0, out_data, out_size,
                                      report);
+    }
+    if (output_format == QW_FORMAT_MARKDOWN) {
+        return qw_doc_convert_markdown_memory(bytes, size, NULL, out_data,
+                                              out_size, report);
+    }
+    if (output_format == QW_FORMAT_DOCX) {
+        return qw_doc_convert_docx_memory(bytes, size, NULL, out_data,
+                                          out_size, report);
+    }
+    if (output_format == QW_FORMAT_EPUB) {
+        return qw_doc_convert_epub_memory(bytes, size, NULL, out_data,
+                                          out_size, report);
+    }
+    if (output_format == QW_FORMAT_HTML) {
+        int html_status = qw_doc_convert_html_memory(
+            bytes, size, NULL, out_data, out_size, report);
+        if (html_status != QW_STATUS_ERR_UNSUPPORTED) return html_status;
+        /* Structured data, subtitles and worksheets have no layout HTML. */
+    }
+    {
+        /* No path here, so the family writers fall back to content sniffing. */
+        int family = qw_doc_convert_family_to_format(
+            bytes, size, NULL, output_format, options, out_data, out_size,
+            report);
+        if (family != QW_STATUS_ERR_UNSUPPORTED) return family;
     }
     if (report) {
         snprintf(report->note, sizeof(report->note),

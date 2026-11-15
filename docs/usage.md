@@ -328,8 +328,12 @@ buffers.
   `STSong-Light` CID font by name. The rasteriser uses a built-in 3x5 ASCII
   approximation font and does not load embedded programs, so CJK glyph shapes
   are not reproduced. Extraction consumes an existing `/ToUnicode` CMap.
-- **No HTML or Markdown output target.** PDF is the only output for non-PDF
-  inputs; for PDF inputs only PDF, TXT and PNG are available.
+- **No HTML or Markdown layout output target.** PDF is still the only layout
+  output for non-PDF inputs. Structured data, subtitles and worksheets are the
+  exception: `qw_convert_file_to_format` / `qw_convert_to_format_memory` route
+  JSON/JSONL/YAML/TOML/vCard/XML, SRT/WebVTT/LRC/MicroDVD/ASS/SSA/SAMI/SCC and
+  CSV/TSV targets to the owning package's writer. For PDF inputs only PDF, TXT
+  and PNG are available.
 - **XPS is reader-only.** `qw_xps_document_open` and
   `qw_xps_document_read_page` work, but the conversion dispatch and the
   application CLI do not route `.xps`, so `qw_convert_file("a.xps", ...)`

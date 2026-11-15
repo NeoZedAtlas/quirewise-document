@@ -108,6 +108,18 @@ For in-memory input, call `qw_convert_to_pdf_memory` and release the result
 with `qw_buffer_free`. See [docs/usage.md](docs/usage.md) for that and the PDF
 reader recipes.
 
+`qw_convert_file_to_format` and `qw_convert_to_format_memory` accept more than
+PDF/TXT/PNG: JSON, JSON Lines, YAML, TOML, vCard, XML (structured data), SRT,
+WebVTT, LRC, MicroDVD, ASS, SSA, SAMI, SCC (subtitles) and CSV/TSV (worksheets)
+are routed to the package that owns the writer. A file is parsed by its own
+family parser (selected by extension, or by an unambiguous content sniff for the
+memory entry point); a file from another family is refused with a
+family-specific note. PDF, TXT and PNG keep the native document routes. `QW_FORMAT_HTML` returns the
+readers' HTML intermediate (every layout reader also exposes its own
+`*_document_html`), and `QW_FORMAT_MARKDOWN` converts that HTML through
+`quirewise-text`'s `qw_markdown_from_html`. PDF, image and subtitle inputs have
+no layout HTML route and are refused with a specific note.
+
 ## API overview
 
 | Header | Purpose |
@@ -146,6 +158,10 @@ reader recipes.
   `qw_pdf_page_free`.
 - A failed conversion may leave `report.note` explaining the refusal. Output
   pointers are set to `NULL` on failure.
+- Family targets (JSON/YAML/TOML/vCard/XML, SRT/VTT/LRC/MicroDVD/ASS/SSA/SAMI/
+  SCC, CSV/TSV) are not layout conversions: the owning package's writer decides
+  what it can represent. XML only accepts the ordered XML document shape, TTML
+  has no writer, and spreadsheet text output writes the first worksheet.
 - The file API reads at most 512 MiB per input, never overwrites an existing
   output path, and returns `QW_STATUS_ERR_IO` for filesystem failures.
 - The PDF reader accepts at most 100,000 pages and 64 MiB per stream; text

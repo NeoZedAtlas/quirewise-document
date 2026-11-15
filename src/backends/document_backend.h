@@ -26,6 +26,45 @@ int qw_doc_convert_memory_with_options(const uint8_t *data,
                                         size_t *out_size,
                                         QwConvertReport *report);
 
+/*
+ * Non-PDF target dispatch for the data, subtitle and spreadsheet families.
+ * The owning package's public parser and writer do the work; the input
+ * extension (or, when absent, an unambiguous content sniff) selects the
+ * parser. PDF targets belong to qw_doc_convert_memory_with_options().
+ */
+int qw_doc_convert_family_to_format(const uint8_t *data, size_t size,
+                                    const char *input_extension,
+                                    QwOutputFormat output_format,
+                                    const QwConvertOptions *options,
+                                    uint8_t **out_data, size_t *out_size,
+                                    QwConvertReport *report);
+
+/*
+ * Layout HTML output. The readers' public HTML representation is the shared
+ * intermediate for layout inputs; PDF, image and subtitle inputs are refused
+ * because they have no layout route. The extension selects the reader, and a
+ * content sniff is used when no extension is available.
+ */
+int qw_doc_convert_html_memory(const uint8_t *data, size_t size,
+                               const char *input_extension, uint8_t **out_html,
+                               size_t *out_size, QwConvertReport *report);
+
+/* Same input handling as qw_doc_convert_html_memory(), then the text package's
+ * HTML-to-Markdown writer (quirewise/text.h). */
+int qw_doc_convert_markdown_memory(const uint8_t *data, size_t size,
+                                   const char *input_extension,
+                                   uint8_t **out_markdown, size_t *out_size,
+                                   QwConvertReport *report);
+
+/* Minimal binary office writers built on the readers' HTML intermediate and
+ * the internal ZIP writer: DOCX (WordprocessingML) and EPUB 2. */
+int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
+                               const char *input_extension, uint8_t **out_data,
+                               size_t *out_size, QwConvertReport *report);
+int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
+                               const char *input_extension, uint8_t **out_data,
+                               size_t *out_size, QwConvertReport *report);
+
 int qw_doc_convert_memory(const uint8_t *data,
                             size_t size,
                             const char *input_extension,
