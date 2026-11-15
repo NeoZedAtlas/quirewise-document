@@ -118,9 +118,10 @@ static int check_classy_epub(void)
     return 0;
 }
 
-/* A book whose only chapter needs structural layout (a table) has no readable
- * section; that is UNSUPPORTED, not a format error. */
-static int check_unsupported_epub(void)
+/* A book whose chapter mixes a table, a list, an image and paragraphs is
+ * flattened by the structured reader: rows become " | " separated text, list
+ * items become paragraphs and img alt text is kept. */
+static int check_structural_epub(void)
 {
     uint8_t *epub = NULL;
     size_t epub_size = 0u;
@@ -132,24 +133,28 @@ static int check_unsupported_epub(void)
     memset(&report, 0, sizeof(report));
     epub = read_file(QUIREWISE_EPUB_UNSUPPORTED_FIXTURE, &epub_size);
     if (!epub) {
-        fprintf(stderr, "cannot read unsupported EPUB fixture: %s\n",
+        fprintf(stderr, "cannot read structural EPUB fixture: %s\n",
                 QUIREWISE_EPUB_UNSUPPORTED_FIXTURE);
         return 1;
     }
     rc = qw_doc_convert_memory(epub, epub_size, "epub", 1, &pdf, &pdf_size,
                                &report);
     free(epub);
-    if (rc != QW_STATUS_ERR_UNSUPPORTED || pdf != NULL) {
-        fprintf(stderr, "unsupported EPUB mapped to rc=%d (want %d) note=%s\n",
-                rc, QW_STATUS_ERR_UNSUPPORTED, report.note);
+    if (rc != QW_STATUS_OK || !pdf || pdf_size < 5u) {
+        fprintf(stderr, "structural EPUB rejected: rc=%d note=%s\n",
+                rc, report.note);
         free(pdf);
         return 2;
     }
-    if (!strstr(report.note, "EPUB parse failed")) {
-        fprintf(stderr, "unsupported EPUB note is not specific: %s\n",
-                report.note);
+    if (memcmp(pdf, "%PDF-", 5u) != 0 ||
+        !extract_first_chapter_text(pdf, pdf_size, "Only table | Second cell") ||
+        !extract_first_chapter_text(pdf, pdf_size, "First item") ||
+        !extract_first_chapter_text(pdf, pdf_size, "Diagram alt")) {
+        fputs("structural EPUB text missing\n", stderr);
+        free(pdf);
         return 3;
     }
+    free(pdf);
     return 0;
 }
 
@@ -216,8 +221,8 @@ int main(void)
     free(pdf);
 
     if (check_classy_epub() != 0) return 8;
-    if (check_unsupported_epub() != 0) return 9;
-    printf("EPUB compatibility: class/style accepted, unsupported chapter "
-           "reported as UNSUPPORTED\n");
+    if (check_structural_epub() != 0) return 9;
+    printf("EPUB compatibility: class/style accepted, structural chapter "
+           "flattened (table/list/image alt)\n");
     return 0;
 }
