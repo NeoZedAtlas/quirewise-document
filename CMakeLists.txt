@@ -279,6 +279,14 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_convert_family
         COMMAND quirewise_document_convert_family_test)
 
+    add_executable(quirewise_document_pdf_office_image_test
+        tests/pdf_office_image_test.c)
+    target_compile_features(quirewise_document_pdf_office_image_test PRIVATE c_std_11)
+    target_link_libraries(quirewise_document_pdf_office_image_test PRIVATE
+        quirewise_document)
+    add_test(NAME quirewise_document_pdf_office_image
+        COMMAND quirewise_document_pdf_office_image_test)
+
     add_executable(quirewise_document_format_registry_test
         tests/format_registry_test.c)
     target_compile_features(quirewise_document_format_registry_test PRIVATE c_std_11)

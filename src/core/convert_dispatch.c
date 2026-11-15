@@ -1616,6 +1616,12 @@ int qw_convert_to_format_memory(const void *data, size_t size,
             return pdf_route_to_text(bytes, size, out_data, out_size, report);
         case QW_FORMAT_PNG:
             return pdf_route_to_png(bytes, size, out_data, out_size, report);
+        case QW_FORMAT_DOCX:
+            return qw_doc_office_docx_from_pdf(bytes, size, out_data,
+                                               out_size, report);
+        case QW_FORMAT_EPUB:
+            return qw_doc_office_epub_from_pdf(bytes, size, out_data,
+                                               out_size, report);
         case QW_FORMAT_JPG:
             if (report) {
                 snprintf(report->note, sizeof(report->note),

@@ -67,6 +67,14 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
 
 /* Container/text writers: HTMLZ (index.html), TXTZ (index.txt) and a minimal
  * HWPX package, all built from the HTML intermediate. */
+/* Layout-preserving PDF -> DOCX/EPUB: rasterize pages and embed them. */
+int qw_doc_office_docx_from_pdf(const uint8_t *data, size_t size,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report);
+int qw_doc_office_epub_from_pdf(const uint8_t *data, size_t size,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report);
+
 int qw_doc_convert_htmlz_memory(const uint8_t *data, size_t size,
                                 const char *input_extension,
                                 uint8_t **out_data, size_t *out_size,

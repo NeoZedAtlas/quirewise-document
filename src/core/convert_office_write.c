@@ -616,6 +616,10 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
     *out_size = 0u;
+    if ((size >= 5u && memcmp(data, "%PDF-", 5u) == 0) ||
+        (input_extension && strcmp(input_extension, "pdf") == 0))
+        return qw_doc_office_docx_from_pdf(data, size, out_data, out_size,
+                                           report);
     status = qw_doc_convert_html_memory(data, size, input_extension, &html,
                                         &html_size, report);
     if (status != QW_STATUS_OK) return status;
@@ -829,6 +833,10 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
     *out_size = 0u;
+    if ((size >= 5u && memcmp(data, "%PDF-", 5u) == 0) ||
+        (input_extension && strcmp(input_extension, "pdf") == 0))
+        return qw_doc_office_epub_from_pdf(data, size, out_data, out_size,
+                                           report);
     status = qw_doc_convert_html_memory(data, size, input_extension, &html,
                                         &html_size, report);
     if (status != QW_STATUS_OK) return status;
