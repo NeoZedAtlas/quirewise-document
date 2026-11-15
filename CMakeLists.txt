@@ -341,7 +341,17 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_odp_image_test
+    add_executable(quirewise_document_docx_header_footer_test
+    tests/docx_header_footer_test.c)
+target_compile_features(quirewise_document_docx_header_footer_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_docx_header_footer_test PRIVATE
+    QUIREWISE_DOCX_HF_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/header-footer.docx")
+target_link_libraries(quirewise_document_docx_header_footer_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_docx_header_footer
+    COMMAND quirewise_document_docx_header_footer_test)
+
+add_executable(quirewise_document_odp_image_test
     tests/odp_image_test.c)
 target_compile_features(quirewise_document_odp_image_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_odp_image_test PRIVATE

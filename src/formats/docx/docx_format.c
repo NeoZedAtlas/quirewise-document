@@ -479,6 +479,251 @@ static int docx_find_image_target(const uint8_t *relationships,
     return 0;
 }
 
+/* Resolve any relationship id (images, headers, footers) without filtering by
+ * the relationship Type. External targets are rejected. */
+static int docx_find_any_relationship_target(const uint8_t *relationships,
+                                             size_t relationships_size,
+                                             const uint8_t *relationship_id,
+                                             size_t relationship_id_size,
+                                             char *path,
+                                             size_t path_capacity)
+{
+    size_t i = 0;
+
+    if (!relationships || !relationship_id || !relationship_id_size)
+        return 0;
+    while (i < relationships_size) {
+        size_t name_start;
+        size_t name_end;
+        size_t tag_end;
+        int closing = 0;
+        if (relationships[i] != '<') {
+            ++i;
+            continue;
+        }
+        if (i + 3u < relationships_size &&
+            memcmp(relationships + i, "<!--", 4u) == 0) {
+            while (i + 2u < relationships_size &&
+                   memcmp(relationships + i, "-->", 3u) != 0)
+                ++i;
+            i = i + 2u < relationships_size ? i + 3u : relationships_size;
+            continue;
+        }
+        ++i;
+        if (i < relationships_size && relationships[i] == '/') {
+            closing = 1;
+            ++i;
+        }
+        name_start = i;
+        while (i < relationships_size && relationships[i] != '>' &&
+               relationships[i] != '/' && relationships[i] != ' ' &&
+               relationships[i] != '\t' && relationships[i] != '\r' &&
+               relationships[i] != '\n')
+            ++i;
+        name_end = i;
+        tag_end = name_end;
+        while (tag_end < relationships_size && relationships[tag_end] != '>')
+            ++tag_end;
+        if (tag_end >= relationships_size) return 0;
+        if (!closing && xml_local_name_is(relationships + name_start,
+                                          name_end - name_start,
+                                          "Relationship")) {
+            const uint8_t *id_value;
+            const uint8_t *target_value;
+            const uint8_t *mode_value;
+            size_t id_size;
+            size_t target_size;
+            size_t mode_size;
+
+            if (xml_attribute_value(relationships, name_end, tag_end,
+                                    "Id", &id_value, &id_size) &&
+                id_size == relationship_id_size &&
+                memcmp(id_value, relationship_id, id_size) == 0 &&
+                xml_attribute_value(relationships, name_end, tag_end,
+                                    "Target", &target_value, &target_size)) {
+                if (xml_attribute_value(relationships, name_end, tag_end,
+                                        "TargetMode", &mode_value,
+                                        &mode_size) &&
+                    mode_size == 8u &&
+                    memcmp(mode_value, "External", 8u) == 0)
+                    return 0;
+                return docx_resolve_relationship_target(target_value,
+                                                        target_size, path,
+                                                        path_capacity);
+            }
+        }
+        i = tag_end + 1u;
+    }
+    return 0;
+}
+
+/* Append the text runs (<w:t>) of a header/footer part to a buffer. */
+static int docx_append_part_text(QwDocxHtml *buffer, const uint8_t *xml,
+                                 size_t size)
+{
+    size_t i = 0;
+
+    while (i < size) {
+        size_t name_start;
+        size_t name_end;
+        size_t tag_end;
+        size_t local;
+        int closing = 0;
+        if (xml[i] != '<') {
+            ++i;
+            continue;
+        }
+        if (i + 3u < size && memcmp(xml + i, "<!--", 4u) == 0) {
+            while (i + 2u < size && memcmp(xml + i, "-->", 3u) != 0) ++i;
+            i = i + 2u < size ? i + 3u : size;
+            continue;
+        }
+        ++i;
+        if (i < size && xml[i] == '/') {
+            closing = 1;
+            ++i;
+        }
+        name_start = i;
+        while (i < size && xml[i] != '>' && xml[i] != '/' &&
+               xml[i] != ' ' && xml[i] != '\t' && xml[i] != '\r' &&
+               xml[i] != '\n')
+            ++i;
+        name_end = i;
+        tag_end = name_end;
+        while (tag_end < size && xml[tag_end] != '>') ++tag_end;
+        if (tag_end >= size) break;
+        i = tag_end + 1u;
+        if (closing) continue;
+        local = name_start;
+        {
+            size_t k;
+            for (k = name_start; k < name_end; ++k) {
+                if (xml[k] == ':') local = k + 1u;
+            }
+        }
+        if (name_end - local != 1u || xml[local] != 't') continue;
+        if (tag_end > name_end && xml[tag_end - 1u] == '/') continue;
+        {
+            size_t text_start = i;
+            size_t text_end = text_start;
+            while (text_end + 1u < size &&
+                   !(xml[text_end] == '<' && xml[text_end + 1u] == '/'))
+                ++text_end;
+            if (!append_word_text(buffer, xml + text_start,
+                                  text_end - text_start))
+                return 0;
+            while (text_end < size && xml[text_end] != '>') ++text_end;
+            i = text_end < size ? text_end + 1u : size;
+        }
+    }
+    return 1;
+}
+
+static int docx_append_header_footer_part(QwZipArchive *archive,
+                                          const char *path,
+                                          QwDocxHtml *output,
+                                          const char *css_class)
+{
+    size_t index;
+    size_t extracted_size = 0u;
+    QwZipEntryInfo stat;
+    void *xml;
+    index = qw_zip_reader_locate_file(archive, path, NULL,
+                                      QW_ZIP_CASE_SENSITIVE);
+    if (index == (size_t)-1 ||
+        !qw_zip_reader_file_stat(archive, index, &stat) ||
+        !stat.uncompressed_size || stat.uncompressed_size > 16u * 1024u * 1024u ||
+        !qw_zip_reader_is_file_supported(archive, index))
+        return 1;
+    xml = qw_zip_reader_extract_to_heap(archive, index, &extracted_size, 0);
+    if (!xml || extracted_size != stat.uncompressed_size) {
+        free(xml);
+        return 1;
+    }
+    {
+        QwDocxHtml part = {0};
+        int ok = 1;
+        if (docx_append_part_text(&part, (const uint8_t *)xml,
+                                  extracted_size) &&
+            part.size > 0u) {
+            ok = html_literal(output, "<p class=\"") &&
+                 html_literal(output, css_class) &&
+                 html_literal(output, "\">") &&
+                 html_append(output, part.data, part.size) &&
+                 html_literal(output, "</p>\n");
+        }
+        free(part.data);
+        free(xml);
+        return ok;
+    }
+}
+
+static int docx_collect_header_footer(QwZipArchive *archive,
+                                      const uint8_t *xml, size_t xml_size,
+                                      const uint8_t *relationships,
+                                      size_t relationships_size,
+                                      QwDocxHtml *header, QwDocxHtml *footer)
+{
+    char seen[16][256];
+    size_t seen_count = 0u;
+    size_t i = 0;
+
+    while (i < xml_size) {
+        size_t name_start;
+        size_t name_end;
+        size_t tag_end;
+        int closing = 0;
+        int is_header = 0;
+        if (xml[i] != '<') { ++i; continue; }
+        ++i;
+        if (i < xml_size && xml[i] == '/') { closing = 1; ++i; }
+        name_start = i;
+        while (i < xml_size && xml[i] != '>' && xml[i] != '/' &&
+               xml[i] != ' ' && xml[i] != '\t' && xml[i] != '\r' &&
+               xml[i] != '\n')
+            ++i;
+        name_end = i;
+        tag_end = name_end;
+        while (tag_end < xml_size && xml[tag_end] != '>') ++tag_end;
+        if (tag_end >= xml_size) break;
+        i = tag_end + 1u;
+        if (closing) continue;
+        if (xml_local_name_is(xml + name_start, name_end - name_start,
+                              "headerReference"))
+            is_header = 1;
+        else if (!xml_local_name_is(xml + name_start, name_end - name_start,
+                                    "footerReference"))
+            continue;
+        {
+            const uint8_t *id_value;
+            size_t id_size;
+            char path[256];
+            size_t seen_index;
+            if (!xml_attribute_value(xml, name_end, tag_end, "id",
+                                     &id_value, &id_size) ||
+                id_size == 0u || id_size > 64u)
+                continue;
+            if (!docx_find_any_relationship_target(relationships,
+                                                   relationships_size,
+                                                   id_value, id_size, path,
+                                                   sizeof(path)))
+                continue;
+            for (seen_index = 0u; seen_index < seen_count; ++seen_index) {
+                if (strcmp(seen[seen_index], path) == 0) break;
+            }
+            if (seen_index < seen_count) continue;
+            if (seen_count >= sizeof(seen) / sizeof(seen[0])) break;
+            snprintf(seen[seen_count], sizeof(seen[seen_count]), "%s", path);
+            ++seen_count;
+            if (!docx_append_header_footer_part(archive, path,
+                                                is_header ? header : footer,
+                                                is_header ? "docx-header"
+                                                          : "docx-footer"))
+                return 0;
+        }
+    }
+    return 1;
+}
 static int docx_ascii_prefix_equal(const uint8_t *text, size_t text_size,
                                    const char *prefix)
 {
@@ -1708,6 +1953,10 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                                      const QwDocxNumbering *numbering,
                                      const QwDocxStyles *styles,
                                      const QwDocxPageLayout *page_layout,
+                                     const char *header_html,
+                                     size_t header_size,
+                                     const char *footer_html,
+                                     size_t footer_size,
                                      QwDocxHtml *html,
                                      size_t *omitted_images,
                                      size_t *omitted_list_items)
@@ -1720,6 +1969,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
         "img{max-width:100%;height:auto}"
         "table{border-collapse:collapse;width:100%}td{border:1px solid #999;"
         "vertical-align:top;padding:4px}"
+        ".docx-header,.docx-footer{color:#555;font-size:9pt}"
         "</style></head><body>";
     static const char suffix[] = "</body></html>";
     size_t i = 0;
@@ -1753,6 +2003,8 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
         !html_append(html, prefix_start, sizeof(prefix_start) - 1u) ||
         !docx_append_page_rule(html, page_layout) ||
         !html_append(html, prefix_end, sizeof(prefix_end) - 1u)) return 0;
+    if (header_html && header_size &&
+        !html_append(html, header_html, header_size)) return 0;
     while (i < xml_size) {
         if (xml[i] == '<') {
             size_t name_start;
@@ -2270,6 +2522,8 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                    !html_close_paragraph(html, paragraph_tag)) return 0;
     }
     return docx_close_list(html, &list) &&
+           (!footer_html || !footer_size ||
+            html_append(html, footer_html, footer_size)) &&
            html_append(html, suffix, sizeof(suffix) - 1u);
 }
 
@@ -2293,6 +2547,8 @@ static int docx_build_layout_html(const void *data, size_t size,
     void *relationships = NULL;
     void *numbering_xml = NULL;
     QwDocxHtml html = {0};
+    QwDocxHtml header_snippet = {0};
+    QwDocxHtml footer_snippet = {0};
     QwDocxNumbering numbering;
     QwDocxStyles styles;
     QwDocxPageLayout page_layout;
@@ -2394,6 +2650,14 @@ static int docx_build_layout_html(const void *data, size_t size,
                              "WordprocessingML section layout is malformed");
         goto cleanup;
     }
+    if (!docx_collect_header_footer(
+            &archive, (const uint8_t *)xml, xml_size,
+            (const uint8_t *)relationships, relationships_size,
+            &header_snippet, &footer_snippet)) {
+        if (report) snprintf(report->note, sizeof(report->note),
+                             "WordprocessingML header/footer parts are malformed");
+        goto cleanup;
+    }
     if (!docx_document_xml_to_html((const uint8_t *)xml, xml_size,
                                    &archive,
                                     (const uint8_t *)relationships,
@@ -2401,6 +2665,8 @@ static int docx_build_layout_html(const void *data, size_t size,
                                     &numbering,
                                     &styles,
                                     &page_layout,
+                                    header_snippet.data, header_snippet.size,
+                                    footer_snippet.data, footer_snippet.size,
                                     &html, &omitted_images,
                                     &omitted_list_items)) {
         if (report) snprintf(report->note, sizeof(report->note),
@@ -2413,6 +2679,8 @@ cleanup:
     free(xml);
     free(relationships);
     free(numbering_xml);
+    free(header_snippet.data);
+    free(footer_snippet.data);
     if (archive_open) qw_zip_reader_end(&archive);
     if (rc == QW_STATUS_OK) {
         *out_html = html;
