@@ -6,6 +6,8 @@
 #include "quirewise/xml.h"
 #include "../archive/zip_native.h"
 
+#include <quirewise/image.h>
+
 #include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,7 +22,9 @@ enum {
     ODP_MAX_SLIDES = 1000,
     ODP_MAX_XML_NODES = 2000000,
     ODP_MAX_XML_DEPTH = 128,
-    ODP_MAX_SPACES_PER_RUN = 4096
+    ODP_MAX_SPACES_PER_RUN = 4096,
+    ODP_MAX_IMAGES = 64,
+    ODP_MAX_MEDIA_BYTES = 16 * 1024 * 1024
 };
 
 static int odp_bytes_contain(const uint8_t *data, size_t size,
@@ -80,6 +84,7 @@ typedef struct OdpReader {
     QwTextBuffer html;
     size_t visited_nodes;
     size_t slide_count;
+    size_t image_count;
 } OdpReader;
 
 struct QwOdpDocument {
@@ -209,6 +214,211 @@ static int odp_render_inline(OdpReader *reader, QwXmlNode *node, size_t depth)
     return 1;
 }
 
+
+static int odp_html_base64(OdpReader *reader, const uint8_t *data,
+                           size_t size)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    char chunk[260];
+    size_t used = 0u;
+    size_t index;
+
+    for (index = 0u; index < size; index += 3u) {
+        uint32_t value = (uint32_t)data[index] << 16;
+        if (index + 1u < size) value |= (uint32_t)data[index + 1u] << 8;
+        if (index + 2u < size) value |= (uint32_t)data[index + 2u];
+        chunk[used++] = alphabet[(value >> 18) & 0x3fu];
+        chunk[used++] = alphabet[(value >> 12) & 0x3fu];
+        chunk[used++] = index + 1u < size
+                            ? alphabet[(value >> 6) & 0x3fu] : '=';
+        chunk[used++] = index + 2u < size ? alphabet[value & 0x3fu] : '=';
+        if (used >= 256u) {
+            if (!qw_html_output_append(&reader->html, chunk, used,
+                                       ODP_MAX_HTML_BYTES, NULL))
+                return 0;
+            used = 0u;
+        }
+    }
+    if (used && !qw_html_output_append(&reader->html, chunk, used,
+                                       ODP_MAX_HTML_BYTES, NULL))
+        return 0;
+    return 1;
+}
+
+static int odp_base64_value(unsigned char value)
+{
+    if (value >= 'A' && value <= 'Z') return value - 'A';
+    if (value >= 'a' && value <= 'z') return value - 'a' + 26;
+    if (value >= '0' && value <= '9') return value - '0' + 52;
+    if (value == '+') return 62;
+    if (value == '/') return 63;
+    return -1;
+}
+
+static uint8_t *odp_base64_decode(const char *text, size_t size,
+                                  size_t *out_size)
+{
+    uint8_t *out;
+    size_t capacity;
+    size_t written = 0u;
+    uint32_t accumulator = 0u;
+    int bits = 0;
+    size_t index;
+
+    if (!text || !size) return NULL;
+    capacity = (size / 4u + 1u) * 3u;
+    if (capacity > ODP_MAX_MEDIA_BYTES) return NULL;
+    out = (uint8_t *)malloc(capacity);
+    if (!out) return NULL;
+    for (index = 0u; index < size; ++index) {
+        int value = odp_base64_value((unsigned char)text[index]);
+        if (value < 0) {
+            if (text[index] == '=') break;
+            if (text[index] == ' ' || text[index] == '\t' ||
+                text[index] == '\r' || text[index] == '\n')
+                continue;
+            free(out);
+            return NULL;
+        }
+        accumulator = (accumulator << 6) | (uint32_t)value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[written++] = (uint8_t)((accumulator >> bits) & 0xffu);
+        }
+    }
+    *out_size = written;
+    return out;
+}
+
+static void *odp_extract_media(OdpReader *reader, const char *name,
+                               size_t *out_size)
+{
+    size_t index;
+    size_t extracted_size = 0u;
+    QwZipEntryInfo stat;
+    void *contents;
+
+    if (out_size) *out_size = 0u;
+    if (!reader || !reader->zip || !name || !out_size || strstr(name, "..") ||
+        name[0] == '/')
+        return NULL;
+    index = qw_zip_reader_locate_file(reader->zip, name, NULL,
+                                      QW_ZIP_CASE_SENSITIVE);
+    if (index == (size_t)-1 ||
+        !qw_zip_reader_file_stat(reader->zip, index, &stat) ||
+        !stat.uncompressed_size || stat.uncompressed_size > ODP_MAX_MEDIA_BYTES ||
+        !qw_zip_reader_is_file_supported(reader->zip, index))
+        return NULL;
+    contents = qw_zip_reader_extract_to_heap(reader->zip, index,
+                                              &extracted_size, 0u);
+    if (!contents || extracted_size != stat.uncompressed_size ||
+        extracted_size > ODP_MAX_MEDIA_BYTES) {
+        free(contents);
+        return NULL;
+    }
+    *out_size = extracted_size;
+    return contents;
+}
+
+static double odp_length_points(const char *value)
+{
+    char *end = NULL;
+    double number;
+
+    if (!value || !value[0]) return 0.0;
+    number = strtod(value, &end);
+    if (end == value || number <= 0.0) return 0.0;
+    if (strcmp(end, "cm") == 0) return number * 72.0 / 2.54;
+    if (strcmp(end, "mm") == 0) return number * 72.0 / 25.4;
+    if (strcmp(end, "in") == 0) return number * 72.0;
+    if (strcmp(end, "pc") == 0) return number * 12.0;
+    if (strcmp(end, "pt") == 0) return number;
+    if (strcmp(end, "px") == 0) return number * 0.75;
+    return number;
+}
+
+static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
+                            double display_width)
+{
+    static const char omitted[] =
+        "<p class=\"omitted\">[embedded object omitted]</p>";
+    const char *href = qw_xml_att(node, "xlink:href");
+    void *media = NULL;
+    size_t media_size = 0u;
+    uint8_t *decoded = NULL;
+    size_t decoded_size = 0u;
+    QwImage image;
+    uint8_t *png = NULL;
+    size_t png_size = 0u;
+    unsigned width;
+
+    if (reader->image_count >= ODP_MAX_IMAGES)
+        return odp_html_literal(reader, omitted);
+    if (!href || strstr(href, "://")) {
+        /* Flat FODP embeds the payload in office:binary-data. */
+        QwXmlNode *binary = NULL;
+        QwXmlNode *child;
+        for (child = qw_xml_down(node); child; child = qw_xml_next(child)) {
+            if (odp_is_tag(child, "binary-data")) {
+                binary = child;
+                break;
+            }
+        }
+        if (!binary) return odp_html_literal(reader, omitted);
+        {
+            const char *text = qw_xml_text(binary);
+            if (!text) return odp_html_literal(reader, omitted);
+            decoded = odp_base64_decode(text, strlen(text), &decoded_size);
+            if (!decoded) return odp_html_literal(reader, omitted);
+        }
+        media = decoded;
+        media_size = decoded_size;
+    } else {
+        media = odp_extract_media(reader, href, &media_size);
+        if (!media) return odp_html_literal(reader, omitted);
+    }
+    memset(&image, 0, sizeof(image));
+    if (qw_image_decode(media, media_size, &image) != QW_IMAGE_OK ||
+        !image.pixels) {
+        free(decoded);
+        if (media != decoded) free(media);
+        return odp_html_literal(reader, omitted);
+    }
+    if (qw_image_encode(&image, QW_IMAGE_ENCODE_PNG, &png, &png_size) !=
+            QW_IMAGE_OK ||
+        !png || !png_size) {
+        qw_image_free(&image);
+        free(decoded);
+        if (media != decoded) free(media);
+        free(png);
+        return odp_html_literal(reader, omitted);
+    }
+    width = display_width > 0.0 ? (unsigned)(display_width + 0.5)
+                                : (image.width > 720u ? 720u : image.width);
+    if (width < 8u) width = 8u;
+    if (width > 720u) width = 720u;
+    qw_image_free(&image);
+    free(decoded);
+    if (media != decoded) free(media);
+    ++reader->image_count;
+    {
+        char width_text[16];
+        int length = snprintf(width_text, sizeof(width_text), "%u", width);
+        if (length <= 0 || (size_t)length >= sizeof(width_text) ||
+            !odp_html_literal(reader, "<p class=\"picture\"><img alt=\"image\" width=\"") ||
+            !odp_html_literal(reader, width_text) ||
+            !odp_html_literal(reader, "\" src=\"data:image/png;base64,") ||
+            !odp_html_base64(reader, png, png_size) ||
+            !odp_html_literal(reader, "\"/></p>")) {
+            free(png);
+            return 0;
+        }
+    }
+    free(png);
+    return 1;
+}
 static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
 {
     if (depth > ODP_MAX_XML_DEPTH) return 0;
@@ -233,7 +443,26 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
             if (!odp_html_literal(reader, "<li>") ||
                 !odp_render_blocks(reader, qw_xml_down(node), depth + 1u) ||
                 !odp_html_literal(reader, "</li>")) return 0;
-        } else if (odp_is_tag(node, "image") || odp_is_tag(node, "object")) {
+        } else if (odp_is_tag(node, "frame")) {
+            QwXmlNode *child;
+            QwXmlNode *image = NULL;
+            for (child = qw_xml_down(node); child;
+                 child = qw_xml_next(child)) {
+                if (odp_is_tag(child, "image")) {
+                    image = child;
+                    break;
+                }
+            }
+            if (image) {
+                double width = odp_length_points(qw_xml_att(node, "svg:width"));
+                if (!odp_emit_picture(reader, image, width)) return 0;
+            } else if (!odp_render_blocks(reader, qw_xml_down(node),
+                                          depth + 1u)) {
+                return 0;
+            }
+        } else if (odp_is_tag(node, "image")) {
+            if (!odp_emit_picture(reader, node, 0.0)) return 0;
+        } else if (odp_is_tag(node, "object")) {
             if (!odp_html_literal(reader, "<p class=\"omitted\">[embedded object omitted]</p>"))
                 return 0;
         } else if (!odp_render_blocks(reader, qw_xml_down(node), depth + 1u)) {
