@@ -702,6 +702,77 @@ static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
     return 1;
 }
 
+
+static int pptx_has_text_node(QwXmlNode *node)
+{
+    for (; node; node = qw_xml_next(node)) {
+        const char *text = qw_xml_text(node);
+        if (text) {
+            while (*text == ' ' || *text == '\t' || *text == '\r' ||
+                   *text == '\n')
+                ++text;
+            if (*text) return 1;
+        }
+        if (pptx_has_text_node(qw_xml_down(node))) return 1;
+    }
+    return 0;
+}
+
+static int pptx_render_notes_blocks(PptxReader *reader, QwXmlNode *node,
+                                    size_t depth)
+{
+    if (depth > PPTX_MAX_XML_DEPTH) return 0;
+    for (; node; node = qw_xml_next(node)) {
+        if (++reader->visited_nodes > PPTX_MAX_XML_NODES) return 0;
+        if (pptx_is_tag(node, "p")) {
+            if (!pptx_html_literal(reader, "<p>") ||
+                !pptx_render_inline(reader, qw_xml_down(node), depth + 1u) ||
+                !pptx_html_literal(reader, "</p>"))
+                return 0;
+        } else if (!pptx_render_notes_blocks(reader, qw_xml_down(node),
+                                             depth + 1u)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Speaker notes are a separate notesSlide part referenced by the slide rels. */
+static int pptx_emit_notes(PptxReader *reader)
+{
+    size_t index;
+    char notes_path[PPTX_MAX_PATH_BYTES];
+    const char *target = NULL;
+    QwXmlNode *xml;
+    QwXmlNode *root;
+
+    for (index = 0u; index < reader->slide_rel_count; ++index) {
+        if (reader->slide_rels[index].target &&
+            strstr(reader->slide_rels[index].target, "notesSlide")) {
+            target = reader->slide_rels[index].target;
+            break;
+        }
+    }
+    if (!target ||
+        !pptx_resolve_media_path(reader->slide_path, target, notes_path,
+                                 sizeof(notes_path)))
+        return 1;
+    xml = pptx_parse_part(reader, notes_path);
+    if (!xml) return 1; /* notes are optional */
+    root = qw_xml_root(xml);
+    if (!root || !pptx_has_text_node(qw_xml_down(root))) {
+        qw_xml_drop(xml);
+        return 1;
+    }
+    if (!pptx_html_literal(reader, "<section class=\"notes\"><h3>Notes</h3>") ||
+        !pptx_render_notes_blocks(reader, qw_xml_down(root), 0u) ||
+        !pptx_html_literal(reader, "</section>")) {
+        qw_xml_drop(xml);
+        return 0;
+    }
+    qw_xml_drop(xml);
+    return 1;
+}
 static int pptx_render_slide_part(PptxReader *reader, const char *path,
                                   size_t slide_number)
 {
@@ -744,7 +815,8 @@ static int pptx_render_slide_part(PptxReader *reader, const char *path,
         !pptx_html_literal(reader,
             "</h2></header><div class=\"slide-content\">") ||
         !pptx_render_nodes(reader, qw_xml_down(shape_tree), 0u) ||
-        !pptx_html_literal(reader, "</div></section>")) {
+        !pptx_html_literal(reader, "</div>") || !pptx_emit_notes(reader) ||
+        !pptx_html_literal(reader, "</section>")) {
         reader->error = "Presentation HTML exceeds conversion resource limits";
         goto cleanup;
     }
