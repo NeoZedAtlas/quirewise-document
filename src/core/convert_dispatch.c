@@ -242,6 +242,8 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
          ++section_index) {
         QwEpubSectionView section;
         size_t paragraph_index;
+        int table_open = 0;
+        int list_open = 0;
         memset(&section, 0, sizeof(section));
         if (qw_epub_section_at(document, section_index, &section) !=
             QW_EPUB_OK) {
@@ -274,14 +276,31 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             if (!ok) break;
             if (paragraph.run_count) {
                 QwEpubRunView first;
+                int first_flags = 0;
                 memset(&first, 0, sizeof(first));
                 if (qw_epub_run_at(document, section_index, paragraph_index,
-                                   0u, &first) == QW_EPUB_OK &&
-                    (first.style_flags & QW_EPUB_STYLE_TABLE_ROW)) {
-                    int cell_open = 0;
+                                   0u, &first) == QW_EPUB_OK)
+                    first_flags = (int)first.style_flags;
+                if (!(first_flags & QW_EPUB_STYLE_TABLE_ROW) && table_open) {
                     ok = epub_html_append(&html, &length, &capacity,
-                                          "<table><tr>",
-                                          strlen("<table><tr>"));
+                                          "</table>", strlen("</table>"));
+                    table_open = 0;
+                }
+                if (!(first_flags & QW_EPUB_STYLE_LIST_ITEM) && list_open) {
+                    ok = epub_html_append(&html, &length, &capacity,
+                                          "</ul>", strlen("</ul>"));
+                    list_open = 0;
+                }
+                if (first_flags & QW_EPUB_STYLE_TABLE_ROW) {
+                    int cell_open = 0;
+                    if (!table_open) {
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "<table>", strlen("<table>"));
+                        table_open = 1;
+                    }
+                    if (ok)
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "<tr>", strlen("<tr>"));
                     for (run_index = 0u; ok && run_index < paragraph.run_count;
                          ++run_index) {
                         QwEpubRunView run;
@@ -313,20 +332,21 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                               "</td>", strlen("</td>"));
                     if (ok)
                         ok = epub_html_append(&html, &length, &capacity,
-                                              "</tr></table>",
-                                              strlen("</tr></table>"));
+                                              "</tr>", strlen("</tr>"));
                     continue;
                 }
-                if (qw_epub_run_at(document, section_index, paragraph_index,
-                                   0u, &first) == QW_EPUB_OK &&
-                    (first.style_flags &
-                     (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE))) {
-                    int list_item = (first.style_flags &
+                if (first_flags &
+                    (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE)) {
+                    int list_item = (first_flags &
                                      QW_EPUB_STYLE_LIST_ITEM) != 0;
+                    if (list_item && !list_open) {
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "<ul>", strlen("<ul>"));
+                        list_open = 1;
+                    }
                     ok = epub_html_append(&html, &length, &capacity,
-                                          list_item ? "<ul><li>" : "<pre>",
-                                          strlen(list_item ? "<ul><li>"
-                                                           : "<pre>"));
+                                          list_item ? "<li>" : "<pre>",
+                                          strlen(list_item ? "<li>" : "<pre>"));
                     for (run_index = 0u; ok && run_index < paragraph.run_count;
                          ++run_index) {
                         QwEpubRunView run;
@@ -358,12 +378,23 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                     }
                     if (ok)
                         ok = epub_html_append(&html, &length, &capacity,
-                                              list_item ? "</li></ul>" : "</pre>",
-                                              strlen(list_item ? "</li></ul>"
+                                              list_item ? "</li>" : "</pre>",
+                                              strlen(list_item ? "</li>"
                                                                : "</pre>"));
                     continue;
                 }
             }
+            if (table_open) {
+                ok = epub_html_append(&html, &length, &capacity,
+                                      "</table>", strlen("</table>"));
+                table_open = 0;
+            }
+            if (list_open) {
+                ok = epub_html_append(&html, &length, &capacity,
+                                      "</ul>", strlen("</ul>"));
+                list_open = 0;
+            }
+            if (!ok) break;
             if (paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "<h%u>",
                          paragraph.heading_level > 6u ? 6u
@@ -429,6 +460,14 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             } else if (ok) {
                 ok = epub_html_append(&html, &length, &capacity, "</p>", 4u);
             }
+        }
+        if (table_open) {
+            ok = ok && epub_html_append(&html, &length, &capacity,
+                                        "</table>", strlen("</table>"));
+        }
+        if (list_open) {
+            ok = ok && epub_html_append(&html, &length, &capacity,
+                                        "</ul>", strlen("</ul>"));
         }
     }
     if (ok)

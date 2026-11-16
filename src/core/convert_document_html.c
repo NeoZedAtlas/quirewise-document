@@ -390,6 +390,8 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
          ++section_index) {
         QwEpubSectionView section;
         size_t paragraph_index;
+        int table_open = 0;
+        int list_open = 0;
 
         memset(&section, 0, sizeof(section));
         if (qw_epub_section_at(document, section_index, &section) !=
@@ -418,12 +420,29 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                 continue;
             if (paragraph.run_count) {
                 QwEpubRunView first;
+                int first_flags = 0;
                 memset(&first, 0, sizeof(first));
                 if (qw_epub_run_at(document, section_index, paragraph_index,
-                                   0u, &first) == QW_EPUB_OK &&
-                    (first.style_flags & QW_EPUB_STYLE_TABLE_ROW)) {
+                                   0u, &first) == QW_EPUB_OK)
+                    first_flags = (int)first.style_flags;
+                if (!(first_flags & QW_EPUB_STYLE_TABLE_ROW) && table_open) {
+                    if (!html_append_text(&buffer, "</table>"))
+                        goto out_of_memory;
+                    table_open = 0;
+                }
+                if (!(first_flags & QW_EPUB_STYLE_LIST_ITEM) && list_open) {
+                    if (!html_append_text(&buffer, "</ul>"))
+                        goto out_of_memory;
+                    list_open = 0;
+                }
+                if (first_flags & QW_EPUB_STYLE_TABLE_ROW) {
                     int cell_open = 0;
-                    if (!html_append_text(&buffer, "<table><tr>"))
+                    if (!table_open) {
+                        if (!html_append_text(&buffer, "<table>"))
+                            goto out_of_memory;
+                        table_open = 1;
+                    }
+                    if (!html_append_text(&buffer, "<tr>"))
                         goto out_of_memory;
                     for (run_index = 0u; run_index < paragraph.run_count;
                          ++run_index) {
@@ -449,18 +468,21 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                     if (cell_open &&
                         !html_append_text(&buffer, "</td>"))
                         goto out_of_memory;
-                    if (!html_append_text(&buffer, "</tr></table>"))
+                    if (!html_append_text(&buffer, "</tr>"))
                         goto out_of_memory;
                     continue;
                 }
-                if (qw_epub_run_at(document, section_index, paragraph_index,
-                                   0u, &first) == QW_EPUB_OK &&
-                    (first.style_flags &
-                     (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE))) {
-                    int list_item = (first.style_flags &
+                if (first_flags &
+                    (QW_EPUB_STYLE_LIST_ITEM | QW_EPUB_STYLE_PRE)) {
+                    int list_item = (first_flags &
                                      QW_EPUB_STYLE_LIST_ITEM) != 0;
+                    if (list_item && !list_open) {
+                        if (!html_append_text(&buffer, "<ul>"))
+                            goto out_of_memory;
+                        list_open = 1;
+                    }
                     if (!html_append_text(&buffer,
-                                          list_item ? "<ul><li>" : "<pre>"))
+                                          list_item ? "<li>" : "<pre>"))
                         goto out_of_memory;
                     for (run_index = 0u; run_index < paragraph.run_count;
                          ++run_index) {
@@ -485,10 +507,20 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         }
                     }
                     if (!html_append_text(&buffer,
-                                          list_item ? "</li></ul>" : "</pre>"))
+                                          list_item ? "</li>" : "</pre>"))
                         goto out_of_memory;
                     continue;
                 }
+            }
+            if (table_open) {
+                if (!html_append_text(&buffer, "</table>"))
+                    goto out_of_memory;
+                table_open = 0;
+            }
+            if (list_open) {
+                if (!html_append_text(&buffer, "</ul>"))
+                    goto out_of_memory;
+                list_open = 0;
             }
             heading = paragraph.heading_level >= 1u &&
                       paragraph.heading_level <= 6u
@@ -559,6 +591,14 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
             }
             if (!html_append_text(&buffer, close_tag) ||
                 !html_append_text(&buffer, "\n"))
+                goto out_of_memory;
+        }
+        if (table_open) {
+            if (!html_append_text(&buffer, "</table>"))
+                goto out_of_memory;
+        }
+        if (list_open) {
+            if (!html_append_text(&buffer, "</ul>"))
                 goto out_of_memory;
         }
         if (!html_append_text(&buffer, "</section>\n")) goto out_of_memory;
