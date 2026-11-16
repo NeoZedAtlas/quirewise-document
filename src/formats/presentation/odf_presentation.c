@@ -370,7 +370,7 @@ static double odp_length_points(const char *value)
 }
 
 static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
-                            double display_width)
+                            double display_width, double display_height)
 {
     static const char omitted[] =
         "<p class=\"omitted\">[embedded object omitted]</p>";
@@ -383,6 +383,7 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
     uint8_t *png = NULL;
     size_t png_size = 0u;
     unsigned width;
+    unsigned height;
 
     if (reader->image_count >= ODP_MAX_IMAGES)
         return odp_html_literal(reader, omitted);
@@ -429,16 +430,31 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
                                 : (image.width > 720u ? 720u : image.width);
     if (width < 8u) width = 8u;
     if (width > 720u) width = 720u;
+    height = display_height > 0.0 ? (unsigned)(display_height + 0.5) : 0u;
+    if (height && height < 8u) height = 8u;
+    if (height > 720u) height = 720u;
     qw_image_free(&image);
     free(decoded);
     if (media != decoded) free(media);
     ++reader->image_count;
     {
         char width_text[16];
+        char height_text[16];
+        size_t height_length = 0u;
         int length = snprintf(width_text, sizeof(width_text), "%u", width);
+        if (height) {
+            int written = snprintf(height_text, sizeof(height_text), "%u",
+                                   height);
+            if (written <= 0 || (size_t)written >= sizeof(height_text))
+                return 0;
+            height_length = (size_t)written;
+        }
         if (length <= 0 || (size_t)length >= sizeof(width_text) ||
             !odp_html_literal(reader, "<p class=\"picture\"><img alt=\"image\" width=\"") ||
             !odp_html_literal(reader, width_text) ||
+            (height != 0u &&
+             (!odp_html_literal(reader, "\" height=\"") ||
+              !odp_html_literal(reader, height_text))) ||
             !odp_html_literal(reader, "\" src=\"data:image/png;base64,") ||
             !odp_html_base64(reader, png, png_size) ||
             !odp_html_literal(reader, "\"/></p>")) {
@@ -485,13 +501,16 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
             }
             if (image) {
                 double width = odp_length_points(qw_xml_att(node, "svg:width"));
-                if (!odp_emit_picture(reader, image, width)) return 0;
+                double height_points =
+                    odp_length_points(qw_xml_att(node, "svg:height"));
+                if (!odp_emit_picture(reader, image, width, height_points))
+                    return 0;
             } else if (!odp_render_blocks(reader, qw_xml_down(node),
                                           depth + 1u)) {
                 return 0;
             }
         } else if (odp_is_tag(node, "image")) {
-            if (!odp_emit_picture(reader, node, 0.0)) return 0;
+            if (!odp_emit_picture(reader, node, 0.0, 0.0)) return 0;
         } else if (odp_is_tag(node, "object")) {
             if (!odp_html_literal(reader, "<p class=\"omitted\">[embedded object omitted]</p>"))
                 return 0;
