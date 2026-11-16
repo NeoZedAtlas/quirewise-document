@@ -312,15 +312,21 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                             break;
                         }
                         if (run.style_flags & QW_EPUB_STYLE_TABLE_CELL) {
+                            int header = (run.style_flags &
+                                          QW_EPUB_STYLE_TABLE_HEADER) != 0;
                             if (cell_open)
                                 ok = epub_html_append(&html, &length,
-                                                      &capacity, "</td>",
-                                                      strlen("</td>"));
+                                                      &capacity,
+                                                      header ? "</th>" : "</td>",
+                                                      strlen(header ? "</th>"
+                                                                    : "</td>"));
                             if (ok)
                                 ok = epub_html_append(&html, &length,
-                                                      &capacity, "<td>",
-                                                      strlen("<td>"));
-                            cell_open = 1;
+                                                      &capacity,
+                                                      header ? "<th>" : "<td>",
+                                                      strlen(header ? "<th>"
+                                                                    : "<td>"));
+                            cell_open = header ? 2 : 1;
                         }
                         if (ok && run.utf8_text && run.text_size)
                             ok = epub_html_escape(&html, &length, &capacity,
@@ -329,7 +335,10 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                     }
                     if (ok && cell_open)
                         ok = epub_html_append(&html, &length, &capacity,
-                                              "</td>", strlen("</td>"));
+                                              cell_open == 2 ? "</th>"
+                                                             : "</td>",
+                                              strlen(cell_open == 2 ? "</th>"
+                                                                    : "</td>"));
                     if (ok)
                         ok = epub_html_append(&html, &length, &capacity,
                                               "</tr>", strlen("</tr>"));

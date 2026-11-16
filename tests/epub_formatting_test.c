@@ -80,7 +80,9 @@ int main(void)
     free(epub);
     if (count(html, html_size, "<table>") != 1 ||
         count(html, html_size, "<tr>") != 3 ||
-        count(html, html_size, "<td>") != 6 ||
+        count(html, html_size, "<td>") != 4 ||
+        count(html, html_size, "<th>") != 2 ||
+        !contains(html, html_size, "<th>Name</th>") ||
         count(html, html_size, "<ul>") != 1 ||
         count(html, html_size, "<li>") != 2 ||
         !contains(html, html_size, "line one\nline two") ||
