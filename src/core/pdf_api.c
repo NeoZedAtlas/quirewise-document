@@ -65,6 +65,62 @@ static int pdf_info_string(QwPdfDocument *document, char *buffer,
     return QW_STATUS_OK;
 }
 
+size_t qw_pdf_bookmark_count(QwPdfDocument *document)
+{
+    QwPdfReader *reader = (QwPdfReader *)document;
+    QwPdfOutlineEntry entries[256];
+    size_t count = 0u;
+    if (!reader) return 0u;
+    if (!qw_pdf_reader_outline(reader, entries, sizeof(entries) / sizeof(entries[0]),
+                               &count))
+        return 0u;
+    if (count > sizeof(entries) / sizeof(entries[0])) {
+        size_t total = 0u;
+        QwPdfOutlineEntry *all = (QwPdfOutlineEntry *)malloc(count * sizeof(*all));
+        if (!all) return 0u;
+        if (!qw_pdf_reader_outline(reader, all, count, &total)) {
+            free(all);
+            return 0u;
+        }
+        free(all);
+        return total;
+    }
+    return count;
+}
+
+int qw_pdf_bookmark_at(QwPdfDocument *document, size_t index, char *buffer,
+                       size_t capacity, size_t *out_page_index, int *out_depth)
+{
+    QwPdfReader *reader = (QwPdfReader *)document;
+    QwPdfOutlineEntry *entries = NULL;
+    size_t count = 0u;
+    int status = QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (!reader || !buffer || capacity == 0u) return status;
+    buffer[0] = '\0';
+    if (!qw_pdf_reader_outline(reader, NULL, 0u, &count) || index >= count)
+        return status;
+    if (count == 0u) return status;
+    entries = (QwPdfOutlineEntry *)malloc(count * sizeof(*entries));
+    if (!entries) return QW_STATUS_ERR_OUT_OF_MEMORY;
+    if (!qw_pdf_reader_outline(reader, entries, count, &count)) {
+        free(entries);
+        return status;
+    }
+    if (index >= count) goto done;
+    {
+        size_t copy = strlen(entries[index].title);
+        if (copy >= capacity) copy = capacity - 1u;
+        memcpy(buffer, entries[index].title, copy);
+        buffer[copy] = '\0';
+        if (out_page_index) *out_page_index = entries[index].page_index;
+        if (out_depth) *out_depth = entries[index].depth;
+        status = QW_STATUS_OK;
+    }
+done:
+    free(entries);
+    return status;
+}
+
 int qw_pdf_document_title(QwPdfDocument *document, char *buffer,
                           size_t capacity)
 {

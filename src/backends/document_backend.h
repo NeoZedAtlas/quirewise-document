@@ -195,6 +195,15 @@ int qw_pdf_render_page_memory(const uint8_t *data,
                              QwPageImage *out_page,
                              QwConvertReport *report);
 
+typedef struct QwPdfOutlineEntry {
+    char title[256];
+    size_t page_index;
+    int depth;
+} QwPdfOutlineEntry;
+
+int qw_pdf_reader_outline(QwPdfReader *reader, QwPdfOutlineEntry *entries,
+                          size_t capacity, size_t *out_count);
+
 int qw_pdf_reader_info(QwPdfReader *reader, char *title, size_t title_capacity,
                        char *author, size_t author_capacity);
 

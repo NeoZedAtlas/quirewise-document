@@ -351,6 +351,16 @@ target_link_libraries(quirewise_document_image_edit_test PRIVATE
 add_test(NAME quirewise_document_image_edit
     COMMAND quirewise_document_image_edit_test)
 
+add_executable(quirewise_document_pdf_outline_test
+    tests/pdf_outline_test.c)
+target_compile_features(quirewise_document_pdf_outline_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_pdf_outline_test PRIVATE
+    QUIREWISE_OUTLINE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/outline.pdf")
+target_link_libraries(quirewise_document_pdf_outline_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_pdf_outline
+    COMMAND quirewise_document_pdf_outline_test)
+
 add_executable(quirewise_document_msg_rtf_test
     tests/msg_rtf_test.c)
 target_compile_features(quirewise_document_msg_rtf_test PRIVATE c_std_11)

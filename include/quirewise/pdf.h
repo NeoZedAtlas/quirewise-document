@@ -57,6 +57,13 @@ QW_API int qw_pdf_open_with_password(const uint8_t *data, size_t size,
                                      QwConvertReport *report);
 /* Document information dictionary strings, decoded to UTF-8. Empty when the
  * PDF has no /Info entry; encrypted documents are left empty. */
+/* Outline (bookmark) entries in document order, with their zero-based page
+ * index and nesting depth. Encrypted documents report zero entries. */
+QW_API size_t qw_pdf_bookmark_count(QwPdfDocument *document);
+QW_API int qw_pdf_bookmark_at(QwPdfDocument *document, size_t index,
+                              char *buffer, size_t capacity,
+                              size_t *out_page_index, int *out_depth);
+
 QW_API int qw_pdf_document_title(QwPdfDocument *document, char *buffer,
                                  size_t capacity);
 QW_API int qw_pdf_document_author(QwPdfDocument *document, char *buffer,

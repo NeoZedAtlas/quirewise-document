@@ -951,7 +951,8 @@ static int pdf_info_hex(const char *text, size_t size, size_t *position,
     return 1;
 }
 
-static void pdf_info_normalize(char *text, size_t *size)
+static void pdf_info_normalize(char *text, size_t *size,
+                               size_t capacity)
 {
     size_t used = 0u;
     size_t index = 0u;
@@ -975,7 +976,7 @@ static void pdf_info_normalize(char *text, size_t *size)
             } else {
                 index += 2u;
             }
-            (void)pdf_info_utf8_append(text, *size + 1u, &used, code);
+            (void)pdf_info_utf8_append(text, capacity, &used, code);
         }
         text[used] = '\0';
         *size = used;
@@ -989,7 +990,7 @@ static void pdf_info_normalize(char *text, size_t *size)
             unsigned int code = ((unsigned int)(unsigned char)text[index]) |
                                 ((unsigned int)(unsigned char)text[index + 1u] << 8);
             index += 2u;
-            (void)pdf_info_utf8_append(text, *size + 1u, &used, code);
+            (void)pdf_info_utf8_append(text, capacity, &used, code);
         }
         text[used] = '\0';
         *size = used;
@@ -1017,7 +1018,7 @@ static int pdf_info_read_string(const char *dict, size_t dict_size,
                 raw_size = strlen(out);
                 if (raw_size >= 2u &&
                     memcmp(out, utf16be, 2u) == 0)
-                    pdf_info_normalize(out, &raw_size);
+                    pdf_info_normalize(out, &raw_size, capacity);
                 return 1;
             }
             if (position < dict_size && dict[position] == '<' &&
@@ -1026,7 +1027,7 @@ static int pdf_info_read_string(const char *dict, size_t dict_size,
                 if (!pdf_info_hex(dict, dict_size, &position, out, capacity))
                     return 0;
                 raw_size = strlen(out);
-                pdf_info_normalize(out, &raw_size);
+                pdf_info_normalize(out, &raw_size, capacity);
                 return 1;
             }
             return 0;
@@ -2853,7 +2854,8 @@ static int pdf_reader_open_impl(const uint8_t *data, size_t size,
         }
     }
     {
-        /* Authoritative order: walk /Root -> /Pages -> /Kids. */
+        
+/* Authoritative order: walk /Root -> /Pages -> /Kids. */
         size_t root_object = 0u;
         if (pdf_find_catalog_root(reader, &root_object)) {
             const char *root_body = NULL;
@@ -2990,6 +2992,67 @@ int qw_pdf_reader_open_structure(const uint8_t *data, size_t size,
     return pdf_reader_open_impl(data, size, 1, NULL, 0u, out_reader,
                                 out_page_count, report);
 }
+
+static int pdf_outline_collect(QwPdfReader *reader, size_t object, int depth,
+                               QwPdfOutlineEntry *entries, size_t capacity,
+                               size_t *count)
+{
+    const char *body = NULL;
+    size_t body_size = 0u;
+    size_t next = 0u;
+    size_t page_object = 0u;
+    if (!reader || depth > 32 || *count >= 4096u) return 1;
+    if (!pdf_object_body(reader, object, &body, &body_size)) return 1;
+    if (entries && *count < capacity) {
+        QwPdfOutlineEntry *entry = &entries[*count];
+        memset(entry, 0, sizeof(*entry));
+        (void)pdf_info_read_string(body, body_size, "/Title", entry->title,
+                                   sizeof(entry->title));
+        entry->depth = depth;
+        if (pdf_find_reference(body, body_size, "/Dest", &page_object)) {
+            size_t page;
+            for (page = 0u; page < reader->page_count; ++page) {
+                if (reader->page_objects[page] == page_object) {
+                    entry->page_index = page;
+                    break;
+                }
+            }
+        }
+        ++*count;
+    } else {
+        ++*count;
+    }
+    if (pdf_find_reference(body, body_size, "/First", &page_object))
+        (void)pdf_outline_collect(reader, page_object, depth + 1, entries,
+                                  capacity, count);
+    if (pdf_find_reference(body, body_size, "/Next", &next))
+        (void)pdf_outline_collect(reader, next, depth, entries, capacity,
+                                  count);
+    return 1;
+}
+
+int qw_pdf_reader_outline(QwPdfReader *reader, QwPdfOutlineEntry *entries,
+                          size_t capacity, size_t *out_count)
+{
+    size_t root = 0u;
+    const char *body = NULL;
+    size_t body_size = 0u;
+    size_t outlines = 0u;
+    size_t first = 0u;
+    size_t count = 0u;
+    if (!reader || !out_count) return 0;
+    *out_count = 0u;
+    if (reader->encrypted || !pdf_find_catalog_root(reader, &root)) return 0;
+    if (!pdf_object_body(reader, root, &body, &body_size)) return 0;
+    if (!pdf_find_reference(body, body_size, "/Outlines", &outlines))
+        return 1;
+    if (!pdf_object_body(reader, outlines, &body, &body_size)) return 1;
+    if (!pdf_find_reference(body, body_size, "/First", &first)) return 1;
+    (void)pdf_outline_collect(reader, first, 0, entries, capacity, &count);
+    *out_count = count;
+    return 1;
+}
+
 
 int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
                                      size_t *out_size, QwConvertReport *report)
