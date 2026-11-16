@@ -433,6 +433,18 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_pptx_pdf_outline_test
+    tests/pptx_pdf_outline_test.c)
+target_compile_features(quirewise_document_pptx_pdf_outline_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_pptx_pdf_outline_test PRIVATE
+    QUIREWISE_OUTLINE_PPTX="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/outline-slide.pptx")
+target_include_directories(quirewise_document_pptx_pdf_outline_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_pptx_pdf_outline_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_pptx_pdf_outline
+    COMMAND quirewise_document_pptx_pdf_outline_test)
+
 add_executable(quirewise_document_odp_pdf_outline_test
     tests/odp_pdf_outline_test.c)
 target_compile_features(quirewise_document_odp_pdf_outline_test PRIVATE c_std_11)
