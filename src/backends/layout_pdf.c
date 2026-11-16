@@ -52,6 +52,11 @@ typedef struct QwPdfLines {
     size_t total_bytes;
 } QwPdfLines;
 
+typedef struct QwPdfOutlineLine {
+    size_t line_index;
+    size_t page_index;
+} QwPdfOutlineLine;
+
 typedef struct QwPdfCursor {
     const unsigned char *data;
     size_t size;
@@ -997,6 +1002,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     } QwPdfSegment;
     QwPdfOut out;
     QwPdfSegment *segments = NULL;
+    QwPdfOutlineLine *outline_entries = NULL;
+    size_t outline_count = 0u;
     size_t segment_count = 0u;
     size_t segment_capacity = 0u;
     size_t *page_first = NULL;
@@ -1119,10 +1126,55 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         }
     }
 
+    {
+        size_t *line_page = NULL;
+        size_t heading_total = 0u;
+        size_t index;
+        for (index = 0u; index < lines->count; ++index) {
+            if (lines->heading[index]) ++heading_total;
+        }
+        if (heading_total) {
+            line_page = (size_t *)malloc(lines->count * sizeof(*line_page));
+            if (!line_page) {
+                ok = 0;
+            } else {
+                for (index = 0u; index < lines->count; ++index)
+                    line_page[index] = SIZE_MAX;
+                for (index = 0u; index < page_count; ++index) {
+                    size_t first = page_first[index];
+                    size_t stop = first + page_count_lines[index];
+                    size_t seg;
+                    for (seg = first; seg < stop; ++seg) {
+                        size_t line_index = segments[seg].line_index;
+                        if (line_page[line_index] == SIZE_MAX)
+                            line_page[line_index] = index;
+                    }
+                }
+                outline_entries = (QwPdfOutlineLine *)malloc(
+                    heading_total * sizeof(*outline_entries));
+                if (!outline_entries) {
+                    ok = 0;
+                } else {
+                    for (index = 0u; index < lines->count; ++index) {
+                        if (!lines->heading[index] ||
+                            line_page[index] == SIZE_MAX)
+                            continue;
+                        outline_entries[outline_count].line_index = index;
+                        outline_entries[outline_count].page_index =
+                            line_page[index];
+                        outline_count += 1u;
+                    }
+                }
+            }
+            free(line_page);
+        }
+    }
+
     if (!ok) {
         free(segments);
         free(page_first);
         free(page_count_lines);
+        free(outline_entries);
         return 0;
     }
 
@@ -1134,13 +1186,23 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         size_t pages_object = 2u;
         size_t first_page_object = 7u;
         size_t image_object_base = first_page_object + page_count * 2u;
+        size_t outline_object_base = image_object_base + lines->image_count;
+        size_t outline_root_object = outline_object_base + outline_count;
         QwPdfText resources;
         size_t object;
 
         ok = pdf_out_printf(&out, "%%PDF-1.4\n%%\xE2\xE3\xCF\xD3\n");
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (ok) ok = pdf_out_printf(&out, "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R >>\nendobj\n",
-                                    pages_object);
+        if (outline_count) {
+            ok = pdf_out_printf(&out,
+                "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R /Outlines %zu 0 R "
+                "/PageMode /UseOutlines >>\nendobj\n",
+                pages_object, outline_root_object);
+        } else {
+            ok = pdf_out_printf(&out,
+                "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R >>\nendobj\n",
+                pages_object);
+        }
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
         if (ok) {
             size_t kid;
@@ -1265,6 +1327,64 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 ok = 0;
             }
         }
+        for (object = 0u; ok && outline_count && object < outline_count;
+             ++object) {
+            const QwPdfText *item =
+                &lines->items[outline_entries[object].line_index];
+            char title[256];
+            size_t title_size = 0u;
+            size_t source = 0u;
+            size_t page_object =
+                first_page_object + outline_entries[object].page_index * 2u;
+            size_t outline_object = outline_object_base + object;
+            while (source < item->size && title_size + 2u < sizeof(title) &&
+                   title_size < 160u) {
+                unsigned char ch =
+                    (unsigned char)item->data[item->size ? source : 0u];
+                if (ch == '(' || ch == ')' || ch == '\\')
+                    title[title_size++] = '\\';
+                if (ch >= 0x20u && ch < 0x7fu)
+                    title[title_size++] = (char)ch;
+                else
+                    title[title_size++] = ' ';
+                ++source;
+            }
+            if (!pdf_out_track(&out, out.bytes.size) ||
+                !pdf_out_printf(&out,
+                    "%zu 0 obj\n<< /Title (%.*s) /Parent %zu 0 R",
+                    outline_object, (int)title_size, title,
+                    outline_root_object)) {
+                ok = 0;
+                break;
+            }
+            if (object > 0u && !pdf_out_printf(&out, " /Prev %zu 0 R",
+                                               outline_object - 1u)) {
+                ok = 0;
+                break;
+            }
+            if (object + 1u < outline_count &&
+                !pdf_out_printf(&out, " /Next %zu 0 R",
+                                outline_object + 1u)) {
+                ok = 0;
+                break;
+            }
+            if (!pdf_out_printf(&out, " /Dest [%zu 0 R /Fit] >>\nendobj\n",
+                                page_object)) {
+                ok = 0;
+                break;
+            }
+        }
+        if (ok && outline_count) {
+            if (!pdf_out_track(&out, out.bytes.size) ||
+                !pdf_out_printf(&out,
+                    "%zu 0 obj\n<< /Type /Outlines /First %zu 0 R /Last %zu 0 R "
+                    "/Count %zu >>\nendobj\n",
+                    outline_root_object, outline_object_base,
+                    outline_object_base + outline_count - 1u,
+                    outline_count)) {
+                ok = 0;
+            }
+        }
         free(resources.data);
         if (ok && page_count == 0u) {
             size_t page_object = first_page_object;
@@ -1287,6 +1407,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     free(segments);
     free(page_first);
     free(page_count_lines);
+    free(outline_entries);
     if (!ok) {
         free(out.bytes.data);
         free(out.offsets);
@@ -1295,7 +1416,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     {
         size_t xref_offset = out.bytes.size;
         size_t entry;
-        size_t object_total = 6u + (page_count ? page_count : 1u) * 2u;
+        size_t object_total = 6u + (page_count ? page_count : 1u) * 2u +
+                              lines->image_count +
+                              (outline_count ? outline_count + 1u : 0u);
         if (!pdf_out_printf(&out, "xref\n0 %zu\n", object_total + 1u) ||
             !pdf_out_printf(&out, "0000000000 65535 f \n")) {
             ok = 0;
