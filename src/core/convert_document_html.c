@@ -884,6 +884,43 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         goto out_of_memory;
                     list_open = 0;
                 }
+                if (first_flags & QW_EPUB_STYLE_FIGURE) {
+                    int caption_open = 0;
+                    if (!html_append_text(&buffer, "<figure>"))
+                        goto out_of_memory;
+                    for (run_index = 0u;
+                         run_index < paragraph.run_count; ++run_index) {
+                        QwEpubRunView run;
+                        memset(&run, 0, sizeof(run));
+                        if (qw_epub_run_at(document, section_index,
+                                           paragraph_index, run_index,
+                                           &run) != QW_EPUB_OK)
+                            continue;
+                        if (run.style_flags & QW_EPUB_STYLE_IMAGE) {
+                            if (run.utf8_text && run.text_size &&
+                                (!html_append_text(&buffer, "<img src=\"") ||
+                                 !html_append_escaped(&buffer, run.utf8_text,
+                                                      run.text_size) ||
+                                 !html_append_text(&buffer, "\"/>")))
+                                goto out_of_memory;
+                        } else if (run.utf8_text && run.text_size) {
+                            if (!caption_open) {
+                                if (!html_append_text(&buffer, "<figcaption>"))
+                                    goto out_of_memory;
+                                caption_open = 1;
+                            }
+                            if (!html_append_escaped(&buffer, run.utf8_text,
+                                                     run.text_size))
+                                goto out_of_memory;
+                        }
+                    }
+                    if (caption_open &&
+                        !html_append_text(&buffer, "</figcaption>"))
+                        goto out_of_memory;
+                    if (!html_append_text(&buffer, "</figure>"))
+                        goto out_of_memory;
+                    continue;
+                }
                 if (first_flags & QW_EPUB_STYLE_TABLE_CAPTION) {
                     if (!table_open) {
                         if (!html_append_text(&buffer, "<table>"))
