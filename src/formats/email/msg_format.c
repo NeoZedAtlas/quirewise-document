@@ -8,6 +8,7 @@
 
 #include "text_buffer.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -779,6 +780,278 @@ int qw_msg_probe(const uint8_t *data, size_t size)
     return found;
 }
 
+
+static int msg_hex_digit(unsigned char ch)
+{
+    if (ch >= '0' && ch <= '9') return (int)(ch - '0');
+    ch = (unsigned char)tolower(ch);
+    if (ch >= 'a' && ch <= 'f') return (int)(ch - 'a') + 10;
+    return -1;
+}
+
+static uint32_t msg_u32le(const uint8_t *data)
+{
+    return (uint32_t)data[0] | ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) | ((uint32_t)data[3] << 24);
+}
+
+/* MS-OXRTFCP: LZFu compressed RTF used by PidTagRtfCompressed. */
+static int msg_lzfu_decompress(const uint8_t *data, size_t size,
+                               uint8_t **out_data, size_t *out_size)
+{
+    uint8_t dictionary[4096];
+    uint8_t *output = NULL;
+    size_t declared;
+    size_t written = 0u;
+    size_t position;
+    if (!data || !out_data || !out_size || size == 0u) return 0;
+    *out_data = NULL;
+    *out_size = 0u;
+    if (size >= 5u && memcmp(data, "{\\rtf", 5u) == 0) {
+        uint8_t *copy = (uint8_t *)malloc(size);
+        if (!copy) return 0;
+        memcpy(copy, data, size);
+        *out_data = copy;
+        *out_size = size;
+        return 1;
+    }
+    if (size < 12u || data[4] != 'L' || data[5] != 'Z' ||
+        data[6] != 'F' || data[7] != 'u')
+        return 0;
+    declared = (size_t)msg_u32le(data);
+    if (declared == 0u || declared > 64u * 1024u * 1024u) return 0;
+    output = (uint8_t *)malloc(declared);
+    if (!output) return 0;
+    memset(dictionary, ' ', sizeof(dictionary));
+    position = 12u;
+    while (position < size && written < declared) {
+        uint8_t control = data[position++];
+        int bit;
+        for (bit = 0; bit < 8 && written < declared; ++bit) {
+            if (control & (1u << bit)) {
+                size_t token;
+                size_t offset;
+                size_t length;
+                size_t index;
+                if (position + 1u >= size) {
+                    free(output);
+                    return 0;
+                }
+                token = (size_t)data[position] |
+                        ((size_t)data[position + 1u] << 8);
+                position += 2u;
+                offset = (token >> 4) & 0xfffu;
+                length = (token & 0x0fu) + 2u;
+                for (index = 0u; index < length && written < declared;
+                     ++index) {
+                    uint8_t value = dictionary[(offset + index) & 0xfffu];
+                    dictionary[written & 0xfffu] = value;
+                    output[written++] = value;
+                }
+            } else {
+                if (position >= size) {
+                    free(output);
+                    return 0;
+                }
+                dictionary[written & 0xfffu] = data[position];
+                output[written++] = data[position++];
+            }
+        }
+    }
+    *out_data = output;
+    *out_size = written;
+    return written > 0u;
+}
+
+typedef struct MsgRtfSkip {
+    int depth;
+    int skipping;
+    int pending;
+} MsgRtfSkip;
+
+static int msg_rtf_append_utf8(QwTextBuffer *out, unsigned int code)
+{
+    char encoded[4];
+    size_t size;
+    if (code == 0u || code > 0x10ffffu ||
+        (code >= 0xd800u && code <= 0xdfffu))
+        code = 0xfffdu;
+    if (code < 0x80u) {
+        encoded[0] = (char)code;
+        size = 1u;
+    } else if (code < 0x800u) {
+        encoded[0] = (char)(0xc0u | (code >> 6));
+        encoded[1] = (char)(0x80u | (code & 0x3fu));
+        size = 2u;
+    } else if (code < 0x10000u) {
+        encoded[0] = (char)(0xe0u | (code >> 12));
+        encoded[1] = (char)(0x80u | ((code >> 6) & 0x3fu));
+        encoded[2] = (char)(0x80u | (code & 0x3fu));
+        size = 3u;
+    } else {
+        encoded[0] = (char)(0xf0u | (code >> 18));
+        encoded[1] = (char)(0x80u | ((code >> 12) & 0x3fu));
+        encoded[2] = (char)(0x80u | ((code >> 6) & 0x3fu));
+        encoded[3] = (char)(0x80u | (code & 0x3fu));
+        size = 4u;
+    }
+    return qw_text_buffer_append(out, encoded, size);
+}
+
+static int msg_rtf_is_skip_destination(const char *word, size_t size)
+{
+    static const char *const names[] = {
+        "fonttbl", "colortbl", "stylesheet", "info", "pict", "header",
+        "footer", "headerl", "headerr", "footerl", "footerr", "object",
+        "themedata", "colorschememapping", "datastore", "latentstyles"
+    };
+    size_t index;
+    for (index = 0u; index < sizeof(names) / sizeof(names[0]); ++index) {
+        if (strlen(names[index]) == size &&
+            memcmp(names[index], word, size) == 0)
+            return 1;
+    }
+    return 0;
+}
+
+/* Conservative RTF-to-text extraction for message bodies: paragraphs, tabs,
+ * escaped bytes and \uN escapes; destination groups are skipped. */
+static int msg_rtf_to_text(const uint8_t *data, size_t size, char **out_text,
+                           size_t *out_size)
+{
+    QwTextBuffer out;
+    size_t index = 0u;
+    int skip_depth = -1;
+    int depth = 0;
+    if (!data || !out_text || !out_size) return 0;
+    *out_text = NULL;
+    *out_size = 0u;
+    memset(&out, 0, sizeof(out));
+    out.limit = 32u * 1024u * 1024u;
+    while (index < size) {
+        unsigned char chr = data[index];
+        if (chr == '{') {
+            ++depth;
+            ++index;
+            if (skip_depth < 0 && index + 1u < size &&
+                data[index] == '\\' &&
+                (data[index + 1u] == '*' || data[index + 1u] == '~')) {
+                skip_depth = depth;
+            }
+            continue;
+        }
+        if (chr == '}') {
+            if (skip_depth == depth) skip_depth = -1;
+            if (depth > 0) --depth;
+            ++index;
+            continue;
+        }
+        if (chr == '\\') {
+            size_t start;
+            ++index;
+            if (index >= size) break;
+            chr = data[index];
+            if (chr == '\\' || chr == '{' || chr == '}') {
+                if (skip_depth < 0 && !qw_text_buffer_append(&out, &chr, 1u))
+                    goto out_of_memory;
+                ++index;
+                continue;
+            }
+            if (chr == '\'') {
+                int high;
+                int low;
+                if (index + 2u >= size) break;
+                high = msg_hex_digit(data[index + 1u]);
+                low = msg_hex_digit(data[index + 2u]);
+                if (high >= 0 && low >= 0 && skip_depth < 0) {
+                    unsigned char byte = (unsigned char)((high << 4) | low);
+                    if (!qw_text_buffer_append(&out, (const char *)&byte, 1u))
+                        goto out_of_memory;
+                }
+                index += 3u;
+                continue;
+            }
+            if (chr == '*') {
+                if (skip_depth < 0) skip_depth = depth;
+                ++index;
+                continue;
+            }
+            if (chr == '~') {
+                if (skip_depth < 0 && !qw_text_buffer_append(&out, " ", 1u))
+                    goto out_of_memory;
+                ++index;
+                continue;
+            }
+            if (chr < 'a' || chr > 'z') {
+                ++index;
+                continue;
+            }
+            start = index;
+            while (index < size &&
+                   ((data[index] >= 'a' && data[index] <= 'z') ||
+                    (data[index] >= 'A' && data[index] <= 'Z')))
+                ++index;
+            {
+                const char *word = (const char *)data + start;
+                size_t word_size = index - start;
+                int negative = 0;
+                long parameter = 0;
+                int has_parameter = 0;
+                if (index < size && data[index] == '-') {
+                    negative = 1;
+                    ++index;
+                }
+                while (index < size && data[index] >= '0' &&
+                       data[index] <= '9') {
+                    parameter = parameter * 10 + (data[index] - '0');
+                    has_parameter = 1;
+                    ++index;
+                }
+                if (index < size && data[index] == ' ') ++index;
+                if (msg_rtf_is_skip_destination(word, word_size)) {
+                    if (skip_depth < 0) skip_depth = depth;
+                    continue;
+                }
+                if (skip_depth >= 0) continue;
+                if (word_size == 3u && memcmp(word, "par", 3u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\n", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 4u && memcmp(word, "line", 4u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\n", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 3u && memcmp(word, "tab", 3u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\t", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 1u && word[0] == 'u' &&
+                           has_parameter) {
+                    int code = negative ? -(int)parameter : (int)parameter;
+                    if (code < 0) code += 65536;
+                    if (!msg_rtf_append_utf8(&out, (unsigned int)code))
+                        goto out_of_memory;
+                    if (index < size && data[index] == '?') ++index;
+                    if (index < size && data[index] == ' ') ++index;
+                }
+            }
+            continue;
+        }
+        if (chr == '\r' || chr == '\n') {
+            ++index;
+            continue;
+        }
+        if (skip_depth < 0 && !qw_text_buffer_append(&out, (const char *)&chr, 1u))
+            goto out_of_memory;
+        ++index;
+    }
+    *out_text = out.data ? (char *)out.data : (char *)calloc(1u, 1u);
+    if (!*out_text) return 0;
+    *out_size = out.data ? out.size : 0u;
+    return 1;
+out_of_memory:
+    free(out.data);
+    return 0;
+}
+
+
 int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                    size_t *out_size, QwConvertReport *report)
 {
@@ -786,6 +1059,7 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
     QwTextBuffer html = {0};
     int body_index;
     int used_html_body = 0;
+    int used_rtf_body = 0;
     uint8_t *body_raw = NULL;
     size_t body_size = 0u;
     char *body = NULL;
@@ -896,7 +1170,43 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
             }
         }
     }
-    if (!used_html_body && !body &&
+    if (!used_html_body && !body) {
+        int rtf_index = msg_find_stream(&cfb, "__substg1.0_10090102");
+        if (rtf_index >= 0) {
+            size_t rtf_raw_size = 0u;
+            uint8_t *rtf_raw = msg_read_stream(&cfb, (size_t)rtf_index,
+                                               &rtf_raw_size);
+            uint8_t *rtf_plain = NULL;
+            size_t rtf_plain_size = 0u;
+            if (rtf_raw &&
+                msg_lzfu_decompress(rtf_raw, rtf_raw_size, &rtf_plain,
+                                    &rtf_plain_size)) {
+                char *rtf_text = NULL;
+                size_t rtf_text_size = 0u;
+                if (msg_rtf_to_text(rtf_plain, rtf_plain_size, &rtf_text,
+                                    &rtf_text_size) &&
+                    rtf_text) {
+                    if (!qw_text_buffer_append(&html,
+                            "<pre class=\"rtf-body\">", 22u) ||
+                        !msg_html_escape(&html,
+                                         (const uint8_t *)rtf_text,
+                                         rtf_text_size) ||
+                        !qw_text_buffer_append(&html, "</pre>", 6u)) {
+                        free(rtf_text);
+                        free(rtf_plain);
+                        free(rtf_raw);
+                        rc = QW_STATUS_ERR_OUT_OF_MEMORY;
+                        goto finish;
+                    }
+                    used_rtf_body = 1;
+                    free(rtf_text);
+                }
+                free(rtf_plain);
+            }
+            free(rtf_raw);
+        }
+    }
+    if (!used_html_body && !used_rtf_body && !body &&
         !qw_text_buffer_append(&html,
                    "<p class=\"empty\">[no text body]</p>",
                    strlen("<p class=\"empty\">[no text body]</p>"))) {
