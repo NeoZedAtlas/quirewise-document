@@ -75,6 +75,52 @@ int main(void)
     }
     qw_pdf_close(document);
     free(pdf);
+
+    {
+        static const char zh_html[] =
+            "<!doctype html><html><head><title>季度报告</title>"
+            "<meta name=\"author\" content=\"张三\"/></head>"
+            "<body><p>正文</p></body></html>";
+        pdf = NULL;
+        pdf_size = 0u;
+        document = NULL;
+        page_count = 0u;
+        if (qw_doc_convert_html(zh_html, strlen(zh_html), &pdf, &pdf_size,
+                                &report) != QW_STATUS_OK ||
+            !pdf || !pdf_size) {
+            fputs("FAIL: Chinese HTML to PDF\n", stderr);
+            return 1;
+        }
+        if (!contains(pdf, pdf_size, "/Title <FEFF") ||
+            !contains(pdf, pdf_size, "/Author <FEFF")) {
+            free(pdf);
+            fputs("FAIL: Chinese PDF Info is not UTF-16BE\n", stderr);
+            return 1;
+        }
+        if (qw_pdf_open(pdf, pdf_size, &document, &page_count, &report) !=
+                QW_STATUS_OK ||
+            !document) {
+            free(pdf);
+            fputs("FAIL: Chinese Info PDF did not parse\n", stderr);
+            return 1;
+        }
+        memset(title, 0, sizeof(title));
+        memset(author, 0, sizeof(author));
+        if (qw_pdf_document_title(document, title, sizeof(title)) !=
+                QW_STATUS_OK ||
+            strcmp(title, "季度报告") != 0 ||
+            qw_pdf_document_author(document, author, sizeof(author)) !=
+                QW_STATUS_OK ||
+            strcmp(author, "张三") != 0) {
+            fprintf(stderr, "FAIL: Chinese PDF metadata title=[%s] author=[%s]\n",
+                    title, author);
+            qw_pdf_close(document);
+            free(pdf);
+            return 1;
+        }
+        qw_pdf_close(document);
+        free(pdf);
+    }
     puts("Quirewise PDF metadata tests passed");
     return 0;
 }

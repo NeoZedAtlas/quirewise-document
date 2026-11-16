@@ -1665,33 +1665,115 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         if (ok && (lines->title[0] || lines->author[0])) {
             size_t info_object = outline_root_object +
                                  (outline_count ? 1u : 0u);
-            char escaped_title[300];
-            char escaped_author[300];
+            char escaped_title[768];
+            char escaped_author[768];
             size_t title_size = 0u;
             size_t author_size = 0u;
             size_t source;
-            for (source = 0u; lines->title[source] &&
-                              title_size + 2u < sizeof(escaped_title);
-                 ++source) {
-                char ch = lines->title[source];
-                if (ch == '(' || ch == ')' || ch == '\\')
-                    escaped_title[title_size++] = '\\';
-                escaped_title[title_size++] = ch;
+            int title_ascii = 1;
+            int author_ascii = 1;
+            for (source = 0u; lines->title[source]; ++source) {
+                unsigned char ch = (unsigned char)lines->title[source];
+                if (ch < 0x20u || ch >= 0x7fu) {
+                    title_ascii = 0;
+                    break;
+                }
+            }
+            for (source = 0u; lines->author[source]; ++source) {
+                unsigned char ch = (unsigned char)lines->author[source];
+                if (ch < 0x20u || ch >= 0x7fu) {
+                    author_ascii = 0;
+                    break;
+                }
+            }
+            if (title_ascii) {
+                escaped_title[title_size++] = '(';
+                for (source = 0u; lines->title[source] &&
+                                  title_size + 3u < sizeof(escaped_title);
+                     ++source) {
+                    char ch = lines->title[source];
+                    if (ch == '(' || ch == ')' || ch == '\\')
+                        escaped_title[title_size++] = '\\';
+                    escaped_title[title_size++] = ch;
+                }
+                escaped_title[title_size++] = ')';
+            } else {
+                escaped_title[title_size++] = '<';
+                escaped_title[title_size++] = 'F';
+                escaped_title[title_size++] = 'E';
+                escaped_title[title_size++] = 'F';
+                escaped_title[title_size++] = 'F';
+                for (source = 0u; lines->title[source] &&
+                                  title_size + 4u < sizeof(escaped_title);) {
+                    unsigned int cp = 0u;
+                    unsigned char ch = (unsigned char)lines->title[source];
+                    size_t extra = 0u;
+                    if (ch < 0x80u) cp = ch;
+                    else if ((ch & 0xe0u) == 0xc0u) { cp = ch & 0x1fu; extra = 1u; }
+                    else if ((ch & 0xf0u) == 0xe0u) { cp = ch & 0x0fu; extra = 2u; }
+                    else if ((ch & 0xf8u) == 0xf0u) { cp = ch & 0x07u; extra = 3u; }
+                    else cp = 0xfffdu;
+                    ++source;
+                    while (extra-- > 0u && lines->title[source]) {
+                        unsigned char next = (unsigned char)lines->title[source];
+                        if ((next & 0xc0u) != 0x80u) { cp = 0xfffdu; break; }
+                        cp = (cp << 6) | (next & 0x3fu);
+                        ++source;
+                    }
+                    escaped_title[title_size++] = "0123456789ABCDEF"[(cp >> 12) & 0xfu];
+                    escaped_title[title_size++] = "0123456789ABCDEF"[(cp >> 8) & 0xfu];
+                    escaped_title[title_size++] = "0123456789ABCDEF"[(cp >> 4) & 0xfu];
+                    escaped_title[title_size++] = "0123456789ABCDEF"[cp & 0xfu];
+                }
+                escaped_title[title_size++] = '>';
             }
             escaped_title[title_size] = '\0';
-            for (source = 0u; lines->author[source] &&
-                              author_size + 2u < sizeof(escaped_author);
-                 ++source) {
-                char ch = lines->author[source];
-                if (ch == '(' || ch == ')' || ch == '\\')
-                    escaped_author[author_size++] = '\\';
-                escaped_author[author_size++] = ch;
+            if (author_ascii) {
+                escaped_author[author_size++] = '(';
+                for (source = 0u; lines->author[source] &&
+                                  author_size + 3u < sizeof(escaped_author);
+                     ++source) {
+                    char ch = lines->author[source];
+                    if (ch == '(' || ch == ')' || ch == '\\')
+                        escaped_author[author_size++] = '\\';
+                    escaped_author[author_size++] = ch;
+                }
+                escaped_author[author_size++] = ')';
+            } else {
+                escaped_author[author_size++] = '<';
+                escaped_author[author_size++] = 'F';
+                escaped_author[author_size++] = 'E';
+                escaped_author[author_size++] = 'F';
+                escaped_author[author_size++] = 'F';
+                for (source = 0u; lines->author[source] &&
+                                  author_size + 4u < sizeof(escaped_author);) {
+                    unsigned int cp = 0u;
+                    unsigned char ch = (unsigned char)lines->author[source];
+                    size_t extra = 0u;
+                    if (ch < 0x80u) cp = ch;
+                    else if ((ch & 0xe0u) == 0xc0u) { cp = ch & 0x1fu; extra = 1u; }
+                    else if ((ch & 0xf0u) == 0xe0u) { cp = ch & 0x0fu; extra = 2u; }
+                    else if ((ch & 0xf8u) == 0xf0u) { cp = ch & 0x07u; extra = 3u; }
+                    else cp = 0xfffdu;
+                    ++source;
+                    while (extra-- > 0u && lines->author[source]) {
+                        unsigned char next = (unsigned char)lines->author[source];
+                        if ((next & 0xc0u) != 0x80u) { cp = 0xfffdu; break; }
+                        cp = (cp << 6) | (next & 0x3fu);
+                        ++source;
+                    }
+                    escaped_author[author_size++] = "0123456789ABCDEF"[(cp >> 12) & 0xfu];
+                    escaped_author[author_size++] = "0123456789ABCDEF"[(cp >> 8) & 0xfu];
+                    escaped_author[author_size++] = "0123456789ABCDEF"[(cp >> 4) & 0xfu];
+                    escaped_author[author_size++] = "0123456789ABCDEF"[cp & 0xfu];
+                }
+                escaped_author[author_size++] = '>';
             }
             escaped_author[author_size] = '\0';
             if (!pdf_out_track(&out, out.bytes.size) ||
                 !pdf_out_printf(&out,
-                    "%zu 0 obj\n<< /Producer (Quirewise) /Title (%s) "
-                    "/Author (%s) >>\nendobj\n",
+                    "%zu 0 obj\n<< /Producer (Quirewise) /Title %s "
+                    "/Author %s >>\nendobj\n",
                     info_object, escaped_title, escaped_author)) {
                 ok = 0;
             }
