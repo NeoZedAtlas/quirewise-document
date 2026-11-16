@@ -839,6 +839,7 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
         int table_open = 0;
         int list_open = 0;
         int list_ordered = 0;
+        int dl_open = 0;
 
         memset(&section, 0, sizeof(section));
         if (qw_epub_section_at(document, section_index, &section) !=
@@ -1032,19 +1033,40 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                     goto out_of_memory;
                 list_open = 0;
             }
-            if (first_flags & QW_EPUB_STYLE_QUOTE) {
-                if (!html_append_text(&buffer, "<blockquote>"))
-                    goto out_of_memory;
-            }
-            heading = paragraph.heading_level >= 1u &&
-                      paragraph.heading_level <= 6u
-                          ? (int)paragraph.heading_level : 0;
-            if (heading) {
-                snprintf(open_tag, sizeof(open_tag), "<h%d>", heading);
-                snprintf(close_tag, sizeof(close_tag), "</h%d>", heading);
-            } else {
-                snprintf(open_tag, sizeof(open_tag), "%s", "<p>");
-                snprintf(close_tag, sizeof(close_tag), "%s", "</p>");
+            {
+                int is_dt = (first_flags & QW_EPUB_STYLE_DEF_TERM) != 0;
+                int is_dd = (first_flags & QW_EPUB_STYLE_DEF_DETAIL) != 0;
+                if (is_dt || is_dd) {
+                    if (!dl_open) {
+                        if (!html_append_text(&buffer, "<dl>"))
+                            goto out_of_memory;
+                        dl_open = 1;
+                    }
+                } else if (dl_open) {
+                    if (!html_append_text(&buffer, "</dl>"))
+                        goto out_of_memory;
+                    dl_open = 0;
+                }
+                if (first_flags & QW_EPUB_STYLE_QUOTE) {
+                    if (!html_append_text(&buffer, "<blockquote>"))
+                        goto out_of_memory;
+                }
+                heading = paragraph.heading_level >= 1u &&
+                          paragraph.heading_level <= 6u
+                              ? (int)paragraph.heading_level : 0;
+                if (is_dt) {
+                    snprintf(open_tag, sizeof(open_tag), "%s", "<dt>");
+                    snprintf(close_tag, sizeof(close_tag), "%s", "</dt>");
+                } else if (is_dd) {
+                    snprintf(open_tag, sizeof(open_tag), "%s", "<dd>");
+                    snprintf(close_tag, sizeof(close_tag), "%s", "</dd>");
+                } else if (heading) {
+                    snprintf(open_tag, sizeof(open_tag), "<h%d>", heading);
+                    snprintf(close_tag, sizeof(close_tag), "</h%d>", heading);
+                } else {
+                    snprintf(open_tag, sizeof(open_tag), "%s", "<p>");
+                    snprintf(close_tag, sizeof(close_tag), "%s", "</p>");
+                }
             }
             if (!html_append_text(&buffer, open_tag)) goto out_of_memory;
             for (run_index = 0u; run_index < paragraph.run_count;
@@ -1118,6 +1140,10 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
         if (list_open) {
             if (!html_append_text(&buffer,
                                   list_ordered ? "</ol>" : "</ul>"))
+                goto out_of_memory;
+        }
+        if (dl_open) {
+            if (!html_append_text(&buffer, "</dl>"))
                 goto out_of_memory;
         }
         if (!html_append_text(&buffer, "</section>\n")) goto out_of_memory;

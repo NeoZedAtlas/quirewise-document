@@ -245,6 +245,7 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
         int table_open = 0;
         int list_open = 0;
         int list_ordered = 0;
+        int dl_open = 0;
         memset(&section, 0, sizeof(section));
         if (qw_epub_section_at(document, section_index, &section) !=
             QW_EPUB_OK) {
@@ -264,6 +265,8 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             size_t run_index;
             char tag[8];
             int first_flags = 0;
+            int def_term = 0;
+            int def_detail = 0;
             memset(&paragraph, 0, sizeof(paragraph));
             if (qw_epub_paragraph_at(document, section_index, paragraph_index,
                                      &paragraph) != QW_EPUB_OK) {
@@ -469,13 +472,31 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                 list_open = 0;
             }
             if (!ok) break;
+            def_term = (first_flags & QW_EPUB_STYLE_DEF_TERM) != 0;
+            def_detail = (first_flags & QW_EPUB_STYLE_DEF_DETAIL) != 0;
+            if (def_term || def_detail) {
+                if (!dl_open) {
+                    ok = epub_html_append(&html, &length, &capacity,
+                                          "<dl>", strlen("<dl>"));
+                    dl_open = 1;
+                }
+            } else if (dl_open) {
+                ok = epub_html_append(&html, &length, &capacity,
+                                      "</dl>", strlen("</dl>"));
+                dl_open = 0;
+            }
+            if (!ok) break;
             if (first_flags & QW_EPUB_STYLE_QUOTE) {
                 ok = epub_html_append(&html, &length, &capacity,
                                       "<blockquote>",
                                       strlen("<blockquote>"));
             }
             if (!ok) break;
-            if (paragraph.heading_level) {
+            if (def_term) {
+                ok = epub_html_append(&html, &length, &capacity, "<dt>", 4u);
+            } else if (def_detail) {
+                ok = epub_html_append(&html, &length, &capacity, "<dd>", 4u);
+            } else if (paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "<h%u>",
                          paragraph.heading_level > 6u ? 6u
                                                        : paragraph.heading_level);
@@ -531,7 +552,11 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                 if (ok && run.link_target && run.link_target_size)
                     ok = epub_html_append(&html, &length, &capacity, "</a>", 4u);
             }
-            if (ok && paragraph.heading_level) {
+            if (ok && def_term) {
+                ok = epub_html_append(&html, &length, &capacity, "</dt>", 5u);
+            } else if (ok && def_detail) {
+                ok = epub_html_append(&html, &length, &capacity, "</dd>", 5u);
+            } else if (ok && paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "</h%u>",
                          paragraph.heading_level > 6u ? 6u
                                                        : paragraph.heading_level);
@@ -554,6 +579,10 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                         list_ordered ? "</ol>" : "</ul>",
                                         strlen(list_ordered ? "</ol>"
                                                             : "</ul>"));
+        }
+        if (dl_open) {
+            ok = ok && epub_html_append(&html, &length, &capacity,
+                                        "</dl>", strlen("</dl>"));
         }
     }
     if (ok)
