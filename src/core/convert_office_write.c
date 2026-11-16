@@ -15,6 +15,7 @@
  */
 
 #include <quirewise/convert.h>
+#include <quirewise/image.h>
 #include <quirewise/htmlz.h>
 #include <quirewise/hwpx.h>
 #include <quirewise/text_archive.h>
@@ -39,7 +40,23 @@ typedef struct OfficeTag {
     int closing;
     int self_closing;
     char alt[512];
+    const uint8_t *src;
+    size_t src_size;
 } OfficeTag;
+
+typedef struct OfficeDocxImage {
+    uint8_t *png;
+    size_t png_size;
+    unsigned width;
+    unsigned height;
+} OfficeDocxImage;
+
+#define OFFICE_DOCX_MAX_IMAGES 64u
+
+typedef struct OfficeDocxImages {
+    OfficeDocxImage images[OFFICE_DOCX_MAX_IMAGES];
+    size_t count;
+} OfficeDocxImages;
 
 static int office_reserve(OfficeBuffer *buffer, size_t additional)
 {
@@ -209,7 +226,7 @@ static size_t office_parse_tag(const uint8_t *data, size_t size, size_t start,
         if (end < 0) return 0u;
         if ((size_t)end > index && data[(size_t)end - 1u] == '/')
             tag->self_closing = 1;
-        /* Only alt= is read, for image replacement text. */
+        /* alt= is the replacement text; src= carries data URIs. */
         for (position = index; position + 5u < (size_t)end; ++position) {
             if ((data[position] == 'a' || data[position] == 'A') &&
                 (data[position + 1u] == 'l' || data[position + 1u] == 'L') &&
@@ -224,6 +241,21 @@ static size_t office_parse_tag(const uint8_t *data, size_t size, size_t start,
                        alt + 1u < sizeof(tag->alt))
                     tag->alt[alt++] = (char)data[position++];
                 tag->alt[alt] = '\0';
+            }
+        }
+        for (position = index; position + 5u < (size_t)end; ++position) {
+            if ((data[position] == 's' || data[position] == 'S') &&
+                (data[position + 1u] == 'r' || data[position + 1u] == 'R') &&
+                (data[position + 2u] == 'c' || data[position + 2u] == 'C') &&
+                data[position + 3u] == '=' &&
+                (data[position + 4u] == '"' || data[position + 4u] == '\'')) {
+                char quote = (char)data[position + 4u];
+                size_t start_value = position + 5u;
+                position = start_value;
+                while (position < (size_t)end && data[position] != quote)
+                    ++position;
+                tag->src = data + start_value;
+                tag->src_size = position - start_value;
                 break;
             }
         }
@@ -349,6 +381,86 @@ static int docx_append_run(DocxState *state, const uint8_t *text, size_t size)
     return 1;
 }
 
+
+static void docx_images_free(OfficeDocxImages *images)
+{
+    size_t i;
+    if (!images) return;
+    for (i = 0u; i < images->count; ++i)
+        free(images->images[i].png);
+    memset(images, 0, sizeof(*images));
+}
+
+static int office_base64_value(unsigned char ch)
+{
+    if (ch >= 'A' && ch <= 'Z') return (int)(ch - 'A');
+    if (ch >= 'a' && ch <= 'z') return (int)(ch - 'a') + 26;
+    if (ch >= '0' && ch <= '9') return (int)(ch - '0') + 52;
+    if (ch == '+') return 62;
+    if (ch == '/') return 63;
+    return -1;
+}
+
+static uint8_t *office_base64_decode(const uint8_t *data, size_t size,
+                                     size_t *out_size)
+{
+    uint8_t *decoded;
+    size_t capacity = (size / 4u + 1u) * 3u;
+    size_t written = 0u;
+    uint32_t value = 0u;
+    int bits = 0;
+    size_t i;
+    if (out_size) *out_size = 0u;
+    if (!data || !size || !out_size) return NULL;
+    decoded = (uint8_t *)malloc(capacity);
+    if (!decoded) return NULL;
+    for (i = 0u; i < size; ++i) {
+        int digit;
+        if (data[i] == '=') break;
+        digit = office_base64_value(data[i]);
+        if (digit < 0) continue;
+        value = (value << 6) | (uint32_t)digit;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            if (written >= capacity) {
+                free(decoded);
+                return NULL;
+            }
+            decoded[written++] = (uint8_t)((value >> bits) & 0xFFu);
+        }
+    }
+    *out_size = written;
+    return decoded;
+}
+
+static int office_append_docx_drawing(OfficeBuffer *body, size_t index,
+                                      unsigned width, unsigned height)
+{
+    char xml[1024];
+    long cx = (long)width * 9525L;
+    long cy = (long)height * 9525L;
+    int length = snprintf(
+        xml, sizeof(xml),
+        "<w:p><w:r><w:drawing><wp:inline distT=\"0\" distB=\"0\" "
+        "distL=\"0\" distR=\"0\"><wp:extent cx=\"%ld\" cy=\"%ld\"/>"
+        "<wp:docPr id=\"%lu\" name=\"Picture %lu\"/>"
+        "<a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/"
+        "drawingml/2006/picture\"><pic:pic><pic:nvPicPr>"
+        "<pic:cNvPr id=\"%lu\" name=\"image%lu.png\"/><pic:cNvPicPr/>"
+        "</pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rIdImg%lu\"/>"
+        "<a:stretch><a:fillRect/></a:stretch></pic:blipFill>"
+        "<pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"%ld\" cy=\"%ld\"/>"
+        "</a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>"
+        "</pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline>"
+        "</w:drawing></w:r></w:p>",
+        cx, cy, (unsigned long)(index + 1u), (unsigned long)(index + 1u),
+        (unsigned long)(index + 1u), (unsigned long)(index + 1u),
+        (unsigned long)index, cx, cy);
+    if (length <= 0 || (size_t)length >= sizeof(xml)) return 0;
+    return office_append(body, xml, (size_t)length);
+}
+
 static int docx_flush_paragraph(DocxState *state)
 {
     if (!state->paragraph_open) return 1;
@@ -357,6 +469,7 @@ static int docx_flush_paragraph(DocxState *state)
 }
 
 static int docx_body_from_html(const uint8_t *html, size_t size,
+                               OfficeDocxImages *images,
                                OfficeBuffer *body)
 {
     DocxState state;
@@ -487,7 +600,66 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                 state.table_cell_open = 1;
                 state.first_cell = 0;
             } else if (strcmp(tag.name, "img") == 0) {
-                if (tag.alt[0] &&
+                int embedded = 0;
+                if (images && images->count < OFFICE_DOCX_MAX_IMAGES &&
+                    tag.src && tag.src_size > 20u &&
+                    memcmp(tag.src, "data:image/", 11u) == 0) {
+                    const uint8_t *marker = NULL;
+                    size_t marker_at = 0u;
+                    size_t i;
+                    for (i = 11u; i + 8u <= tag.src_size; ++i) {
+                        if (memcmp(tag.src + i, ";base64,", 8u) == 0) {
+                            marker = tag.src + i + 8u;
+                            marker_at = i + 8u;
+                            break;
+                        }
+                    }
+                    if (marker && marker_at < tag.src_size) {
+                        size_t raw_size = 0u;
+                        uint8_t *raw = office_base64_decode(
+                            marker, tag.src_size - marker_at, &raw_size);
+                        if (raw && raw_size > 0u) {
+                            QwImage image;
+                            uint8_t *png = NULL;
+                            size_t png_size = 0u;
+                            memset(&image, 0, sizeof(image));
+                            if (qw_image_decode(raw, raw_size, &image) ==
+                                    QW_IMAGE_OK &&
+                                image.pixels &&
+                                qw_image_encode(&image, QW_IMAGE_ENCODE_PNG,
+                                                &png, &png_size) ==
+                                    QW_IMAGE_OK &&
+                                png && png_size) {
+                                OfficeDocxImage *slot =
+                                    &images->images[images->count];
+                                if (!docx_flush_paragraph(&state)) {
+                                    qw_image_free(&image);
+                                    free(png);
+                                    free(raw);
+                                    goto out_of_memory;
+                                }
+                                slot->png = png;
+                                slot->png_size = png_size;
+                                slot->width = image.width;
+                                slot->height = image.height;
+                                if (!office_append_docx_drawing(
+                                        &state.body, images->count,
+                                        image.width, image.height)) {
+                                    qw_image_free(&image);
+                                    free(raw);
+                                    goto out_of_memory;
+                                }
+                                ++images->count;
+                                embedded = 1;
+                                png = NULL;
+                            }
+                            qw_image_free(&image);
+                            free(png);
+                        }
+                        free(raw);
+                    }
+                }
+                if (!embedded && tag.alt[0] &&
                     !docx_append_run(&state, (const uint8_t *)tag.alt,
                                      strlen(tag.alt)))
                     goto out_of_memory;
@@ -543,6 +715,7 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
         "<Default Extension=\"rels\" ContentType=\"application/"
         "vnd.openxmlformats-package.relationships+xml\"/>"
         "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+        "<Default Extension=\"png\" ContentType=\"image/png\"/>"
         "<Override PartName=\"/word/document.xml\" ContentType=\"application/"
         "vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
         "\"/>"
@@ -601,7 +774,14 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
     static const char document_prefix[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
         "<w:document xmlns:w=\"http://schemas.openxmlformats.org/"
-        "wordprocessingml/2006/main\"><w:body>";
+        "wordprocessingml/2006/main\" "
+        "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/"
+        "relationships\" "
+        "xmlns:wp=\"http://schemas.openxmlformats.org/drawingml/2006/"
+        "wordprocessingDrawing\" "
+        "xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" "
+        "xmlns:pic=\"http://schemas.openxmlformats.org/drawingml/2006/"
+        "picture\"><w:body>";
     static const char document_suffix[] =
         "<w:sectPr><w:pgSz w:w=\"12240\" w:h=\"15840\"/>"
         "<w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" "
@@ -610,6 +790,8 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
     size_t html_size = 0u;
     OfficeBuffer body;
     OfficeBuffer document;
+    OfficeBuffer docx_rels;
+    OfficeDocxImages images;
     QwZipWriter writer;
     int status;
 
@@ -624,7 +806,8 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
                                         &html_size, report);
     if (status != QW_STATUS_OK) return status;
     memset(&body, 0, sizeof(body));
-    if (!docx_body_from_html(html, html_size, &body)) {
+    memset(&images, 0, sizeof(images));
+    if (!docx_body_from_html(html, html_size, &images, &body)) {
         free(html);
         return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
                            "DOCX body", "out of memory");
@@ -640,6 +823,45 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
                            "out of memory");
     }
     free(body.data);
+    memset(&docx_rels, 0, sizeof(docx_rels));
+    if (!office_text(&docx_rels,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+            "<Relationships xmlns=\"http://schemas.openxmlformats.org/"
+            "package/2006/relationships\">"
+            "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/"
+            "officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>")) {
+        free(body.data);
+        free(document.data);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "DOCX build",
+                           "out of memory");
+    }
+    {
+        size_t image_index;
+        for (image_index = 0u; image_index < images.count; ++image_index) {
+            char relationship[320];
+            int length = snprintf(
+                relationship, sizeof(relationship),
+                "<Relationship Id=\"rIdImg%lu\" Type=\"http://schemas."
+                "openxmlformats.org/officeDocument/2006/relationships/image\" "
+                "Target=\"media/image%lu.png\"/>",
+                (unsigned long)image_index, (unsigned long)image_index);
+            if (length <= 0 || (size_t)length >= sizeof(relationship) ||
+                !office_append(&docx_rels, relationship, (size_t)length)) {
+                free(body.data);
+                free(document.data);
+                free(docx_rels.data);
+                return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                                   "DOCX build", "out of memory");
+            }
+        }
+    }
+    if (!office_text(&docx_rels, "</Relationships>")) {
+        free(body.data);
+        free(document.data);
+        free(docx_rels.data);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "DOCX build",
+                           "out of memory");
+    }
     {
         char document_name[] = "[Content_Types].xml";
 
@@ -662,12 +884,33 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
                                    strlen(styles),
                                    QW_ZIP_NO_COMPRESSION) ||
             !qw_zip_writer_add_mem(&writer, "word/_rels/document.xml.rels",
-                                   document_rels, strlen(document_rels),
+                                   docx_rels.data, docx_rels.size,
                                    QW_ZIP_NO_COMPRESSION)) {
             qw_zip_writer_end(&writer);
             free(document.data);
             return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
                                "DOCX ZIP", "cannot add a package part");
+        }
+    }
+    {
+        size_t image_index;
+        for (image_index = 0u; image_index < images.count; ++image_index) {
+            char name[64];
+            int length = snprintf(name, sizeof(name),
+                                  "word/media/image%lu.png",
+                                  (unsigned long)image_index);
+            if (length <= 0 || (size_t)length >= sizeof(name) ||
+                !qw_zip_writer_add_mem(&writer, name,
+                                       images.images[image_index].png,
+                                       images.images[image_index].png_size,
+                                       QW_ZIP_NO_COMPRESSION)) {
+                docx_images_free(&images);
+                qw_zip_writer_end(&writer);
+                free(document.data);
+                free(docx_rels.data);
+                return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                                   "DOCX ZIP", "cannot add an image part");
+            }
         }
     }
     if (!office_zip_finish(&writer, out_data, out_size, &document)) {
@@ -676,14 +919,16 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
                            "cannot finalize the archive");
     }
     free(document.data);
+    free(docx_rels.data);
+    docx_images_free(&images);
     if (report) {
         report->format = QW_FORMAT_DOCX;
         report->output_format = QW_FORMAT_DOCX;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
                  "minimal WordprocessingML package: paragraphs, headings, "
-                 "character emphasis and bullet text; links and tables are "
-                 "flattened");
+                 "character emphasis, bullet text and %zu embedded image(s); "
+                 "links and tables are flattened", images.count);
     }
     return QW_STATUS_OK;
 }
