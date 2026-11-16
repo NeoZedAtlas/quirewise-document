@@ -11,6 +11,9 @@
 #ifndef QUIREWISE_MERGED_XLSX
 #error "QUIREWISE_MERGED_XLSX must be defined"
 #endif
+#ifndef QUIREWISE_MERGED_FODS
+#error "QUIREWISE_MERGED_FODS must be defined"
+#endif
 
 static int read_file(const char *path, uint8_t **out, size_t *out_size)
 {
@@ -58,7 +61,7 @@ static size_t count_occurrences(const uint8_t *data, size_t size,
     return count;
 }
 
-int main(void)
+static int check_merge(const char *path, const char *extension)
 {
     uint8_t *xlsx = NULL;
     size_t xlsx_size = 0u;
@@ -66,16 +69,16 @@ int main(void)
     size_t html_size = 0u;
     QwConvertReport report;
 
-    if (!read_file(QUIREWISE_MERGED_XLSX, &xlsx, &xlsx_size) || !xlsx ||
+    if (!read_file(path, &xlsx, &xlsx_size) || !xlsx ||
         !xlsx_size) {
-        fputs("FAIL: cannot read the merged XLSX fixture\n", stderr);
+        fprintf(stderr, "FAIL: cannot read %s\n", path);
         return 1;
     }
     memset(&report, 0, sizeof(report));
-    if (qw_doc_convert_html_memory(xlsx, xlsx_size, "xlsx", &html, &html_size,
+    if (qw_doc_convert_html_memory(xlsx, xlsx_size, extension, &html, &html_size,
                                    &report) != QW_STATUS_OK ||
         !html || !html_size) {
-        fprintf(stderr, "FAIL: XLSX to HTML (%s)\n", report.note);
+        fprintf(stderr, "FAIL: %s to HTML (%s)\n", extension, report.note);
         free(xlsx);
         return 1;
     }
@@ -92,6 +95,13 @@ int main(void)
         return 1;
     }
     free(html);
-    puts("Quirewise XLSX merge tests passed");
+    return 0;
+}
+
+int main(void)
+{
+    if (check_merge(QUIREWISE_MERGED_XLSX, "xlsx") != 0) return 1;
+    if (check_merge(QUIREWISE_MERGED_FODS, "fods") != 0) return 1;
+    puts("Quirewise merged spreadsheet tests passed");
     return 0;
 }
