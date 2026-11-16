@@ -130,7 +130,8 @@ static int family_subtitle_target(QwOutputFormat format)
 
 static int family_spreadsheet_target(QwOutputFormat format)
 {
-    return format == QW_FORMAT_CSV || format == QW_FORMAT_TSV;
+    return format == QW_FORMAT_CSV || format == QW_FORMAT_TSV ||
+           format == QW_FORMAT_XLSX;
 }
 
 static int family_status_from_data(QwDataStatus status)
