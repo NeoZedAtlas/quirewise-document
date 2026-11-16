@@ -452,6 +452,69 @@ static int pptx_load_slide_rels(PptxReader *reader, const char *slide_path,
     return 1;
 }
 
+
+static unsigned pptx_image_channels(QwImagePixelFormat format)
+{
+    return format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+}
+
+/* DrawingML srcRect values are fractions in 1/100000 units. */
+static int pptx_apply_src_rect(PptxReader *reader, QwXmlNode *picture,
+                               QwImage *image)
+{
+    QwXmlNode *rect = pptx_find_descendant(reader, qw_xml_down(picture),
+                                           "srcRect", 0u);
+    const char *values[4];
+    long parts[4] = {0, 0, 0, 0};
+    static const char *const names[4] = {"l", "t", "r", "b"};
+    size_t index;
+    unsigned channels;
+    uint32_t left;
+    uint32_t top;
+    uint32_t right;
+    uint32_t bottom;
+    uint32_t width;
+    uint32_t height;
+    uint8_t *pixels;
+    uint32_t row;
+    if (!rect || !image || !image->pixels) return 1;
+    for (index = 0u; index < 4u; ++index) {
+        values[index] = qw_xml_att(rect, names[index]);
+        if (values[index] && values[index][0]) {
+            char *end = NULL;
+            long parsed = strtol(values[index], &end, 10);
+            if (end && *end == '\0' && parsed >= 0) parts[index] = parsed;
+        }
+    }
+    if (parts[0] <= 0 && parts[1] <= 0 && parts[2] <= 0 && parts[3] <= 0)
+        return 1;
+    left = (uint32_t)((uint64_t)image->width * (uint64_t)parts[0] / 100000u);
+    top = (uint32_t)((uint64_t)image->height * (uint64_t)parts[1] / 100000u);
+    right = image->width -
+        (uint32_t)((uint64_t)image->width * (uint64_t)parts[2] / 100000u);
+    bottom = image->height -
+        (uint32_t)((uint64_t)image->height * (uint64_t)parts[3] / 100000u);
+    if (right <= left || bottom <= top) return 1;
+    width = right - left;
+    height = bottom - top;
+    channels = pptx_image_channels(image->format);
+    pixels = (uint8_t *)malloc((size_t)width * channels * height);
+    if (!pixels) return 0;
+    for (row = 0u; row < height; ++row) {
+        memcpy(pixels + (size_t)row * width * channels,
+               image->pixels + (size_t)(row + top) * image->stride +
+                   (size_t)left * channels,
+               (size_t)width * channels);
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->width = width;
+    image->height = height;
+    image->stride = (size_t)width * channels;
+    image->size = image->stride * height;
+    return 1;
+}
+
 static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
                              size_t depth)
 {
@@ -484,6 +547,11 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
     memset(&image, 0, sizeof(image));
     if (qw_image_decode(media, media_size, &image) != QW_IMAGE_OK ||
         !image.pixels) {
+        free(media);
+        return pptx_html_literal(reader, omitted);
+    }
+    if (!pptx_apply_src_rect(reader, picture, &image)) {
+        qw_image_free(&image);
         free(media);
         return pptx_html_literal(reader, omitted);
     }
