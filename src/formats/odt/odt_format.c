@@ -157,6 +157,8 @@ typedef struct OdtRenderContext {
     size_t embedded_image_bytes;
     size_t skipped_images;
     size_t visited_nodes;
+    double pending_image_width_px;
+    double pending_image_height_px;
 } OdtRenderContext;
 
 static int odt_html_append(OdtHtml *html, const char *data, size_t size)
@@ -592,6 +594,8 @@ static const char *odt_binary_image_mime(const char *base64)
 }
 
 /* Flat ODT/FODT embeds images as office:binary-data base64 inside draw:image. */
+static int odt_append_image_size(OdtRenderContext *context);
+
 static int odt_render_flat_image(OdtRenderContext *context, QwXmlNode *node)
 {
     QwXmlNode *child;
@@ -662,13 +666,53 @@ static int odt_render_flat_image(OdtRenderContext *context, QwXmlNode *node)
         !odt_html_literal(context->html, mime) ||
         !odt_html_literal(context->html, ";base64,") ||
         !odt_html_append(context->html, compact, compact_size) ||
-        !odt_html_literal(context->html, "\" alt=\"\"/>")) {
+        !odt_html_literal(context->html, "\"") ||
+        !odt_append_image_size(context) ||
+        !odt_html_literal(context->html, " alt=\"\"/>")) {
         free(compact);
         return 0;
     }
     context->embedded_image_bytes += compact_size;
     free(compact);
     return 1;
+}
+
+
+static double odt_length_pixels(const char *value)
+{
+    char *end = NULL;
+    double number;
+    if (!value || !value[0]) return 0.0;
+    number = strtod(value, &end);
+    if (end == value || number <= 0.0) return 0.0;
+    if (strcmp(end, "cm") == 0) return number * 96.0 / 2.54;
+    if (strcmp(end, "mm") == 0) return number * 96.0 / 25.4;
+    if (strcmp(end, "in") == 0) return number * 96.0;
+    if (strcmp(end, "pt") == 0) return number * 96.0 / 72.0;
+    if (strcmp(end, "pc") == 0) return number * 16.0;
+    if (strcmp(end, "px") == 0) return number;
+    return 0.0;
+}
+
+static int odt_append_image_size(OdtRenderContext *context)
+{
+    char attribute[72];
+    long width = (long)(context->pending_image_width_px + 0.5);
+    long height = (long)(context->pending_image_height_px + 0.5);
+    size_t length = 0u;
+    if (width > 0) {
+        int written = snprintf(attribute, sizeof(attribute), " width=\"%ld\"",
+                               width);
+        if (written <= 0) return 0;
+        length += (size_t)written;
+    }
+    if (height > 0) {
+        int written = snprintf(attribute + length, sizeof(attribute) - length,
+                               " height=\"%ld\"", height);
+        if (written <= 0) return 0;
+        length += (size_t)written;
+    }
+    return odt_html_append(context->html, attribute, length);
 }
 
 static int odt_render_image(OdtRenderContext *context, QwXmlNode *node)
@@ -717,7 +761,9 @@ static int odt_render_image(OdtRenderContext *context, QwXmlNode *node)
          odt_html_literal(context->html, mime) &&
          odt_html_literal(context->html, ";base64,") &&
          odt_html_append(context->html, encoded, encoded_size) &&
-         odt_html_literal(context->html, "\" alt=\"\"/>");
+         odt_html_literal(context->html, "\"") &&
+         odt_append_image_size(context) &&
+         odt_html_literal(context->html, " alt=\"\"/>");
     free(bytes);
     free(encoded);
     return ok;
@@ -834,7 +880,17 @@ static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
     } else if (strcmp(tag, "image") == 0) {
         return odt_render_image(context, node);
     } else if (strcmp(tag, "frame") == 0) {
-        return odt_render_nodes(context, qw_xml_down(node), depth + 1u);
+        double saved_width = context->pending_image_width_px;
+        double saved_height = context->pending_image_height_px;
+        int ok;
+        context->pending_image_width_px =
+            odt_length_pixels(qw_xml_att(node, "svg:width"));
+        context->pending_image_height_px =
+            odt_length_pixels(qw_xml_att(node, "svg:height"));
+        ok = odt_render_nodes(context, qw_xml_down(node), depth + 1u);
+        context->pending_image_width_px = saved_width;
+        context->pending_image_height_px = saved_height;
+        return ok;
     } else if (strcmp(tag, "a") == 0) {
         const char *href = qw_xml_att(node, "xlink:href");
         if (href && odt_url_is_safe(href)) {
