@@ -398,6 +398,47 @@ static void hwpx_rotate_image(QwImage *image, int degrees)
     image->height = new_height;
 }
 
+static void hwpx_flip_image(QwImage *image, int horizontal, int vertical)
+{
+    size_t bytes_per_pixel;
+    size_t stride;
+    uint8_t *pixels;
+    uint32_t y;
+    uint32_t x;
+    if (!image || !image->pixels || !image->width || !image->height) return;
+    if (!horizontal && !vertical) return;
+    bytes_per_pixel = image->format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+    stride = (size_t)image->width * bytes_per_pixel;
+    if (stride / bytes_per_pixel != image->width ||
+        stride > SIZE_MAX / image->height)
+        return;
+    pixels = (uint8_t *)malloc(stride * image->height);
+    if (!pixels) return;
+    for (y = 0u; y < image->height; ++y) {
+        for (x = 0u; x < image->width; ++x) {
+            uint32_t src_x = horizontal ? image->width - 1u - x : x;
+            uint32_t src_y = vertical ? image->height - 1u - y : y;
+            memcpy(pixels + (size_t)y * stride + (size_t)x * bytes_per_pixel,
+                   image->pixels + (size_t)src_y * image->stride +
+                       (size_t)src_x * bytes_per_pixel,
+                   bytes_per_pixel);
+        }
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->size = stride * image->height;
+    image->stride = stride;
+}
+
+static int hwpx_flag_value(const char *value)
+{
+    if (!value || !value[0]) return 0;
+    if (value[0] == '0' || value[0] == 'f' || value[0] == 'F' ||
+        value[0] == 'n' || value[0] == 'N')
+        return 0;
+    return 1;
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -491,6 +532,23 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 int rotation = rotation_node
                     ? (int)strtod(qw_xml_att(rotation_node, "angle"), NULL)
                     : 0;
+                QwXmlNode *flip_node = hwpx_find_descendant(
+                    qw_xml_down(node), "flip", 0u, &search_nodes);
+                int flip_horizontal = 0;
+                int flip_vertical = 0;
+                if (flip_node) {
+                    flip_horizontal =
+                        hwpx_flag_value(qw_xml_att(flip_node, "horizontal")) ||
+                        hwpx_flag_value(qw_xml_att(flip_node, "flipX"));
+                    flip_vertical =
+                        hwpx_flag_value(qw_xml_att(flip_node, "vertical")) ||
+                        hwpx_flag_value(qw_xml_att(flip_node, "flipY"));
+                }
+                if (!flip_node) {
+                    flip_horizontal = hwpx_flag_value(
+                        qw_xml_att(node, "flipX"));
+                    flip_vertical = hwpx_flag_value(qw_xml_att(node, "flipY"));
+                }
                 unsigned display_width = 0u;
                 unsigned display_height = 0u;
                 const char *reference =
@@ -537,6 +595,9 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                   clip_right, clip_bottom),
                                   1)) &&
                                 (hwpx_rotate_image(&decoded, rotation), 1) &&
+                                (hwpx_flip_image(&decoded, flip_horizontal,
+                                                 flip_vertical),
+                                 1) &&
                                 qw_image_encode(&decoded, QW_IMAGE_ENCODE_PNG,
                                                 &png, &png_size) ==
                                     QW_IMAGE_OK &&

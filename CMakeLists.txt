@@ -433,6 +433,16 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_hwpx_flip_test
+    tests/hwpx_flip_test.c)
+target_compile_features(quirewise_document_hwpx_flip_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_flip_test PRIVATE
+    QUIREWISE_HWPX_FLIPPED="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/flipped-image.hwpx")
+target_link_libraries(quirewise_document_hwpx_flip_test PRIVATE
+    quirewise_document Quirewise::Image)
+add_test(NAME quirewise_document_hwpx_flip
+    COMMAND quirewise_document_hwpx_flip_test)
+
 add_executable(quirewise_document_hwpx_table_spans_test
     tests/hwpx_table_spans_test.c)
 target_compile_features(quirewise_document_hwpx_table_spans_test PRIVATE c_std_11)
