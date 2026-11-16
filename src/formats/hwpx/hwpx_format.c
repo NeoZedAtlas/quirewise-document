@@ -58,6 +58,7 @@ typedef struct HwpxCharStyle {
     int spacing_percent;
     unsigned rel_size;
     char color[8];
+    char background[8];
 } HwpxCharStyle;
 
 typedef struct HwpxParaStyle {
@@ -501,6 +502,35 @@ static void hwpx_load_char_styles(HwpxRenderContext *context)
         entry = &context->char_styles[id];
         entry->used = 1;
         {
+            const char *color = qw_xml_att(style, "shadeColor");
+            if (color) {
+                const char *hex = color;
+                size_t length;
+                if (hex[0] == '#') ++hex;
+                else if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X'))
+                    hex += 2;
+                length = strlen(hex);
+                if (length == 6u) {
+                    size_t i;
+                    int valid = 1;
+                    for (i = 0u; i < 6u; ++i) {
+                        char ch = hex[i];
+                        if (!((ch >= '0' && ch <= '9') ||
+                              (ch >= 'a' && ch <= 'f') ||
+                              (ch >= 'A' && ch <= 'F'))) {
+                            valid = 0;
+                            break;
+                        }
+                    }
+                    if (valid) {
+                        entry->background[0] = '#';
+                        memcpy(entry->background + 1u, hex, 6u);
+                        entry->background[7] = '\0';
+                    }
+                }
+            }
+        }
+        {
             const char *color = qw_xml_att(style, "textColor");
             if (color) {
                 const char *hex = color;
@@ -729,8 +759,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                  sizeof(run_close) - close_length,
                                                  "</sub>");
             }
-            if (style && (style->color[0] || style->spacing_percent ||
-                          style->rel_size)) {
+            if (style && (style->color[0] || style->background[0] ||
+                          style->spacing_percent || style->rel_size)) {
                 size_t used = open_length;
                 used += (size_t)snprintf(run_open + used,
                                          sizeof(run_open) - used,
@@ -739,6 +769,11 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     used += (size_t)snprintf(run_open + used,
                                              sizeof(run_open) - used,
                                              "color:%s;", style->color);
+                if (style->background[0])
+                    used += (size_t)snprintf(run_open + used,
+                                             sizeof(run_open) - used,
+                                             "background-color:%s;",
+                                             style->background);
                 if (style->spacing_percent)
                     used += (size_t)snprintf(
                         run_open + used, sizeof(run_open) - used,

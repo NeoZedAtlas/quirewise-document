@@ -73,7 +73,9 @@ int main(void)
         !contains((const char *)html, html_size, "<sup>Super</sup>") ||
         !contains((const char *)html, html_size, "<sub>Sub</sub>") ||
         !contains((const char *)html, html_size,
-                  "<span style=\"letter-spacing:0.20em;font-size:120%;\">Spaced</span>")) {
+                  "<span style=\"letter-spacing:0.20em;font-size:120%;\">Spaced</span>") ||
+        !contains((const char *)html, html_size,
+                  "<span style=\"color:#000000;background-color:#FFFF00;\">Highlight</span>")) {
         qw_hwpx_document_free(document);
         free(hwpx);
         fputs("FAIL: HWPX character styles were not preserved\n", stderr);
