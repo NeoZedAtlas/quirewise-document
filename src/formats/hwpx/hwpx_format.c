@@ -271,6 +271,20 @@ static int hwpx_html_base64(HwpxHtml *html, const uint8_t *data, size_t size)
 
 static const HwpxManifestItem *hwpx_manifest_find(
     const HwpxManifestItem *items, size_t count, const char *id);
+
+static unsigned hwpx_unit_pixels(const char *value)
+{
+    char *end = NULL;
+    double number;
+    if (!value || !value[0]) return 0u;
+    number = strtod(value, &end);
+    if (end == value || number <= 0.0) return 0u;
+    number = number * 96.0 / 7200.0;
+    if (number < 8.0) return 8u;
+    if (number > 720.0) return 720u;
+    return (unsigned)(number + 0.5);
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -313,8 +327,18 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 size_t search_nodes = 0u;
                 QwXmlNode *image = hwpx_find_descendant(
                     qw_xml_down(node), "img", 0u, &search_nodes);
+                QwXmlNode *size_node = hwpx_find_descendant(
+                    qw_xml_down(node), "sz", 0u, &search_nodes);
+                unsigned display_width = 0u;
+                unsigned display_height = 0u;
                 const char *reference =
                     image ? qw_xml_att(image, "binaryItemIDRef") : NULL;
+                if (size_node) {
+                    display_width = hwpx_unit_pixels(
+                        qw_xml_att(size_node, "width"));
+                    display_height = hwpx_unit_pixels(
+                        qw_xml_att(size_node, "height"));
+                }
                 const HwpxManifestItem *item =
                     hwpx_manifest_find(context->items, context->item_count,
                                        reference);
@@ -349,14 +373,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                 &png, &png_size) ==
                                     QW_IMAGE_OK &&
                                 png && png_size) {
-                                unsigned width = decoded.width > 480u
-                                                     ? 480u : decoded.width;
+                                unsigned width = display_width;
+                                unsigned height = display_height;
                                 char width_text[16];
+                                char height_text[16];
                                 int length;
+                                if (!width)
+                                    width = decoded.width > 480u
+                                                ? 480u : decoded.width;
                                 if (width < 8u) width = 8u;
                                 length = snprintf(width_text,
                                                   sizeof(width_text), "%u",
                                                   width);
+                                if (height)
+                                    (void)snprintf(height_text,
+                                                   sizeof(height_text), "%u",
+                                                   height);
                                 qw_image_free(&decoded);
                                 if (length > 0 &&
                                     (size_t)length < sizeof(width_text) &&
@@ -365,6 +397,11 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                               "width=\"") &&
                                     hwpx_html_append(html, width_text,
                                                      (size_t)length) &&
+                                    (display_height == 0u ||
+                                     (hwpx_html_literal(html, "\" height=\"") &&
+                                      hwpx_html_append(
+                                          html, height_text,
+                                          strlen(height_text)))) &&
                                     hwpx_html_literal(
                                         html, "\" src=\"data:image/png;base64,") &&
                                     hwpx_html_base64(html, png, png_size) &&
