@@ -860,6 +860,7 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
             char close_tag[8];
             size_t run_index;
             int heading;
+            int first_flags = 0;
 
             memset(&paragraph, 0, sizeof(paragraph));
             if (qw_epub_paragraph_at(document, section_index,
@@ -867,7 +868,6 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                 continue;
             if (paragraph.run_count) {
                 QwEpubRunView first;
-                int first_flags = 0;
                 memset(&first, 0, sizeof(first));
                 if (qw_epub_run_at(document, section_index, paragraph_index,
                                    0u, &first) == QW_EPUB_OK)
@@ -1032,6 +1032,10 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                     goto out_of_memory;
                 list_open = 0;
             }
+            if (first_flags & QW_EPUB_STYLE_QUOTE) {
+                if (!html_append_text(&buffer, "<blockquote>"))
+                    goto out_of_memory;
+            }
             heading = paragraph.heading_level >= 1u &&
                       paragraph.heading_level <= 6u
                           ? (int)paragraph.heading_level : 0;
@@ -1099,8 +1103,12 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         goto out_of_memory;
                 }
             }
-            if (!html_append_text(&buffer, close_tag) ||
-                !html_append_text(&buffer, "\n"))
+            if (!html_append_text(&buffer, close_tag))
+                goto out_of_memory;
+            if ((first_flags & QW_EPUB_STYLE_QUOTE) &&
+                !html_append_text(&buffer, "</blockquote>"))
+                goto out_of_memory;
+            if (!html_append_text(&buffer, "\n"))
                 goto out_of_memory;
         }
         if (table_open) {

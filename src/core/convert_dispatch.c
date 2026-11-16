@@ -263,6 +263,7 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             QwEpubParagraphView paragraph;
             size_t run_index;
             char tag[8];
+            int first_flags = 0;
             memset(&paragraph, 0, sizeof(paragraph));
             if (qw_epub_paragraph_at(document, section_index, paragraph_index,
                                      &paragraph) != QW_EPUB_OK) {
@@ -277,7 +278,6 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             if (!ok) break;
             if (paragraph.run_count) {
                 QwEpubRunView first;
-                int first_flags = 0;
                 memset(&first, 0, sizeof(first));
                 if (qw_epub_run_at(document, section_index, paragraph_index,
                                    0u, &first) == QW_EPUB_OK)
@@ -469,6 +469,12 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                 list_open = 0;
             }
             if (!ok) break;
+            if (first_flags & QW_EPUB_STYLE_QUOTE) {
+                ok = epub_html_append(&html, &length, &capacity,
+                                      "<blockquote>",
+                                      strlen("<blockquote>"));
+            }
+            if (!ok) break;
             if (paragraph.heading_level) {
                 snprintf(tag, sizeof(tag), "<h%u>",
                          paragraph.heading_level > 6u ? 6u
@@ -534,6 +540,10 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
             } else if (ok) {
                 ok = epub_html_append(&html, &length, &capacity, "</p>", 4u);
             }
+            if (ok && (first_flags & QW_EPUB_STYLE_QUOTE))
+                ok = epub_html_append(&html, &length, &capacity,
+                                      "</blockquote>",
+                                      strlen("</blockquote>"));
         }
         if (table_open) {
             ok = ok && epub_html_append(&html, &length, &capacity,

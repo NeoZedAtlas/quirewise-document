@@ -421,6 +421,18 @@ target_link_libraries(quirewise_document_xps_html_test PRIVATE
 add_test(NAME quirewise_document_xps_html
     COMMAND quirewise_document_xps_html_test)
 
+add_executable(quirewise_document_epub_blockquote_test
+    tests/epub_blockquote_test.c)
+target_compile_features(quirewise_document_epub_blockquote_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_epub_blockquote_test PRIVATE
+    QUIREWISE_BLOCKQUOTE_EPUB="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/blockquote.epub")
+target_include_directories(quirewise_document_epub_blockquote_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_epub_blockquote_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_epub_blockquote
+    COMMAND quirewise_document_epub_blockquote_test)
+
 add_executable(quirewise_document_htmlz_image_test
     tests/htmlz_image_test.c)
 target_compile_features(quirewise_document_htmlz_image_test PRIVATE c_std_11)
