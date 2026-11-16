@@ -1,7 +1,7 @@
 #ifndef QUIREWISE_SPREADSHEET_DOCUMENT_INTERNAL_H
 #define QUIREWISE_SPREADSHEET_DOCUMENT_INTERNAL_H
 
-#include "quirewise/convert.h"
+#include "quirewise/format.h"
 
 typedef enum QwSpreadsheetValueKind {
     QW_SPREADSHEET_VALUE_EMPTY = 0,
@@ -22,11 +22,21 @@ typedef struct QwSpreadsheetCell {
     size_t formula_size;
 } QwSpreadsheetCell;
 
+typedef struct QwSpreadsheetMerge {
+    size_t row1;
+    size_t column1;
+    size_t row2;
+    size_t column2;
+} QwSpreadsheetMerge;
+
 typedef struct QwSpreadsheetSheet {
     char *name;
     QwSpreadsheetCell *cells;
     size_t cell_count;
     size_t cell_capacity;
+    QwSpreadsheetMerge *merges;
+    size_t merge_count;
+    size_t merge_capacity;
 } QwSpreadsheetSheet;
 
 typedef struct QwSpreadsheetDocument {
@@ -51,6 +61,10 @@ int qw_spreadsheet_document_add_cell(QwSpreadsheetDocument *document,
                                      const uint8_t *value, size_t value_size,
                                      const uint8_t *formula,
                                      size_t formula_size);
+int qw_spreadsheet_document_add_merge(QwSpreadsheetDocument *document,
+                                      size_t sheet_index, size_t row1,
+                                      size_t column1, size_t row2,
+                                      size_t column2);
 int qw_spreadsheet_document_validate(const QwSpreadsheetDocument *document);
 void qw_spreadsheet_document_dispose(QwSpreadsheetDocument *document);
 
