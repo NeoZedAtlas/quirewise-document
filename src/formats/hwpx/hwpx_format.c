@@ -51,6 +51,8 @@ typedef struct HwpxCharStyle {
     int used;
     int bold;
     int italic;
+    int underline;
+    int strikeout;
     char color[8];
 } HwpxCharStyle;
 
@@ -530,6 +532,10 @@ static void hwpx_load_char_styles(HwpxRenderContext *context)
                 entry->bold = 1;
             else if (strcmp(hwpx_local_name(child_tag), "italic") == 0)
                 entry->italic = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "underline") == 0)
+                entry->underline = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "strikeout") == 0)
+                entry->strikeout = 1;
         }
     }
     qw_xml_drop(root);
@@ -624,8 +630,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
     char p_close[16];
     char p_tag[8];
     char cell_open[64];
-    char run_open[96];
-    char run_close[96];
+    char run_open[192];
+    char run_close[192];
     if (depth > HWPX_MAX_XML_DEPTH || !visited || !omitted_objects) return 0;
     for (; node; node = qw_xml_next(node)) {
         const char *text;
@@ -665,6 +671,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                  sizeof(run_close) - close_length,
                                                  "</em>");
             }
+            if (style && style->underline) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<u>");
+                close_length += (size_t)snprintf(run_close + close_length,
+                                                 sizeof(run_close) - close_length,
+                                                 "</u>");
+            }
+            if (style && style->strikeout) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<s>");
+                close_length += (size_t)snprintf(run_close + close_length,
+                                                 sizeof(run_close) - close_length,
+                                                 "</s>");
+            }
             if (style && style->color[0]) {
                 open_length += (size_t)snprintf(
                     run_open + open_length, sizeof(run_open) - open_length,
@@ -675,13 +697,13 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             }
             if (open_length) {
                 /* Reverse the closing tags to match nesting order. */
-                char reversed[96];
+                char reversed[192];
                 size_t position = 0u;
                 char *cursor = run_close;
-                char *tags[3];
+                char *tags[5];
                 size_t tag_count = 0u;
                 size_t i;
-                while (*cursor && tag_count < 3u) {
+                while (*cursor && tag_count < 5u) {
                     if (*cursor == '<') tags[tag_count++] = cursor;
                     ++cursor;
                 }

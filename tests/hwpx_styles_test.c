@@ -67,7 +67,9 @@ int main(void)
                   "<strong><span style=\"color:#FF0000\">Bold red</span></strong>") ||
         !contains((const char *)html, html_size, "<em>Italic</em>") ||
         !contains((const char *)html, html_size,
-                  "<strong><em><span style=\"color:#00AA00\">Both green</span></em></strong>")) {
+                  "<strong><em><span style=\"color:#00AA00\">Both green</span></em></strong>") ||
+        !contains((const char *)html, html_size,
+                  "<u><s>Underline strike</s></u>")) {
         qw_hwpx_document_free(document);
         free(hwpx);
         fputs("FAIL: HWPX character styles were not preserved\n", stderr);
