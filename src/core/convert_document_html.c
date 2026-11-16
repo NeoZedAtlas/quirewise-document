@@ -33,6 +33,8 @@
 #include "../backends/document_backend.h"
 #include "../formats/xps/xps_package.h"
 
+#include <quirewise/archive.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -350,6 +352,269 @@ static int html_from_fb2(const uint8_t *data, size_t size, uint8_t **out,
     return status;
 }
 
+static int htmlz_ci_prefix(const uint8_t *data, size_t size, size_t position,
+                            const char *text)
+{
+    size_t length = strlen(text);
+    size_t index;
+    if (position + length > size) return 0;
+    for (index = 0u; index < length; ++index) {
+        char actual = (char)data[position + index];
+        char wanted = text[index];
+        if (actual >= 'A' && actual <= 'Z') actual = (char)(actual + 32);
+        if (wanted >= 'A' && wanted <= 'Z') wanted = (char)(wanted + 32);
+        if (actual != wanted) return 0;
+    }
+    return 1;
+}
+
+static int htmlz_base64_append(HtmlBuffer *buffer, const uint8_t *data,
+                               size_t size)
+{
+    static const char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t index = 0u;
+    while (index < size) {
+        uint32_t value = 0u;
+        size_t chunk = size - index > 3u ? 3u : size - index;
+        char encoded[4];
+        size_t encoded_size = 4u;
+        value = (uint32_t)data[index] << 16;
+        if (chunk > 1u) value |= (uint32_t)data[index + 1u] << 8;
+        if (chunk > 2u) value |= data[index + 2u];
+        encoded[0] = alphabet[(value >> 18) & 0x3fu];
+        encoded[1] = alphabet[(value >> 12) & 0x3fu];
+        encoded[2] = chunk > 1u ? alphabet[(value >> 6) & 0x3fu] : '=';
+        encoded[3] = chunk > 2u ? alphabet[value & 0x3fu] : '=';
+        if (chunk == 1u) encoded_size = 4u;
+        if (!html_append(buffer, encoded, encoded_size)) return 0;
+        index += chunk;
+    }
+    return 1;
+}
+
+static const char *htmlz_image_mime(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    if (!dot) return NULL;
+    if (strcasecmp(dot, ".png") == 0) return "image/png";
+    if (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0)
+        return "image/jpeg";
+    if (strcasecmp(dot, ".gif") == 0) return "image/gif";
+    if (strcasecmp(dot, ".webp") == 0) return "image/webp";
+    if (strcasecmp(dot, ".bmp") == 0) return "image/bmp";
+    if (strcasecmp(dot, ".svg") == 0) return "image/svg+xml";
+    if (strcasecmp(dot, ".tif") == 0 || strcasecmp(dot, ".tiff") == 0)
+        return "image/tiff";
+    return NULL;
+}
+
+static char *htmlz_resolve_relative(const char *base_name, const char *src)
+{
+    char combined[2048];
+    char *resolved;
+    size_t base_length = 0u;
+    size_t src_length = strlen(src);
+    size_t index;
+    if (!src[0] || strchr(src, ':') || src[0] == '/' || src[0] == '#')
+        return NULL;
+    if (base_name) {
+        const char *slash = strrchr(base_name, '/');
+        if (slash) base_length = (size_t)(slash - base_name) + 1u;
+    }
+    if (base_length + src_length + 1u >= sizeof(combined)) return NULL;
+    memcpy(combined, base_name ? base_name : "", base_length);
+    memcpy(combined + base_length, src, src_length + 1u);
+    resolved = (char *)malloc(sizeof(combined));
+    if (!resolved) return NULL;
+    {
+        char *segments[128];
+        size_t segment_count = 0u;
+        char *cursor = combined;
+        size_t length = 0u;
+        while (*cursor) {
+            char *start;
+            while (*cursor == '/') ++cursor;
+            if (!*cursor) break;
+            start = cursor;
+            while (*cursor && *cursor != '/') ++cursor;
+            if (cursor - start == 1u && start[0] == '.') continue;
+            if (cursor - start == 2u && start[0] == '.' && start[1] == '.') {
+                if (segment_count) --segment_count;
+                continue;
+            }
+            if (segment_count < 128u) segments[segment_count++] = start;
+        }
+        resolved[0] = '\0';
+        for (index = 0u; index < segment_count; ++index) {
+            size_t segment_size;
+            char saved;
+            char *end = segments[index];
+            while (*end && *end != '/') ++end;
+            saved = *end;
+            *end = '\0';
+            segment_size = strlen(segments[index]);
+            if (length + segment_size + 2u >= sizeof(combined)) {
+                free(resolved);
+                return NULL;
+            }
+            if (length) resolved[length++] = '/';
+            memcpy(resolved + length, segments[index], segment_size);
+            length += segment_size;
+            *end = saved;
+        }
+        resolved[length] = '\0';
+    }
+    return resolved;
+}
+
+static int htmlz_rewrite_images(HtmlBuffer *buffer, const uint8_t *html,
+                                size_t size, QwZipArchiveReader *archive,
+                                const char *base_name, size_t *inlined)
+{
+    size_t position = 0u;
+    size_t copy_start = 0u;
+    *inlined = 0u;
+    while (position + 4u <= size) {
+        size_t tag_end;
+        size_t attr;
+        if (html[position] != '<' ||
+            !htmlz_ci_prefix(html, size, position, "<img")) {
+            ++position;
+            continue;
+        }
+        tag_end = position + 4u;
+        while (tag_end < size && html[tag_end] != '>') ++tag_end;
+        if (tag_end >= size) break;
+        attr = position + 4u;
+        while (attr + 4u <= tag_end) {
+            if (!htmlz_ci_prefix(html, size, attr, "src")) {
+                ++attr;
+                continue;
+            }
+            {
+                size_t value_start = attr + 3u;
+                size_t value_end;
+                char quote = 0;
+                char *name;
+                char *resolved;
+                const char *mime;
+                size_t entry_index = 0u;
+                size_t entry_count = qw_zip_archive_entry_count(archive);
+                int found = 0;
+                while (value_start < tag_end &&
+                       (html[value_start] == ' ' || html[value_start] == '\t' ||
+                        html[value_start] == '='))
+                    ++value_start;
+                if (value_start < tag_end &&
+                    (html[value_start] == '"' || html[value_start] == '\''))
+                    quote = (char)html[value_start++];
+                value_end = value_start;
+                while (value_end < tag_end &&
+                       (quote ? html[value_end] != (uint8_t)quote
+                              : html[value_end] != ' ' && html[value_end] != '>'))
+                    ++value_end;
+                name = (char *)malloc(value_end - value_start + 1u);
+                if (!name) return 0;
+                memcpy(name, html + value_start, value_end - value_start);
+                name[value_end - value_start] = '\0';
+                resolved = htmlz_resolve_relative(base_name, name);
+                mime = resolved ? htmlz_image_mime(resolved) : NULL;
+                free(name);
+                if (resolved && mime) {
+                    while (entry_index < entry_count) {
+                        QwArchiveEntry entry;
+                        if (qw_zip_archive_get_entry(archive, entry_index,
+                                                     &entry) == QW_ARCHIVE_OK &&
+                            !entry.is_directory && entry.name_bytes &&
+                            entry.name_size == strlen(resolved) &&
+                            memcmp(entry.name_bytes, resolved,
+                                   entry.name_size) == 0) {
+                            QwArchiveBuffer extracted = {0};
+                            if (qw_zip_archive_extract(archive, entry_index,
+                                                       NULL, &extracted) ==
+                                    QW_ARCHIVE_OK) {
+                                if (!html_append(buffer, html + copy_start,
+                                                       value_start - copy_start) ||
+                                    !html_append_text(buffer, "data:") ||
+                                    !html_append_text(buffer, mime) ||
+                                    !html_append_text(buffer, ";base64,") ||
+                                    !htmlz_base64_append(buffer, extracted.data,
+                                                         extracted.size) ||
+                                    (quote && !html_append(buffer, &quote, 1u))) {
+                                    qw_archive_buffer_free(&extracted);
+                                    free(resolved);
+                                    return 0;
+                                }
+                                qw_archive_buffer_free(&extracted);
+                                ++*inlined;
+                                found = 1;
+                            }
+                            break;
+                        }
+                        ++entry_index;
+                    }
+                }
+                free(resolved);
+                if (found) {
+                    /* Skip the old value (and its closing quote). */
+                    if (quote && value_end < tag_end) ++value_end;
+                    copy_start = value_end;
+                    position = value_end;
+                    break;
+                }
+            }
+            ++attr;
+        }
+        ++position;
+    }
+    return html_append(buffer, html + copy_start, size - copy_start);
+}
+
+int qw_doc_htmlz_inline_images(const uint8_t *archive, size_t archive_size,
+                               const uint8_t *html, size_t html_size,
+                               const uint8_t *member_name,
+                               size_t member_name_size, uint8_t **out_html,
+                               size_t *out_size, size_t *inlined)
+{
+    QwZipArchiveReader *zip = NULL;
+    const char *zip_error = NULL;
+    HtmlBuffer buffer;
+    char *base_name = NULL;
+    int ok;
+    if (!archive || !html || !out_html || !out_size)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_html = NULL;
+    *out_size = 0u;
+    if (inlined) *inlined = 0u;
+    if (qw_zip_archive_open(archive, archive_size, &zip, &zip_error) !=
+        QW_ARCHIVE_OK || !zip) {
+        (void)zip_error;
+        return QW_STATUS_ERR_FORMAT;
+    }
+    if (member_name && member_name_size) {
+        base_name = (char *)malloc(member_name_size + 1u);
+        if (!base_name) {
+            qw_zip_archive_close(zip);
+            return QW_STATUS_ERR_OUT_OF_MEMORY;
+        }
+        memcpy(base_name, member_name, member_name_size);
+        base_name[member_name_size] = '\0';
+    }
+    memset(&buffer, 0, sizeof(buffer));
+    ok = htmlz_rewrite_images(&buffer, html, html_size, zip, base_name,
+                              inlined);
+    free(base_name);
+    qw_zip_archive_close(zip);
+    if (!ok) {
+        free(buffer.data);
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    *out_html = (uint8_t *)buffer.data;
+    *out_size = buffer.size;
+    return QW_STATUS_OK;
+}
+
 static int html_from_htmlz(const uint8_t *data, size_t size, uint8_t **out,
                            size_t *out_size, QwConvertReport *report)
 {
@@ -366,6 +631,52 @@ static int html_from_htmlz(const uint8_t *data, size_t size, uint8_t **out,
                      error && error[0] ? error : "no primary document");
         }
         return html_status_negative(status);
+    }
+    {
+        QwZipArchiveReader *archive = NULL;
+        const char *zip_error = NULL;
+        QwArchiveStatus zip_status = qw_zip_archive_open(
+            data, size, &archive, &zip_error);
+        (void)zip_error;
+        if (zip_status == QW_ARCHIVE_OK && archive) {
+            HtmlBuffer buffer;
+            size_t inlined = 0u;
+            char *base_name = NULL;
+            int ok;
+            if (document.member_name_bytes && document.member_name_size) {
+                base_name = (char *)malloc(document.member_name_size + 1u);
+                if (base_name) {
+                    memcpy(base_name, document.member_name_bytes,
+                           document.member_name_size);
+                    base_name[document.member_name_size] = '\0';
+                }
+            }
+            memset(&buffer, 0, sizeof(buffer));
+            ok = htmlz_rewrite_images(&buffer, document.html_bytes,
+                                      document.html_size, archive, base_name,
+                                      &inlined);
+            free(base_name);
+            qw_zip_archive_close(archive);
+            if (!ok) {
+                free(buffer.data);
+                qw_htmlz_document_free(&document);
+                return html_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                             "HTMLZ layout", "out of memory");
+            }
+            status = html_copy_bytes((const uint8_t *)buffer.data, buffer.size,
+                                     out, out_size);
+            free(buffer.data);
+            if (status == QW_STATUS_OK && report) {
+                snprintf(report->note, sizeof(report->note),
+                         "HTMLZ layout: index document rendered; %zu package "
+                         "image(s) inlined as data URIs; CSS and scripts are "
+                         "not applied",
+                         inlined);
+            }
+            qw_htmlz_document_free(&document);
+            return status;
+        }
+        if (archive) qw_zip_archive_close(archive);
     }
     status = html_copy_bytes(document.html_bytes, document.html_size, out,
                              out_size);

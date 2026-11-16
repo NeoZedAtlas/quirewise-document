@@ -1234,8 +1234,30 @@ static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
                              error ? error : qw_htmlz_status_string(status));
         return convert_map_archive_status((int)status);
     }
-    rc = convert_html_to_pdf(document.html_bytes, document.html_size, out_pdf,
-                             out_size, report);
+    {
+        uint8_t *rewritten = NULL;
+        size_t rewritten_size = 0u;
+        size_t inlined = 0u;
+        int inline_status = qw_doc_htmlz_inline_images(
+            data, size, document.html_bytes, document.html_size,
+            document.member_name_bytes, document.member_name_size, &rewritten,
+            &rewritten_size, &inlined);
+        if (inline_status == QW_STATUS_OK && rewritten && rewritten_size) {
+            rc = convert_html_to_pdf(rewritten, rewritten_size, out_pdf,
+                                     out_size, report);
+            free(rewritten);
+            if (rc == QW_STATUS_OK && report) {
+                snprintf(report->note, sizeof(report->note),
+                         "HTMLZ layout: index document and %zu package "
+                         "image(s) rendered; CSS and scripts are not applied",
+                         inlined);
+            }
+        } else {
+            free(rewritten);
+            rc = convert_html_to_pdf(document.html_bytes, document.html_size,
+                                     out_pdf, out_size, report);
+        }
+    }
     qw_htmlz_document_free(&document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),

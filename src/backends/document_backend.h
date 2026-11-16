@@ -51,6 +51,14 @@ int qw_msg_probe(const uint8_t *data, size_t size);
 int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                    size_t *out_size, QwConvertReport *report);
 
+/* Rewrites relative <img src> references in an HTMLZ member to data URIs
+ * using resources from the same archive. */
+int qw_doc_htmlz_inline_images(const uint8_t *archive, size_t archive_size,
+                               const uint8_t *html, size_t html_size,
+                               const uint8_t *member_name,
+                               size_t member_name_size, uint8_t **out_html,
+                               size_t *out_size, size_t *inlined);
+
 int qw_doc_convert_html_memory_with_options(
     const uint8_t *data, size_t size, const char *input_extension,
     const QwConvertOptions *options, uint8_t **out_html, size_t *out_size,
