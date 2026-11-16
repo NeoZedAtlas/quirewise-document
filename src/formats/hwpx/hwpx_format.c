@@ -50,6 +50,8 @@ typedef struct HwpxManifestItem {
 typedef struct HwpxBorderFill {
     int used;
     char color[8];
+    char border_color[8];
+    unsigned border_px;
 } HwpxBorderFill;
 
 typedef struct HwpxCharStyle {
@@ -745,6 +747,52 @@ static void hwpx_load_border_fills(HwpxRenderContext *context)
         context->border_fills[id].color[0] = '#';
         memcpy(context->border_fills[id].color + 1u, hex, 6u);
         context->border_fills[id].color[7] = '\0';
+        {
+            size_t border_nodes = 0u;
+            QwXmlNode *border = hwpx_find_descendant(
+                qw_xml_down(fill), "leftBorder", 0u, &border_nodes);
+            const char *border_color;
+            const char *width;
+            if (!border) {
+                size_t top_nodes = 0u;
+                border = hwpx_find_descendant(qw_xml_down(fill),
+                                              "topBorder", 0u, &top_nodes);
+            }
+            border_color = border ? qw_xml_att(border, "color") : NULL;
+            width = border ? qw_xml_att(border, "width") : NULL;
+            if (border_color && width) {
+                const char *color_hex = border_color;
+                double mm = strtod(width, NULL);
+                unsigned px;
+                if (color_hex[0] == '#') ++color_hex;
+                else if (color_hex[0] == '0' &&
+                         (color_hex[1] == 'x' || color_hex[1] == 'X'))
+                    color_hex += 2;
+                px = (unsigned)(mm * 96.0 / 25.4 + 0.5);
+                if (px < 1u) px = 1u;
+                if (px > 10u) px = 10u;
+                if (strlen(color_hex) == 6u) {
+                    size_t ci;
+                    int color_valid = 1;
+                    for (ci = 0u; ci < 6u; ++ci) {
+                        char ch = color_hex[ci];
+                        if (!((ch >= '0' && ch <= '9') ||
+                              (ch >= 'a' && ch <= 'f') ||
+                              (ch >= 'A' && ch <= 'F'))) {
+                            color_valid = 0;
+                            break;
+                        }
+                    }
+                    if (color_valid) {
+                        context->border_fills[id].border_color[0] = '#';
+                        memcpy(context->border_fills[id].border_color + 1u,
+                               color_hex, 6u);
+                        context->border_fills[id].border_color[7] = '\0';
+                        context->border_fills[id].border_px = px;
+                    }
+                }
+            }
+        }
     }
     qw_xml_drop(root);
 }
@@ -1046,13 +1094,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             {
                 const char *fill_ref = qw_xml_att(node, "borderFillIDRef");
                 const char *cell_color = NULL;
+                const char *cell_border = NULL;
+                unsigned border_px = 1u;
                 if (fill_ref && context) {
                     unsigned long fill_id = strtoul(fill_ref, NULL, 10);
                     if (fill_id < HWPX_MAX_CHAR_STYLES &&
-                        context->border_fills[fill_id].used)
+                        context->border_fills[fill_id].used) {
                         cell_color = context->border_fills[fill_id].color;
+                        if (context->border_fills[fill_id].border_px) {
+                            cell_border =
+                                context->border_fills[fill_id].border_color;
+                            border_px =
+                                context->border_fills[fill_id].border_px;
+                        }
+                    }
                 }
-                if (colspan > 1u || rowspan > 1u || cell_color) {
+                if (colspan > 1u || rowspan > 1u || cell_color || cell_border) {
                     size_t used = (size_t)snprintf(cell_open,
                                                    sizeof(cell_open), "<td");
                     if (colspan > 1u && used < sizeof(cell_open))
@@ -1063,10 +1120,23 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                         used += (size_t)snprintf(cell_open + used,
                                                  sizeof(cell_open) - used,
                                                  " rowspan=\"%u\"", rowspan);
-                    if (cell_color && used < sizeof(cell_open))
+                    if ((cell_color || cell_border) &&
+                        used < sizeof(cell_open)) {
                         used += (size_t)snprintf(
                             cell_open + used, sizeof(cell_open) - used,
-                            " style=\"background-color:%s\"", cell_color);
+                            " style=\"");
+                        if (cell_border)
+                            used += (size_t)snprintf(
+                                cell_open + used, sizeof(cell_open) - used,
+                                "border:%upx solid %s;", border_px,
+                                cell_border);
+                        if (cell_color)
+                            used += (size_t)snprintf(
+                                cell_open + used, sizeof(cell_open) - used,
+                                "background-color:%s;", cell_color);
+                        if (used < sizeof(cell_open))
+                            cell_open[used++] = '"';
+                    }
                     if (used < sizeof(cell_open))
                         snprintf(cell_open + used, sizeof(cell_open) - used,
                                  ">");

@@ -64,7 +64,7 @@ int main(void)
     html = qw_hwpx_document_html(document, &html_size);
     if (!html || !html_size ||
         !contains((const char *)html, html_size,
-                  "<td style=\"background-color:#FFCC00\">") ||
+                  "<td style=\"background-color:#FFCC00;\">") ||
         !contains((const char *)html, html_size, "Shaded")) {
         qw_hwpx_document_free(document);
         free(hwpx);
