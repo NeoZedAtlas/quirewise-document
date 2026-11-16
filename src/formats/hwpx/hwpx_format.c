@@ -817,6 +817,12 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             } else {
                 close = "</p>\n";
             }
+        } else if (strcmp(tag, "header") == 0) {
+            open = "<header>";
+            close = "</header>\n";
+        } else if (strcmp(tag, "footer") == 0) {
+            open = "<footer>";
+            close = "</footer>\n";
         } else if (strcmp(tag, "tbl") == 0) {
             open = "<table>";
             close = "</table>\n";
