@@ -55,6 +55,8 @@ typedef struct HwpxCharStyle {
     int strikeout;
     int superscript;
     int subscript;
+    int spacing_percent;
+    unsigned rel_size;
     char color[8];
 } HwpxCharStyle;
 
@@ -543,6 +545,23 @@ static void hwpx_load_char_styles(HwpxRenderContext *context)
                 entry->superscript = 1;
             else if (strcmp(hwpx_local_name(child_tag), "subscript") == 0)
                 entry->subscript = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "spacing") == 0) {
+                const char *value = qw_xml_att(child, "hangul");
+                if (!value) value = qw_xml_att(child, "latin");
+                if (value) {
+                    long parsed = strtol(value, NULL, 10);
+                    if (parsed >= -50 && parsed <= 50)
+                        entry->spacing_percent = (int)parsed;
+                }
+            } else if (strcmp(hwpx_local_name(child_tag), "relSz") == 0) {
+                const char *value = qw_xml_att(child, "hangul");
+                if (!value) value = qw_xml_att(child, "latin");
+                if (value) {
+                    unsigned long parsed = strtoul(value, NULL, 10);
+                    if (parsed >= 50u && parsed <= 200u)
+                        entry->rel_size = (unsigned)parsed;
+                }
+            }
         }
     }
     qw_xml_drop(root);
@@ -710,10 +729,30 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                  sizeof(run_close) - close_length,
                                                  "</sub>");
             }
-            if (style && style->color[0]) {
-                open_length += (size_t)snprintf(
-                    run_open + open_length, sizeof(run_open) - open_length,
-                    "<span style=\"color:%s\">", style->color);
+            if (style && (style->color[0] || style->spacing_percent ||
+                          style->rel_size)) {
+                size_t used = open_length;
+                used += (size_t)snprintf(run_open + used,
+                                         sizeof(run_open) - used,
+                                         "<span style=\"");
+                if (style->color[0])
+                    used += (size_t)snprintf(run_open + used,
+                                             sizeof(run_open) - used,
+                                             "color:%s;", style->color);
+                if (style->spacing_percent)
+                    used += (size_t)snprintf(
+                        run_open + used, sizeof(run_open) - used,
+                        "letter-spacing:%.2fem;",
+                        (double)style->spacing_percent / 100.0);
+                if (style->rel_size)
+                    used += (size_t)snprintf(run_open + used,
+                                             sizeof(run_open) - used,
+                                             "font-size:%u%%;",
+                                             style->rel_size);
+                run_open[used++] = '"';
+                run_open[used++] = '>';
+                run_open[used] = '\0';
+                open_length = used;
                 close_length += (size_t)snprintf(
                     run_close + close_length,
                     sizeof(run_close) - close_length, "</span>");

@@ -64,14 +64,16 @@ int main(void)
     html = qw_hwpx_document_html(document, &html_size);
     if (!html || !html_size ||
         !contains((const char *)html, html_size,
-                  "<strong><span style=\"color:#FF0000\">Bold red</span></strong>") ||
+                  "<strong><span style=\"color:#FF0000;\">Bold red</span></strong>") ||
         !contains((const char *)html, html_size, "<em>Italic</em>") ||
         !contains((const char *)html, html_size,
-                  "<strong><em><span style=\"color:#00AA00\">Both green</span></em></strong>") ||
+                  "<strong><em><span style=\"color:#00AA00;\">Both green</span></em></strong>") ||
         !contains((const char *)html, html_size,
                   "<u><s>Underline strike</s></u>") ||
         !contains((const char *)html, html_size, "<sup>Super</sup>") ||
-        !contains((const char *)html, html_size, "<sub>Sub</sub>")) {
+        !contains((const char *)html, html_size, "<sub>Sub</sub>") ||
+        !contains((const char *)html, html_size,
+                  "<span style=\"letter-spacing:0.20em;font-size:120%;\">Spaced</span>")) {
         qw_hwpx_document_free(document);
         free(hwpx);
         fputs("FAIL: HWPX character styles were not preserved\n", stderr);
