@@ -433,6 +433,16 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_hwpx_align_test
+    tests/hwpx_align_test.c)
+target_compile_features(quirewise_document_hwpx_align_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_align_test PRIVATE
+    QUIREWISE_HWPX_ALIGN="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/align.hwpx")
+target_link_libraries(quirewise_document_hwpx_align_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_align
+    COMMAND quirewise_document_hwpx_align_test)
+
 add_executable(quirewise_document_hwpx_flip_test
     tests/hwpx_flip_test.c)
 target_compile_features(quirewise_document_hwpx_flip_test PRIVATE c_std_11)

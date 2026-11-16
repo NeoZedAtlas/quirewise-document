@@ -457,7 +457,28 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
         }
         tag = hwpx_local_name(qw_xml_tag(node));
         if (strcmp(tag, "p") == 0) {
-            open = "<p>";
+            char p_open[64];
+            size_t align_nodes = 0u;
+            QwXmlNode *align_node = hwpx_find_descendant(
+                qw_xml_down(node), "align", 0u, &align_nodes);
+            const char *horizontal =
+                align_node ? qw_xml_att(align_node, "horizontal") : NULL;
+            const char *align_style = NULL;
+            if (horizontal) {
+                if (strcasecmp(horizontal, "CENTER") == 0)
+                    align_style = "center";
+                else if (strcasecmp(horizontal, "RIGHT") == 0)
+                    align_style = "right";
+                else if (strcasecmp(horizontal, "JUSTIFY") == 0)
+                    align_style = "justify";
+            }
+            if (align_style) {
+                snprintf(p_open, sizeof(p_open),
+                         "<p style=\"text-align:%s\">", align_style);
+                open = p_open;
+            } else {
+                open = "<p>";
+            }
             close = "</p>\n";
         } else if (strcmp(tag, "tbl") == 0) {
             open = "<table>";
