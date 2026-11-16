@@ -44,6 +44,7 @@ typedef struct OfficeTag {
     size_t src_size;
     const uint8_t *href;
     size_t href_size;
+    int colspan;
 } OfficeTag;
 
 typedef struct OfficeDocxImage {
@@ -272,6 +273,29 @@ static size_t office_parse_tag(const uint8_t *data, size_t size, size_t start,
                 break;
             }
         }
+        for (position = index; position + 8u < (size_t)end; ++position) {
+            if ((data[position] == 'c' || data[position] == 'C') &&
+                (data[position + 1u] == 'o' || data[position + 1u] == 'O') &&
+                (data[position + 2u] == 'l' || data[position + 2u] == 'L') &&
+                (data[position + 3u] == 's' || data[position + 3u] == 'S') &&
+                (data[position + 4u] == 'p' || data[position + 4u] == 'P') &&
+                (data[position + 5u] == 'a' || data[position + 5u] == 'A') &&
+                (data[position + 6u] == 'n' || data[position + 6u] == 'N') &&
+                data[position + 7u] == '=' &&
+                (data[position + 8u] == '"' || data[position + 8u] == '\'')) {
+                char quote = (char)data[position + 8u];
+                int value = 0;
+                position += 9u;
+                while (position < (size_t)end && data[position] != quote &&
+                       data[position] >= '0' && data[position] <= '9') {
+                    value = value * 10 + (data[position] - '0');
+                    if (value > 64) value = 64;
+                    ++position;
+                }
+                tag->colspan = value;
+                break;
+            }
+        }
         for (position = index; position + 6u < (size_t)end; ++position) {
             if ((data[position] == 'h' || data[position] == 'H') &&
                 (data[position + 1u] == 'r' || data[position + 1u] == 'R') &&
@@ -339,6 +363,9 @@ typedef struct DocxState {
     int pre;
     int table_cell_open;
     int first_cell;
+    int table_open;
+    int table_row_open;
+    int table_cell_active;
     int link_open;
     size_t link_index;
 } DocxState;
@@ -493,6 +520,31 @@ static int office_append_docx_drawing(OfficeBuffer *body, size_t index,
     return office_append(body, xml, (size_t)length);
 }
 
+static int docx_flush_paragraph(DocxState *state);
+
+static int docx_close_cell(DocxState *state)
+{
+    if (!state->table_cell_active) return 1;
+    if (!docx_flush_paragraph(state)) return 0;
+    if (state->link_open) {
+        if (!office_text(&state->body, "</w:hyperlink>")) return 0;
+        state->link_open = 0;
+    }
+    if (!office_text(&state->body, "</w:tc>")) return 0;
+    state->table_cell_active = 0;
+    state->table_cell_open = 0;
+    return 1;
+}
+
+static int docx_close_row(DocxState *state)
+{
+    if (!state->table_row_open) return 1;
+    if (!docx_close_cell(state)) return 0;
+    if (!office_text(&state->body, "</w:tr>")) return 0;
+    state->table_row_open = 0;
+    return 1;
+}
+
 static int docx_flush_paragraph(DocxState *state)
 {
     if (!state->paragraph_open) return 1;
@@ -582,10 +634,18 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                     if (!docx_flush_paragraph(&state)) goto out_of_memory;
                     state.quote = 0;
                 } else if (strcmp(tag.name, "tr") == 0) {
-                    if (!docx_flush_paragraph(&state)) goto out_of_memory;
+                    if (!docx_close_row(&state)) goto out_of_memory;
                 } else if (strcmp(tag.name, "td") == 0 ||
                            strcmp(tag.name, "th") == 0) {
-                    /* Cells are separated when the next cell opens. */
+                    if (!docx_close_cell(&state)) goto out_of_memory;
+                    if (strcmp(tag.name, "th") == 0) state.bold = 0;
+                } else if (strcmp(tag.name, "table") == 0) {
+                    if (!docx_close_row(&state)) goto out_of_memory;
+                    if (state.table_open &&
+                        !office_text(&state.body, "</w:tbl>"))
+                        goto out_of_memory;
+                    state.table_open = 0;
+                    if (!docx_flush_paragraph(&state)) goto out_of_memory;
                 } else if (strcmp(tag.name, "a") == 0) {
                     if (state.link_open) {
                         if (!office_text(&state.body, "</w:hyperlink>"))
@@ -635,19 +695,64 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                                      "\xe2\x80\x95\xe2\x80\x95", 9u))
                     goto out_of_memory;
                 if (!docx_flush_paragraph(&state)) goto out_of_memory;
-            } else if (strcmp(tag.name, "tr") == 0) {
+            } else if (strcmp(tag.name, "table") == 0) {
                 if (!docx_flush_paragraph(&state)) goto out_of_memory;
+                if (state.table_open) {
+                    /* Nested tables are flattened into the current cell. */
+                    if (!docx_append_run(&state, (const uint8_t *)" ", 1u))
+                        goto out_of_memory;
+                } else {
+                    if (!office_text(&state.body,
+                            "<w:tbl><w:tblPr><w:tblW w:w=\"0\" "
+                            "w:type=\"auto\"/></w:tblPr>"))
+                        goto out_of_memory;
+                    state.table_open = 1;
+                    state.table_row_open = 0;
+                    state.table_cell_active = 0;
+                }
+            } else if (strcmp(tag.name, "tr") == 0) {
+                if (!state.table_open) {
+                    if (!office_text(&state.body,
+                            "<w:tbl><w:tblPr><w:tblW w:w=\"0\" "
+                            "w:type=\"auto\"/></w:tblPr>"))
+                        goto out_of_memory;
+                    state.table_open = 1;
+                }
+                if (!docx_close_row(&state)) goto out_of_memory;
+                if (!office_text(&state.body, "<w:tr>")) goto out_of_memory;
+                state.table_row_open = 1;
                 state.table_cell_open = 0;
                 state.first_cell = 1;
             } else if (strcmp(tag.name, "td") == 0 ||
                        strcmp(tag.name, "th") == 0) {
-                if (state.table_cell_open) {
-                    if (!docx_append_run(&state,
-                                         (const uint8_t *)" | ", 3u))
+                if (!state.table_open) {
+                    if (!office_text(&state.body,
+                            "<w:tbl><w:tblPr><w:tblW w:w=\"0\" "
+                            "w:type=\"auto\"/></w:tblPr>"))
+                        goto out_of_memory;
+                    state.table_open = 1;
+                }
+                if (!docx_close_cell(&state)) goto out_of_memory;
+                if (!state.table_row_open) {
+                    if (!office_text(&state.body, "<w:tr>")) goto out_of_memory;
+                    state.table_row_open = 1;
+                }
+                if (!docx_flush_paragraph(&state)) goto out_of_memory;
+                if (!office_text(&state.body, "<w:tc><w:tcPr>")) goto out_of_memory;
+                if (tag.colspan > 1) {
+                    char span[64];
+                    int length = snprintf(span, sizeof(span),
+                                          "<w:gridSpan w:val=\"%d\"/>",
+                                          tag.colspan);
+                    if (length <= 0 || (size_t)length >= sizeof(span) ||
+                        !office_append(&state.body, span, (size_t)length))
                         goto out_of_memory;
                 }
+                if (!office_text(&state.body, "</w:tcPr>")) goto out_of_memory;
+                state.table_cell_active = 1;
                 state.table_cell_open = 1;
                 state.first_cell = 0;
+                if (strcmp(tag.name, "th") == 0) state.bold = 1;
             } else if (strcmp(tag.name, "a") == 0) {
                 if (links && state.link_index < OFFICE_DOCX_MAX_LINKS &&
                            office_link_is_safe(tag.href, tag.href_size)) {
@@ -1026,7 +1131,7 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
         snprintf(report->note, sizeof(report->note),
                  "minimal WordprocessingML package: paragraphs, headings, "
                  "character emphasis, bullet text, %zu embedded image(s) and "
-                 "%zu hyperlink(s); tables are flattened",
+                 "%zu hyperlink(s); tables are written as Word tables",
                  images.count, links.count);
     }
     return QW_STATUS_OK;
