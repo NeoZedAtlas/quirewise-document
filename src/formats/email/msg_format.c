@@ -1013,7 +1013,18 @@ static int msg_rtf_to_text(const uint8_t *data, size_t size, char **out_text,
                     continue;
                 }
                 if (skip_depth >= 0) continue;
-                if (word_size == 3u && memcmp(word, "par", 3u) == 0) {
+                if (word_size == 5u && memcmp(word, "trowd", 5u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\x1d", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 4u &&
+                           memcmp(word, "cell", 4u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\x1f", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 3u &&
+                           memcmp(word, "row", 3u) == 0) {
+                    if (!qw_text_buffer_append(&out, "\x1e", 1u))
+                        goto out_of_memory;
+                } else if (word_size == 3u && memcmp(word, "par", 3u) == 0) {
                     if (!qw_text_buffer_append(&out, "\n", 1u))
                         goto out_of_memory;
                 } else if (word_size == 4u && memcmp(word, "line", 4u) == 0) {
@@ -1051,6 +1062,127 @@ out_of_memory:
     return 0;
 }
 
+
+
+static int msg_html_escape_range(QwTextBuffer *out, const char *text,
+                                 size_t size)
+{
+    return msg_html_escape(out, (const uint8_t *)text, size);
+}
+
+/* Render RTF text carrying 0x1d/0x1f/0x1e row/cell/row-end markers. */
+static int msg_rtf_render_html(QwTextBuffer *out, const char *text, size_t size)
+{
+    size_t index = 0u;
+    int table_open = 0;
+    int row_open = 0;
+    int cell_open = 0;
+    int paragraph_open = 0;
+    while (index < size) {
+        char chr = text[index];
+        if (chr == '\x1d') {
+            if (cell_open && !qw_text_buffer_append(out, "</td>", 5u)) return 0;
+            cell_open = 0;
+            if (row_open && !qw_text_buffer_append(out, "</tr>", 5u)) return 0;
+            row_open = 0;
+            if (paragraph_open) {
+                if (!qw_text_buffer_append(out, "</p>", 4u)) return 0;
+                paragraph_open = 0;
+            }
+            if (!table_open) {
+                if (!qw_text_buffer_append(out, "<table>", 7u)) return 0;
+                table_open = 1;
+            }
+            if (!qw_text_buffer_append(out, "<tr>", 4u)) return 0;
+            row_open = 1;
+            ++index;
+            continue;
+        }
+        if (chr == '\x1f') {
+            if (cell_open) {
+                if (!qw_text_buffer_append(out, "</td>", 5u)) return 0;
+                cell_open = 0;
+            } else if (row_open) {
+                if (!qw_text_buffer_append(out, "<td></td>", 9u)) return 0;
+            }
+            ++index;
+            continue;
+        }
+        if (chr == '\x1e') {
+            if (cell_open) {
+                if (!qw_text_buffer_append(out, "</td>", 5u)) return 0;
+                cell_open = 0;
+            }
+            if (row_open) {
+                if (!qw_text_buffer_append(out, "</tr>", 5u)) return 0;
+                row_open = 0;
+            }
+            ++index;
+            continue;
+        }
+        if (row_open) {
+            if (!cell_open) {
+                if (!qw_text_buffer_append(out, "<td>", 4u)) return 0;
+                cell_open = 1;
+            }
+            if (chr == '\r') {
+                ++index;
+                continue;
+            }
+            if (chr == '\n') {
+                if (!qw_text_buffer_append(out, "<br/>", 5u)) return 0;
+                ++index;
+                continue;
+            }
+            {
+                size_t start = index;
+                while (index < size && text[index] != '\r' &&
+                       text[index] != '\n' && text[index] != '\x1d' &&
+                       text[index] != '\x1f' && text[index] != '\x1e')
+                    ++index;
+                if (!msg_html_escape_range(out, text + start, index - start))
+                    return 0;
+            }
+            continue;
+        }
+        if (!table_open && !paragraph_open) {
+            if (!qw_text_buffer_append(out, "<p>", 3u)) return 0;
+            paragraph_open = 1;
+        }
+        if (chr == '\r') {
+            ++index;
+            continue;
+        }
+        if (chr == '\n') {
+            if (!qw_text_buffer_append(out, "<br/>", 5u)) return 0;
+            ++index;
+            continue;
+        }
+        {
+            size_t start = index;
+            while (index < size && text[index] != '\r' && text[index] != '\n' &&
+                   text[index] != '\x1d' && text[index] != '\x1f' &&
+                   text[index] != '\x1e')
+                ++index;
+            if (paragraph_open) {
+                if (!msg_html_escape_range(out, text + start, index - start))
+                    return 0;
+            } else if (table_open) {
+                /* Text after a table: close it and start a paragraph. */
+                if (!qw_text_buffer_append(out, "</table><p>", 11u)) return 0;
+                table_open = 0;
+                paragraph_open = 1;
+                if (!msg_html_escape_range(out, text + start, index - start))
+                    return 0;
+            }
+        }
+    }
+    if (cell_open && !qw_text_buffer_append(out, "</td>", 5u)) return 0;
+    if (row_open && !qw_text_buffer_append(out, "</tr>", 5u)) return 0;
+    if (table_open && !qw_text_buffer_append(out, "</table>", 8u)) return 0;
+    if (paragraph_open && !qw_text_buffer_append(out, "</p>", 4u)) return 0;
+    return 1;
+}
 
 int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                    size_t *out_size, QwConvertReport *report)
@@ -1187,11 +1319,10 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                                     &rtf_text_size) &&
                     rtf_text) {
                     if (!qw_text_buffer_append(&html,
-                            "<pre class=\"rtf-body\">", 22u) ||
-                        !msg_html_escape(&html,
-                                         (const uint8_t *)rtf_text,
-                                         rtf_text_size) ||
-                        !qw_text_buffer_append(&html, "</pre>", 6u)) {
+                            "<div class=\"rtf-body\">", 22u) ||
+                        !msg_rtf_render_html(&html, rtf_text,
+                                             rtf_text_size) ||
+                        !qw_text_buffer_append(&html, "</div>", 6u)) {
                         free(rtf_text);
                         free(rtf_plain);
                         free(rtf_raw);
