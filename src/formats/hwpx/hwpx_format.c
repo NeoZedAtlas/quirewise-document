@@ -553,6 +553,14 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 int rotation = rotation_node
                     ? (int)strtod(qw_xml_att(rotation_node, "angle"), NULL)
                     : 0;
+                QwXmlNode *position_node = hwpx_find_descendant(
+                    qw_xml_down(node), "pos", 0u, &search_nodes);
+                unsigned position_x = position_node
+                    ? hwpx_clip_pixels(qw_xml_att(position_node, "horzOffset"))
+                    : 0u;
+                unsigned position_y = position_node
+                    ? hwpx_clip_pixels(qw_xml_att(position_node, "vertOffset"))
+                    : 0u;
                 QwXmlNode *flip_node = hwpx_find_descendant(
                     qw_xml_down(node), "flip", 0u, &search_nodes);
                 int flip_horizontal = 0;
@@ -640,10 +648,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                    sizeof(height_text), "%u",
                                                    height);
                                 qw_image_free(&decoded);
+                                {
+                                    char figure_tag[128];
+                                    if (position_x || position_y) {
+                                        snprintf(figure_tag, sizeof(figure_tag),
+                                                 "<figure style=\"margin-left:%upx;"
+                                                 "margin-top:%upx\">",
+                                                 position_x, position_y);
+                                    } else {
+                                        snprintf(figure_tag, sizeof(figure_tag),
+                                                 "%s", "<figure>");
+                                    }
                                 if (length > 0 &&
                                     (size_t)length < sizeof(width_text) &&
+                                    hwpx_html_literal(html, figure_tag) &&
                                     hwpx_html_literal(
-                                        html, "<figure><img alt=\"hwp image\" "
+                                        html, "<img alt=\"hwp image\" "
                                               "width=\"") &&
                                     hwpx_html_append(html, width_text,
                                                      (size_t)length) &&
@@ -659,6 +679,7 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                     context->image_count += 1u;
                                     context->image_bytes += media_size;
                                     rendered = 1;
+                                }
                                 }
                                 free(png);
                             } else {

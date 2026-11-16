@@ -433,6 +433,16 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_hwpx_position_test
+    tests/hwpx_position_test.c)
+target_compile_features(quirewise_document_hwpx_position_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_position_test PRIVATE
+    QUIREWISE_HWPX_POSITION="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/positioned-image.hwpx")
+target_link_libraries(quirewise_document_hwpx_position_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_position
+    COMMAND quirewise_document_hwpx_position_test)
+
 add_executable(quirewise_document_hwpx_align_test
     tests/hwpx_align_test.c)
 target_compile_features(quirewise_document_hwpx_align_test PRIVATE c_std_11)
