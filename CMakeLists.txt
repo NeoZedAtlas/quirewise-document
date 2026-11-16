@@ -421,6 +421,15 @@ target_link_libraries(quirewise_document_xps_html_test PRIVATE
 add_test(NAME quirewise_document_xps_html
     COMMAND quirewise_document_xps_html_test)
 
+add_executable(quirewise_document_hwpx_crop_test
+    tests/hwpx_crop_test.c)
+target_compile_features(quirewise_document_hwpx_crop_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_crop_test PRIVATE
+    QUIREWISE_HWPX_CROP="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/crop-image.hwpx")
+target_link_libraries(quirewise_document_hwpx_crop_test PRIVATE quirewise_document)
+add_test(NAME quirewise_document_hwpx_crop
+    COMMAND quirewise_document_hwpx_crop_test)
+
 add_executable(quirewise_document_epub_table_caption_test
     tests/epub_table_caption_test.c)
 target_compile_features(quirewise_document_epub_table_caption_test PRIVATE c_std_11)

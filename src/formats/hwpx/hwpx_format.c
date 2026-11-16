@@ -285,6 +285,60 @@ static unsigned hwpx_unit_pixels(const char *value)
     return (unsigned)(number + 0.5);
 }
 
+static unsigned hwpx_clip_pixels(const char *value)
+{
+    char *end = NULL;
+    double number;
+    if (!value || !value[0]) return 0u;
+    number = strtod(value, &end);
+    if (end == value || number <= 0.0) return 0u;
+    number = number * 96.0 / 7200.0;
+    if (number > 8192.0) number = 8192.0;
+    return (unsigned)(number + 0.5);
+}
+
+static void hwpx_crop_image(QwImage *image, unsigned left, unsigned top,
+                            unsigned right, unsigned bottom)
+{
+    uint32_t crop_x;
+    uint32_t crop_y;
+    uint32_t crop_width;
+    uint32_t crop_height;
+    size_t bytes_per_pixel;
+    size_t new_stride;
+    uint8_t *pixels;
+    uint32_t row;
+    if (!image || !image->pixels || !image->width || !image->height) return;
+    bytes_per_pixel = image->format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+    if (left >= image->width || top >= image->height) return;
+    crop_x = left;
+    crop_y = top;
+    if (right >= image->width - crop_x) right = 0u;
+    if (bottom >= image->height - crop_y) bottom = 0u;
+    crop_width = image->width - crop_x - right;
+    crop_height = image->height - crop_y - bottom;
+    if (!crop_width || !crop_height) return;
+    new_stride = (size_t)crop_width * bytes_per_pixel;
+    if (new_stride / bytes_per_pixel != crop_width ||
+        new_stride > SIZE_MAX / crop_height)
+        return;
+    pixels = (uint8_t *)malloc(new_stride * crop_height);
+    if (!pixels) return;
+    for (row = 0u; row < crop_height; ++row) {
+        memcpy(pixels + (size_t)row * new_stride,
+               image->pixels +
+                   (size_t)(crop_y + row) * image->stride +
+                   (size_t)crop_x * bytes_per_pixel,
+               new_stride);
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->size = new_stride * crop_height;
+    image->stride = new_stride;
+    image->width = crop_width;
+    image->height = crop_height;
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -329,6 +383,16 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     qw_xml_down(node), "img", 0u, &search_nodes);
                 QwXmlNode *size_node = hwpx_find_descendant(
                     qw_xml_down(node), "sz", 0u, &search_nodes);
+                QwXmlNode *clip_node = hwpx_find_descendant(
+                    qw_xml_down(node), "imgclip", 0u, &search_nodes);
+                unsigned clip_left = clip_node
+                    ? hwpx_clip_pixels(qw_xml_att(clip_node, "left")) : 0u;
+                unsigned clip_top = clip_node
+                    ? hwpx_clip_pixels(qw_xml_att(clip_node, "top")) : 0u;
+                unsigned clip_right = clip_node
+                    ? hwpx_clip_pixels(qw_xml_att(clip_node, "right")) : 0u;
+                unsigned clip_bottom = clip_node
+                    ? hwpx_clip_pixels(qw_xml_att(clip_node, "bottom")) : 0u;
                 unsigned display_width = 0u;
                 unsigned display_height = 0u;
                 const char *reference =
@@ -369,6 +433,11 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                             if (qw_image_decode(media, media_size, &decoded) ==
                                     QW_IMAGE_OK &&
                                 decoded.pixels &&
+                                (!(clip_left || clip_top || clip_right ||
+                                   clip_bottom) ||
+                                 (hwpx_crop_image(&decoded, clip_left, clip_top,
+                                                  clip_right, clip_bottom),
+                                  1)) &&
                                 qw_image_encode(&decoded, QW_IMAGE_ENCODE_PNG,
                                                 &png, &png_size) ==
                                     QW_IMAGE_OK &&
