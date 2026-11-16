@@ -1022,7 +1022,8 @@ static int epub_strip_document(const uint8_t *html, size_t size,
                     return 0;
                 if (!closing && void_tag) {
                     if (html[tag_end - 1u] == '/') {
-                        if (!office_append_char(body, '>')) return 0;
+                        if (!office_append_char(body, '/') ||
+                            !office_append_char(body, '>')) return 0;
                     } else if (!office_append_char(body, '/') ||
                                !office_append_char(body, '>')) {
                         return 0;
@@ -1037,6 +1038,128 @@ static int epub_strip_document(const uint8_t *html, size_t size,
     return 1;
 }
 
+
+static int epub_rewrite_images(OfficeBuffer *body, OfficeDocxImages *images)
+{
+    OfficeBuffer output;
+    size_t index = 0u;
+    memset(&output, 0, sizeof(output));
+    while (index < body->size) {
+        if (body->data[index] != '<') {
+            size_t start = index;
+            while (index < body->size && body->data[index] != '<') ++index;
+            if (!office_append(&output, body->data + start, index - start)) {
+                free(output.data);
+                return 0;
+            }
+            continue;
+        }
+        if (index + 4u < body->size &&
+            (body->data[index + 1u] == 'i' || body->data[index + 1u] == 'I') &&
+            (body->data[index + 2u] == 'm' || body->data[index + 2u] == 'M') &&
+            (body->data[index + 3u] == 'g' || body->data[index + 3u] == 'G') &&
+            (body->data[index + 4u] == ' ' || body->data[index + 4u] == '\t' ||
+             body->data[index + 4u] == '\r' || body->data[index + 4u] == '\n' ||
+             body->data[index + 4u] == '/')) {
+            int tag_end = office_find_tag_end(body->data, body->size, index);
+            if (tag_end >= 0) {
+                size_t end = (size_t)tag_end;
+                size_t position;
+                for (position = index + 4u; position + 5u < end; ++position) {
+                    char quote;
+                    size_t value_start;
+                    size_t value_end;
+                    size_t marker;
+                    if (!((body->data[position] == 's' ||
+                           body->data[position] == 'S') &&
+                          (body->data[position + 1u] == 'r' ||
+                           body->data[position + 1u] == 'R') &&
+                          (body->data[position + 2u] == 'c' ||
+                           body->data[position + 2u] == 'C') &&
+                          body->data[position + 3u] == '=' &&
+                          (body->data[position + 4u] == '"' ||
+                           body->data[position + 4u] == '\'')))
+                        continue;
+                    quote = (char)body->data[position + 4u];
+                    value_start = position + 5u;
+                    value_end = value_start;
+                    while (value_end < end && body->data[value_end] != quote)
+                        ++value_end;
+                    if (value_end >= end ||
+                        value_end - value_start <= 20u ||
+                        memcmp(body->data + value_start, "data:image/", 11u) != 0 ||
+                        images->count >= OFFICE_DOCX_MAX_IMAGES)
+                        break;
+                    for (marker = value_start + 11u;
+                         marker + 8u <= value_end; ++marker) {
+                        if (memcmp(body->data + marker, ";base64,", 8u) == 0)
+                            break;
+                    }
+                    if (marker + 8u > value_end) break;
+                    {
+                        size_t raw_size = 0u;
+                        int rewritten = 0;
+                        uint8_t *raw = office_base64_decode(
+                            body->data + marker + 8u,
+                            value_end - marker - 8u, &raw_size);
+                        if (raw && raw_size > 0u) {
+                            QwImage image;
+                            uint8_t *png = NULL;
+                            size_t png_size = 0u;
+                            memset(&image, 0, sizeof(image));
+                            if (qw_image_decode(raw, raw_size, &image) ==
+                                    QW_IMAGE_OK && image.pixels &&
+                                qw_image_encode(&image, QW_IMAGE_ENCODE_PNG,
+                                                &png, &png_size) ==
+                                    QW_IMAGE_OK && png && png_size) {
+                                OfficeDocxImage *slot =
+                                    &images->images[images->count];
+                                char href[48];
+                                int length = snprintf(
+                                    href, sizeof(href), "images/image%lu.png",
+                                    (unsigned long)images->count);
+                                if (length > 0 &&
+                                    (size_t)length < sizeof(href) &&
+                                    office_append(&output, body->data + index,
+                                                  value_start - index) &&
+                                    office_append(&output, href,
+                                                  (size_t)length) &&
+                                    office_append(&output,
+                                                  body->data + value_end,
+                                                  end + 1u - value_end)) {
+                                    slot->png = png;
+                                    slot->png_size = png_size;
+                                    slot->width = image.width;
+                                    slot->height = image.height;
+                                    ++images->count;
+                                    rewritten = 1;
+                                }
+                            }
+                            qw_image_free(&image);
+                            if (!rewritten) free(png);
+                        }
+                        free(raw);
+                        if (rewritten) {
+                            index = end + 1u;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                if (index == end + 1u) continue;
+            }
+        }
+        if (!office_append_char(&output, '<')) {
+            free(output.data);
+            return 0;
+        }
+        ++index;
+    }
+    free(body->data);
+    *body = output;
+    return 1;
+}
+
 int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                                const char *input_extension, uint8_t **out_data,
                                size_t *out_size, QwConvertReport *report)
@@ -1047,7 +1170,7 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
         "xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/"
         "content.opf\" media-type=\"application/oebps-package+xml\"/>"
         "</rootfiles></container>";
-    static const char content_opf[] =
+    static const char content_opf_prefix[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" "
         "unique-identifier=\"bookid\"><metadata xmlns:dc=\"http://purl.org/"
@@ -1057,8 +1180,10 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
         "<item id=\"ncx\" href=\"toc.ncx\" "
         "media-type=\"application/x-dtbncx+xml\"/>"
         "<item id=\"chapter\" href=\"chapter.xhtml\" "
-        "media-type=\"application/xhtml+xml\"/></manifest>"
-        "<spine toc=\"ncx\"><itemref idref=\"chapter\"/></spine></package>";
+        "media-type=\"application/xhtml+xml\"/>";
+    static const char content_opf_suffix[] =
+        "</manifest><spine toc=\"ncx\"><itemref idref=\"chapter\"/></spine>"
+        "</package>";
     static const char toc_ncx[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\""
@@ -1072,6 +1197,8 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
     size_t html_size = 0u;
     OfficeBuffer body;
     OfficeBuffer chapter;
+    OfficeBuffer opf;
+    OfficeDocxImages images;
     QwZipWriter writer;
     int status;
 
@@ -1086,12 +1213,19 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                                         &html_size, report);
     if (status != QW_STATUS_OK) return status;
     memset(&body, 0, sizeof(body));
+    memset(&images, 0, sizeof(images));
     if (!epub_strip_document(html, html_size, &body)) {
         free(html);
         return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB body",
                            "out of memory");
     }
     free(html);
+    if (!epub_rewrite_images(&body, &images)) {
+        free(body.data);
+        docx_images_free(&images);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB body",
+                           "out of memory");
+    }
     memset(&chapter, 0, sizeof(chapter));
     if (!office_text(&chapter,
                      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -1106,6 +1240,37 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                            "out of memory");
     }
     free(body.data);
+    memset(&opf, 0, sizeof(opf));
+    if (!office_text(&opf, content_opf_prefix)) {
+        free(chapter.data);
+        docx_images_free(&images);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB build",
+                           "out of memory");
+    }
+    {
+        size_t image_index;
+        for (image_index = 0u; image_index < images.count; ++image_index) {
+            char item[160];
+            int length = snprintf(
+                item, sizeof(item),
+                "<item id=\"img%lu\" href=\"images/image%lu.png\" "
+                "media-type=\"image/png\"/>",
+                (unsigned long)image_index, (unsigned long)image_index);
+            if (length <= 0 || (size_t)length >= sizeof(item) ||
+                !office_append(&opf, item, (size_t)length)) {
+                free(chapter.data);
+                docx_images_free(&images);
+                return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                                   "EPUB build", "out of memory");
+            }
+        }
+    }
+    if (!office_text(&opf, content_opf_suffix)) {
+        free(chapter.data);
+        docx_images_free(&images);
+        return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB build",
+                           "out of memory");
+    }
     if (!office_zip_begin(&writer, 1)) {
         free(chapter.data);
         return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB ZIP",
@@ -1117,16 +1282,39 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
         !qw_zip_writer_add_mem(&writer, "META-INF/container.xml",
                                container_xml, strlen(container_xml),
                                QW_ZIP_NO_COMPRESSION) ||
-        !qw_zip_writer_add_mem(&writer, "OEBPS/content.opf", content_opf,
-                               strlen(content_opf), QW_ZIP_NO_COMPRESSION) ||
+        !qw_zip_writer_add_mem(&writer, "OEBPS/content.opf", opf.data,
+                               opf.size, QW_ZIP_NO_COMPRESSION) ||
         !qw_zip_writer_add_mem(&writer, "OEBPS/toc.ncx", toc_ncx,
                                strlen(toc_ncx), QW_ZIP_NO_COMPRESSION) ||
         !qw_zip_writer_add_mem(&writer, "OEBPS/chapter.xhtml", chapter.data,
                                chapter.size, QW_ZIP_NO_COMPRESSION)) {
         qw_zip_writer_end(&writer);
         free(chapter.data);
+        docx_images_free(&images);
+        free(opf.data);
         return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY, "EPUB ZIP",
                            "cannot add a package part");
+    }
+    {
+        size_t image_index;
+        for (image_index = 0u; image_index < images.count; ++image_index) {
+            char name[64];
+            int length = snprintf(name, sizeof(name),
+                                  "OEBPS/images/image%lu.png",
+                                  (unsigned long)image_index);
+            if (length <= 0 || (size_t)length >= sizeof(name) ||
+                !qw_zip_writer_add_mem(&writer, name,
+                                       images.images[image_index].png,
+                                       images.images[image_index].png_size,
+                                       QW_ZIP_NO_COMPRESSION)) {
+                qw_zip_writer_end(&writer);
+                free(chapter.data);
+                docx_images_free(&images);
+                free(opf.data);
+                return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                                   "EPUB ZIP", "cannot add an image part");
+            }
+        }
     }
     if (!office_zip_finish(&writer, out_data, out_size, &chapter)) {
         free(chapter.data);
@@ -1134,13 +1322,16 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
                            "cannot finalize the archive");
     }
     free(chapter.data);
+    free(opf.data);
+    docx_images_free(&images);
     if (report) {
         report->format = QW_FORMAT_EPUB;
         report->output_format = QW_FORMAT_EPUB;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
-                 "minimal EPUB 2 package with a single XHTML chapter and NCX "
-                 "table of contents");
+                 "minimal EPUB 2 package with a single XHTML chapter, NCX "
+                 "table of contents and %zu embedded image(s)",
+                 images.count);
     }
     return QW_STATUS_OK;
 }
