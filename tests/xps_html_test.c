@@ -120,7 +120,7 @@ int main(void)
         }
         free(image_xps);
         if (!contains(image_md, image_md_size,
-                      "![](data:image/png;base64,") ||
+                      "![xps image](data:image/png;base64,") ||
             !contains(image_md, image_md_size, "XPS image page")) {
             fputs("FAIL: XPS Markdown image was dropped\n", stderr);
             free(image_md);
