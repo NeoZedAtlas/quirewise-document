@@ -369,8 +369,108 @@ static double odp_length_points(const char *value)
     return number;
 }
 
+
+static unsigned odp_image_channels(QwImagePixelFormat format)
+{
+    return format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+}
+
+static int odp_parse_clip_rect(const char *clip, double values[4])
+{
+    size_t index = 0u;
+    int count = 0;
+    if (!clip || strncmp(clip, "rect(", 5u) != 0) return 0;
+    index = 5u;
+    while (count < 4) {
+        char *end = NULL;
+        double value = strtod(clip + index, &end);
+        if (end == clip + index) return 0;
+        if (value < 0.0) value = 0.0;
+        values[count++] = value;
+        index = (size_t)(end - clip);
+        if (strncmp(clip + index, "cm", 2u) == 0) {
+            values[count - 1u] *= 72.0 / 2.54;
+            index += 2u;
+        } else if (strncmp(clip + index, "mm", 2u) == 0) {
+            values[count - 1u] *= 72.0 / 25.4;
+            index += 2u;
+        } else if (strncmp(clip + index, "in", 2u) == 0) {
+            values[count - 1u] *= 72.0;
+            index += 2u;
+        } else if (strncmp(clip + index, "pc", 2u) == 0) {
+            values[count - 1u] *= 12.0;
+            index += 2u;
+        } else if (strncmp(clip + index, "pt", 2u) == 0) {
+            index += 2u;
+        } else if (strncmp(clip + index, "px", 2u) == 0) {
+            values[count - 1u] *= 0.75;
+            index += 2u;
+        }
+        while (clip[index] == ' ' || clip[index] == '\t') ++index;
+        if (count < 4) {
+            if (clip[index] != ',') return 0;
+            ++index;
+            while (clip[index] == ' ' || clip[index] == '\t') ++index;
+        }
+    }
+    return 1;
+}
+
+static int odp_apply_clip(QwImage *image, QwXmlNode *frame, QwXmlNode *image_node,
+                          double display_width, double display_height)
+{
+    const char *clip = frame ? qw_xml_att(frame, "fo:clip") : NULL;
+    double values[4];
+    double left_points;
+    double top_points;
+    double right_points;
+    double bottom_points;
+    uint32_t left;
+    uint32_t top;
+    uint32_t right;
+    uint32_t bottom;
+    uint32_t width;
+    uint32_t height;
+    unsigned channels;
+    uint8_t *pixels;
+    uint32_t row;
+    if (!clip && image_node) clip = qw_xml_att(image_node, "fo:clip");
+    if (!clip || display_width <= 0.0 || display_height <= 0.0) return 1;
+    if (!odp_parse_clip_rect(clip, values)) return 1;
+    top_points = values[0];
+    right_points = values[1];
+    bottom_points = values[2];
+    left_points = values[3];
+    left = (uint32_t)((double)image->width * left_points / display_width);
+    top = (uint32_t)((double)image->height * top_points / display_height);
+    right = image->width -
+        (uint32_t)((double)image->width * right_points / display_width);
+    bottom = image->height -
+        (uint32_t)((double)image->height * bottom_points / display_height);
+    if (right <= left || bottom <= top) return 1;
+    width = right - left;
+    height = bottom - top;
+    channels = odp_image_channels(image->format);
+    pixels = (uint8_t *)malloc((size_t)width * channels * height);
+    if (!pixels) return 0;
+    for (row = 0u; row < height; ++row) {
+        memcpy(pixels + (size_t)row * width * channels,
+               image->pixels + (size_t)(row + top) * image->stride +
+                   (size_t)left * channels,
+               (size_t)width * channels);
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->width = width;
+    image->height = height;
+    image->stride = (size_t)width * channels;
+    image->size = image->stride * height;
+    return 1;
+}
+
 static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
-                            double display_width, double display_height)
+                            QwXmlNode *frame, double display_width,
+                            double display_height)
 {
     static const char omitted[] =
         "<p class=\"omitted\">[embedded object omitted]</p>";
@@ -413,6 +513,12 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
     memset(&image, 0, sizeof(image));
     if (qw_image_decode(media, media_size, &image) != QW_IMAGE_OK ||
         !image.pixels) {
+        free(decoded);
+        if (media != decoded) free(media);
+        return odp_html_literal(reader, omitted);
+    }
+    if (!odp_apply_clip(&image, frame, node, display_width, display_height)) {
+        qw_image_free(&image);
         free(decoded);
         if (media != decoded) free(media);
         return odp_html_literal(reader, omitted);
@@ -503,14 +609,14 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
                 double width = odp_length_points(qw_xml_att(node, "svg:width"));
                 double height_points =
                     odp_length_points(qw_xml_att(node, "svg:height"));
-                if (!odp_emit_picture(reader, image, width, height_points))
+                if (!odp_emit_picture(reader, image, node, width, height_points))
                     return 0;
             } else if (!odp_render_blocks(reader, qw_xml_down(node),
                                           depth + 1u)) {
                 return 0;
             }
         } else if (odp_is_tag(node, "image")) {
-            if (!odp_emit_picture(reader, node, 0.0, 0.0)) return 0;
+            if (!odp_emit_picture(reader, node, NULL, 0.0, 0.0)) return 0;
         } else if (odp_is_tag(node, "object")) {
             if (!odp_html_literal(reader, "<p class=\"omitted\">[embedded object omitted]</p>"))
                 return 0;
