@@ -341,7 +341,19 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_spreadsheet_merge_test
+    add_executable(quirewise_document_eml_rfc2231_test
+    tests/eml_rfc2231_test.c)
+target_compile_features(quirewise_document_eml_rfc2231_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_eml_rfc2231_test PRIVATE
+    QUIREWISE_RFC2231_EML="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rfc2231.eml")
+target_include_directories(quirewise_document_eml_rfc2231_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_eml_rfc2231_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_eml_rfc2231
+    COMMAND quirewise_document_eml_rfc2231_test)
+
+add_executable(quirewise_document_spreadsheet_merge_test
     tests/spreadsheet_merge_test.c)
 target_compile_features(quirewise_document_spreadsheet_merge_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_spreadsheet_merge_test PRIVATE

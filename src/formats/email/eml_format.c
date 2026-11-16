@@ -298,6 +298,40 @@ static int eml_parse_headers(EmlOwner *owner,
     return 1;
 }
 
+
+static int eml_hex(unsigned char ch);
+
+/* RFC 2231 extended parameter: charset'language'percent-encoded-bytes. */
+static int eml_rfc2231_decode(const char *value, size_t size, char *out,
+                              size_t out_capacity)
+{
+    size_t i = 0u;
+    size_t written = 0u;
+    if (!value || !out || out_capacity == 0u) return 0;
+    while (i < size && value[i] != '\'') ++i;
+    if (i >= size) return 0;
+    ++i;
+    while (i < size && value[i] != '\'') ++i;
+    if (i >= size) return 0;
+    ++i;
+    while (i < size) {
+        unsigned char chr;
+        if (value[i] == '%' && i + 2u < size) {
+            int high = eml_hex((unsigned char)value[i + 1u]);
+            int low = eml_hex((unsigned char)value[i + 2u]);
+            if (high < 0 || low < 0) return 0;
+            chr = (unsigned char)((high << 4) | low);
+            i += 3u;
+        } else {
+            chr = (unsigned char)value[i++];
+        }
+        if (written + 1u >= out_capacity) return 0;
+        out[written++] = (char)chr;
+    }
+    out[written] = '\0';
+    return 1;
+}
+
 static int eml_parameter(const char *value,
                          const char *wanted,
                          char *out,
@@ -343,6 +377,16 @@ static int eml_parameter(const char *value,
         }
         name_size = (size_t)(name_end - name);
         value_size = (size_t)(value_end - value_start);
+        if (name_size == strlen(wanted) + 1u && name_end[-1] == '*' &&
+            eml_span_equal((const uint8_t *)name, name_size - 1u, wanted)) {
+            if (eml_rfc2231_decode(value_start, value_size, out,
+                                   out_capacity)) {
+                if (out_extended) *out_extended = 0;
+                return 1;
+            }
+            if (out_extended) *out_extended = 1;
+            return 0;
+        }
         if (name_size == strlen(wanted) &&
             eml_span_equal((const uint8_t *)name, name_size, wanted)) {
             copied = value_size < out_capacity - 1u
