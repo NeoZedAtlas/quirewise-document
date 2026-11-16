@@ -53,6 +53,8 @@ typedef struct HwpxCharStyle {
     int italic;
     int underline;
     int strikeout;
+    int superscript;
+    int subscript;
     char color[8];
 } HwpxCharStyle;
 
@@ -536,6 +538,11 @@ static void hwpx_load_char_styles(HwpxRenderContext *context)
                 entry->underline = 1;
             else if (strcmp(hwpx_local_name(child_tag), "strikeout") == 0)
                 entry->strikeout = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "supscript") == 0 ||
+                     strcmp(hwpx_local_name(child_tag), "superscript") == 0)
+                entry->superscript = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "subscript") == 0)
+                entry->subscript = 1;
         }
     }
     qw_xml_drop(root);
@@ -687,6 +694,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                  sizeof(run_close) - close_length,
                                                  "</s>");
             }
+            if (style && style->superscript) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<sup>");
+                close_length += (size_t)snprintf(run_close + close_length,
+                                                 sizeof(run_close) - close_length,
+                                                 "</sup>");
+            }
+            if (style && style->subscript) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<sub>");
+                close_length += (size_t)snprintf(run_close + close_length,
+                                                 sizeof(run_close) - close_length,
+                                                 "</sub>");
+            }
             if (style && style->color[0]) {
                 open_length += (size_t)snprintf(
                     run_open + open_length, sizeof(run_open) - open_length,
@@ -700,10 +723,10 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 char reversed[192];
                 size_t position = 0u;
                 char *cursor = run_close;
-                char *tags[5];
+                char *tags[7];
                 size_t tag_count = 0u;
                 size_t i;
-                while (*cursor && tag_count < 5u) {
+                while (*cursor && tag_count < 7u) {
                     if (*cursor == '<') tags[tag_count++] = cursor;
                     ++cursor;
                 }
