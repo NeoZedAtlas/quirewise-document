@@ -817,6 +817,12 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             } else {
                 close = "</p>\n";
             }
+        } else if (strcmp(tag, "footnote") == 0) {
+            open = "<aside class=\"footnote\">";
+            close = "</aside>\n";
+        } else if (strcmp(tag, "endnote") == 0) {
+            open = "<aside class=\"endnote\">";
+            close = "</aside>\n";
         } else if (strcmp(tag, "header") == 0) {
             open = "<header>";
             close = "</header>\n";
