@@ -1405,7 +1405,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                  ++item) {
                 const QwPdfText *text_item =
                     &lines->items[outline_entries[item].line_index];
-                char title[256];
+                char title[768];
                 size_t title_size = 0u;
                 size_t source = 0u;
                 size_t page_object =
@@ -1415,23 +1415,103 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                     parent[item] == SIZE_MAX
                         ? outline_root_object
                         : outline_object_base + parent[item];
-                while (source < text_item->size &&
-                       title_size + 2u < sizeof(title) && title_size < 160u) {
-                    unsigned char ch =
-                        (unsigned char)text_item->data[source];
-                    if (ch == '(' || ch == ')' || ch == '\\')
-                        title[title_size++] = '\\';
-                    if (ch >= 0x20u && ch < 0x7fu)
-                        title[title_size++] = (char)ch;
-                    else
-                        title[title_size++] = ' ';
-                    ++source;
+                int title_is_ascii = 1;
+                size_t scan_title;
+                for (scan_title = 0u; scan_title < text_item->size; ++scan_title) {
+                    unsigned char ch = (unsigned char)text_item->data[scan_title];
+                    if (ch < 0x20u || ch >= 0x7fu) {
+                        title_is_ascii = 0;
+                        break;
+                    }
                 }
+                if (title_is_ascii) {
+                    title[title_size++] = '(';
+                    while (source < text_item->size &&
+                           title_size + 3u < sizeof(title) &&
+                           title_size < 160u) {
+                        unsigned char ch =
+                            (unsigned char)text_item->data[source];
+                        if (ch == '(' || ch == ')' || ch == '\\')
+                            title[title_size++] = '\\';
+                        title[title_size++] = (char)ch;
+                        ++source;
+                    }
+                    title[title_size++] = ')';
+                } else {
+                    title[title_size++] = '<';
+                    title[title_size++] = 'F';
+                    title[title_size++] = 'E';
+                    title[title_size++] = 'F';
+                    title[title_size++] = 'F';
+                    while (source < text_item->size &&
+                           title_size + 4u < sizeof(title)) {
+                        unsigned int cp = 0u;
+                        unsigned char ch =
+                            (unsigned char)text_item->data[source];
+                        size_t extra = 0u;
+                        if (ch < 0x80u) {
+                            cp = ch;
+                        } else if ((ch & 0xe0u) == 0xc0u) {
+                            cp = ch & 0x1fu;
+                            extra = 1u;
+                        } else if ((ch & 0xf0u) == 0xe0u) {
+                            cp = ch & 0x0fu;
+                            extra = 2u;
+                        } else if ((ch & 0xf8u) == 0xf0u) {
+                            cp = ch & 0x07u;
+                            extra = 3u;
+                        } else {
+                            cp = 0xfffdu;
+                        }
+                        ++source;
+                        while (extra-- > 0u && source < text_item->size) {
+                            unsigned char next =
+                                (unsigned char)text_item->data[source];
+                            if ((next & 0xc0u) != 0x80u) {
+                                cp = 0xfffdu;
+                                break;
+                            }
+                            cp = (cp << 6) | (next & 0x3fu);
+                            ++source;
+                        }
+                        if (cp > 0xffffu) {
+                            unsigned int value = cp - 0x10000u;
+                            unsigned int high = 0xd800u + (value >> 10);
+                            unsigned int low = 0xdc00u + (value & 0x3ffu);
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(high >> 12) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(high >> 8) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(high >> 4) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[high & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(low >> 12) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(low >> 8) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(low >> 4) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[low & 0xfu];
+                        } else {
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(cp >> 12) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(cp >> 8) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[(cp >> 4) & 0xfu];
+                            title[title_size++] =
+                                "0123456789ABCDEF"[cp & 0xfu];
+                        }
+                    }
+                    title[title_size++] = '>';
+                }
+                title[title_size] = '\0';
                 if (!pdf_out_track(&out, out.bytes.size) ||
                     !pdf_out_printf(&out,
-                        "%zu 0 obj\n<< /Title (%.*s) /Parent %zu 0 R",
-                        outline_object, (int)title_size, title,
-                        parent_object)) {
+                        "%zu 0 obj\n<< /Title %s /Parent %zu 0 R",
+                        outline_object, title, parent_object)) {
                     ok = 0;
                     break;
                 }

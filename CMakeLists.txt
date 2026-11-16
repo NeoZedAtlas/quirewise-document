@@ -433,6 +433,18 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_pdf_outline_zh_test
+    tests/pdf_outline_zh_test.c)
+target_compile_features(quirewise_document_pdf_outline_zh_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_pdf_outline_zh_test PRIVATE
+    QUIREWISE_HEADINGS_ZH_HWPX="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/headings-zh.hwpx")
+target_include_directories(quirewise_document_pdf_outline_zh_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_pdf_outline_zh_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_pdf_outline_zh
+    COMMAND quirewise_document_pdf_outline_zh_test)
+
 add_executable(quirewise_document_pdf_heading_outline_test
     tests/pdf_heading_outline_test.c)
 target_compile_features(quirewise_document_pdf_heading_outline_test PRIVATE c_std_11)

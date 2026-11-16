@@ -924,7 +924,7 @@ static int pdf_info_literal(const char *text, size_t size, size_t *position,
 }
 
 static int pdf_info_hex(const char *text, size_t size, size_t *position,
-                        char *out, size_t capacity)
+                        char *out, size_t capacity, size_t *out_size)
 {
     size_t used = 0u;
     int high = -1;
@@ -948,20 +948,34 @@ static int pdf_info_hex(const char *text, size_t size, size_t *position,
     if (cursor < size && text[cursor] == '>') ++cursor;
     *position = cursor;
     out[used] = '\0';
+    if (out_size) *out_size = used;
     return 1;
 }
 
 static void pdf_info_normalize(char *text, size_t *size,
                                size_t capacity)
 {
+    char *converted;
     size_t used = 0u;
     size_t index = 0u;
-    if (*size >= 2u && (unsigned char)text[0] == 0xfeu &&
-        (unsigned char)text[1] == 0xffu) {
-        index = 2u;
-        while (index + 1u < *size) {
-            unsigned int code = ((unsigned int)(unsigned char)text[index] << 8) |
-                                (unsigned int)(unsigned char)text[index + 1u];
+    int big_endian = 0;
+    if (!text || !size || *size < 2u || capacity < 2u) return;
+    if ((unsigned char)text[0] == 0xfeu && (unsigned char)text[1] == 0xffu) {
+        big_endian = 1;
+    } else if ((unsigned char)text[0] == 0xffu &&
+               (unsigned char)text[1] == 0xfeu) {
+        big_endian = 0;
+    } else {
+        return;
+    }
+    converted = (char *)malloc(capacity);
+    if (!converted) return;
+    index = 2u;
+    while (index + 1u < *size) {
+        unsigned int code;
+        if (big_endian) {
+            code = ((unsigned int)(unsigned char)text[index] << 8) |
+                   (unsigned int)(unsigned char)text[index + 1u];
             if (code >= 0xd800u && code <= 0xdbffu && index + 3u < *size) {
                 unsigned int low =
                     ((unsigned int)(unsigned char)text[index + 2u] << 8) |
@@ -976,25 +990,18 @@ static void pdf_info_normalize(char *text, size_t *size,
             } else {
                 index += 2u;
             }
-            (void)pdf_info_utf8_append(text, capacity, &used, code);
-        }
-        text[used] = '\0';
-        *size = used;
-        return;
-    }
-    if (*size >= 2u && (unsigned char)text[0] == 0xffu &&
-        (unsigned char)text[1] == 0xfeu) {
-        /* UTF-16LE BOM. */
-        index = 2u;
-        while (index + 1u < *size) {
-            unsigned int code = ((unsigned int)(unsigned char)text[index]) |
-                                ((unsigned int)(unsigned char)text[index + 1u] << 8);
+        } else {
+            code = ((unsigned int)(unsigned char)text[index]) |
+                   ((unsigned int)(unsigned char)text[index + 1u] << 8);
             index += 2u;
-            (void)pdf_info_utf8_append(text, capacity, &used, code);
         }
-        text[used] = '\0';
-        *size = used;
+        (void)pdf_info_utf8_append(converted, capacity, &used, code);
     }
+    if (used >= capacity) used = capacity - 1u;
+    memcpy(text, converted, used);
+    text[used] = '\0';
+    *size = used;
+    free(converted);
 }
 
 static int pdf_info_read_string(const char *dict, size_t dict_size,
@@ -1023,10 +1030,10 @@ static int pdf_info_read_string(const char *dict, size_t dict_size,
             }
             if (position < dict_size && dict[position] == '<' &&
                 position + 1u < dict_size && dict[position + 1u] != '<') {
-                size_t raw_size;
-                if (!pdf_info_hex(dict, dict_size, &position, out, capacity))
+                size_t raw_size = 0u;
+                if (!pdf_info_hex(dict, dict_size, &position, out, capacity,
+                                  &raw_size))
                     return 0;
-                raw_size = strlen(out);
                 pdf_info_normalize(out, &raw_size, capacity);
                 return 1;
             }
