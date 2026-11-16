@@ -50,6 +50,8 @@ typedef struct QwPdfLines {
     size_t count;
     size_t capacity;
     size_t total_bytes;
+    char title[256];
+    char author[256];
 } QwPdfLines;
 
 typedef struct QwPdfOutlineLine {
@@ -133,6 +135,8 @@ static void pdf_lines_free(QwPdfLines *lines)
     lines->count = 0u;
     lines->capacity = 0u;
     lines->total_bytes = 0u;
+    lines->title[0] = '\0';
+    lines->author[0] = '\0';
 }
 
 static int pdf_lines_reserve(QwPdfLines *lines)
@@ -610,6 +614,103 @@ static int pdf_parse_html(const char *html, size_t size, QwPdfLines *lines)
                             (const char *)cursor.data + start - 1u,
                             cursor.position - (start - 1u), &current)) {
                         ok = 0;
+                    }
+                    continue;
+                }
+                if (name_length == 5u && !closing &&
+                    (cursor.data[name_start] == 't' ||
+                     cursor.data[name_start] == 'T') &&
+                    memcmp(cursor.data + name_start + 1u, "itle", 4u) == 0) {
+                    size_t content_start = cursor.position;
+                    size_t content_end = content_start;
+                    while (content_end + 6u <= cursor.size) {
+                        size_t check = content_end + 1u;
+                        if (cursor.data[content_end] != '<') {
+                            ++content_end;
+                            continue;
+                        }
+                        if (check < cursor.size && cursor.data[check] == '/')
+                            ++check;
+                        if (check + 5u <= cursor.size &&
+                            (cursor.data[check] == 't' ||
+                             cursor.data[check] == 'T') &&
+                            (cursor.data[check + 1u] == 'i' ||
+                             cursor.data[check + 1u] == 'I') &&
+                            (cursor.data[check + 2u] == 't' ||
+                             cursor.data[check + 2u] == 'T') &&
+                            (cursor.data[check + 3u] == 'l' ||
+                             cursor.data[check + 3u] == 'L') &&
+                            (cursor.data[check + 4u] == 'e' ||
+                             cursor.data[check + 4u] == 'E'))
+                            break;
+                        ++content_end;
+                    }
+                    {
+                        size_t copy = content_end - content_start;
+                        if (copy >= sizeof(lines->title))
+                            copy = sizeof(lines->title) - 1u;
+                        memcpy(lines->title,
+                               (const char *)cursor.data + content_start, copy);
+                        lines->title[copy] = '\0';
+                    }
+                    while (content_end < cursor.size &&
+                           cursor.data[content_end] != '>')
+                        ++content_end;
+                    if (content_end < cursor.size) ++content_end;
+                    cursor.position = content_end;
+                    continue;
+                }
+                if (name_length == 4u && !closing &&
+                    (cursor.data[name_start] == 'm' ||
+                     cursor.data[name_start] == 'M')) {
+                    const char *tag_text =
+                        (const char *)cursor.data + start - 1u;
+                    size_t tag_size = cursor.position - (start - 1u);
+                    size_t scan = 0u;
+                    int author = 0;
+                    while (scan + 4u <= tag_size) {
+                        if ((tag_text[scan] == 'n' || tag_text[scan] == 'N') &&
+                            (tag_text[scan + 1u] == 'a' ||
+                             tag_text[scan + 1u] == 'A') &&
+                            (tag_text[scan + 2u] == 'm' ||
+                             tag_text[scan + 2u] == 'M') &&
+                            (tag_text[scan + 3u] == 'e' ||
+                             tag_text[scan + 3u] == 'E') &&
+                            (scan + 4u >= tag_size ||
+                             tag_text[scan + 4u] == '=' ||
+                             tag_text[scan + 4u] == ' ' ||
+                             tag_text[scan + 4u] == '\t')) {
+                            author = 1;
+                            break;
+                        }
+                        ++scan;
+                    }
+                    if (author) {
+                        size_t probe = 0u;
+                        while (probe + 7u <= tag_size) {
+                            if (memcmp(tag_text + probe, "content", 7u) == 0) {
+                                size_t value = probe + 7u;
+                                while (value < tag_size &&
+                                       (tag_text[value] == ' ' ||
+                                        tag_text[value] == '=' ||
+                                        tag_text[value] == '\t'))
+                                    ++value;
+                                if (value < tag_size &&
+                                    (tag_text[value] == '"' ||
+                                     tag_text[value] == '\'')) {
+                                    char quote = tag_text[value++];
+                                    size_t copy = 0u;
+                                    while (value < tag_size &&
+                                           tag_text[value] != quote &&
+                                           copy + 1u < sizeof(lines->author))
+                                        lines->author[copy++] =
+                                            tag_text[value++];
+                                    lines->author[copy] = '\0';
+                                }
+                                break;
+                            }
+                            ++probe;
+                        }
                     }
                     continue;
                 }
@@ -1561,6 +1662,40 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 ok = 0;
             }
         }
+        if (ok && (lines->title[0] || lines->author[0])) {
+            size_t info_object = outline_root_object +
+                                 (outline_count ? 1u : 0u);
+            char escaped_title[300];
+            char escaped_author[300];
+            size_t title_size = 0u;
+            size_t author_size = 0u;
+            size_t source;
+            for (source = 0u; lines->title[source] &&
+                              title_size + 2u < sizeof(escaped_title);
+                 ++source) {
+                char ch = lines->title[source];
+                if (ch == '(' || ch == ')' || ch == '\\')
+                    escaped_title[title_size++] = '\\';
+                escaped_title[title_size++] = ch;
+            }
+            escaped_title[title_size] = '\0';
+            for (source = 0u; lines->author[source] &&
+                              author_size + 2u < sizeof(escaped_author);
+                 ++source) {
+                char ch = lines->author[source];
+                if (ch == '(' || ch == ')' || ch == '\\')
+                    escaped_author[author_size++] = '\\';
+                escaped_author[author_size++] = ch;
+            }
+            escaped_author[author_size] = '\0';
+            if (!pdf_out_track(&out, out.bytes.size) ||
+                !pdf_out_printf(&out,
+                    "%zu 0 obj\n<< /Producer (Quirewise) /Title (%s) "
+                    "/Author (%s) >>\nendobj\n",
+                    info_object, escaped_title, escaped_author)) {
+                ok = 0;
+            }
+        }
         free(resources.data);
         if (ok && page_count == 0u) {
             size_t page_object = first_page_object;
@@ -1594,7 +1729,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         size_t entry;
         size_t object_total = 6u + (page_count ? page_count : 1u) * 2u +
                               lines->image_count +
-                              (outline_count ? outline_count + 1u : 0u);
+                              (outline_count ? outline_count + 1u : 0u) +
+                              ((lines->title[0] || lines->author[0]) ? 1u : 0u);
         if (!pdf_out_printf(&out, "xref\n0 %zu\n", object_total + 1u) ||
             !pdf_out_printf(&out, "0000000000 65535 f \n")) {
             ok = 0;
@@ -1604,9 +1740,22 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             ok = pdf_out_printf(&out, "%010llu 00000 n \n", offset);
         }
         if (ok) {
-            ok = pdf_out_printf(&out,
-                "trailer\n<< /Size %zu /Root 1 0 R >>\nstartxref\n%zu\n%%%%EOF\n",
-                object_total + 1u, xref_offset);
+            if (lines->title[0] || lines->author[0]) {
+                size_t info_object = 6u + (page_count ? page_count : 1u) * 2u +
+                                     lines->image_count +
+                                     (outline_count ? outline_count + 1u : 0u) +
+                                     1u;
+                ok = pdf_out_printf(
+                    &out,
+                    "trailer\n<< /Size %zu /Root 1 0 R /Info %zu 0 R >>\n"
+                    "startxref\n%zu\n%%%%EOF\n",
+                    object_total + 1u, info_object, xref_offset);
+            } else {
+                ok = pdf_out_printf(
+                    &out,
+                    "trailer\n<< /Size %zu /Root 1 0 R >>\nstartxref\n%zu\n%%%%EOF\n",
+                    object_total + 1u, xref_offset);
+            }
         }
     }
     if (!ok) {
