@@ -62,6 +62,7 @@ typedef struct HwpxParaStyle {
     unsigned prev;
     unsigned next;
     unsigned line_percent;
+    int page_break;
 } HwpxParaStyle;
 
 typedef struct HwpxRenderContext {
@@ -577,6 +578,13 @@ static void hwpx_load_para_styles(HwpxRenderContext *context)
                 const char *horizontal = qw_xml_att(child, "horizontal");
                 if (horizontal && strlen(horizontal) < sizeof(entry->align))
                     memcpy(entry->align, horizontal, strlen(horizontal) + 1u);
+            } else if (strcmp(name, "breakSetting") == 0) {
+                const char *page_break = qw_xml_att(child, "pageBreakBefore");
+                if (page_break && page_break[0] &&
+                    page_break[0] != '0' && page_break[0] != 'f' &&
+                    page_break[0] != 'F' && page_break[0] != 'n' &&
+                    page_break[0] != 'N')
+                    entry->page_break = 1;
             } else if (strcmp(name, "lineSpacing") == 0) {
                 const char *type = qw_xml_att(child, "type");
                 const char *value = qw_xml_att(child, "value");
@@ -746,7 +754,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             if (align_style || (para_style &&
                                 (para_style->intent || para_style->left ||
                                  para_style->prev || para_style->next ||
-                                 para_style->line_percent))) {
+                                 para_style->line_percent ||
+                                 para_style->page_break))) {
                 size_t used = 0u;
                 if (heading_level)
                     used += (size_t)snprintf(p_open + used,
@@ -785,6 +794,10 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                              sizeof(p_open) - used,
                                              "line-height:%u%%;",
                                              para_style->line_percent);
+                if (para_style && para_style->page_break)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "page-break-before:always;");
                 if (used > 0u && used < sizeof(p_open))
                     p_open[used - 1u] = '"';
                 if (used + 2u < sizeof(p_open)) {
