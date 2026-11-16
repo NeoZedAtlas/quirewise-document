@@ -339,6 +339,65 @@ static void hwpx_crop_image(QwImage *image, unsigned left, unsigned top,
     image->height = crop_height;
 }
 
+static void hwpx_rotate_image(QwImage *image, int degrees)
+{
+    size_t bytes_per_pixel;
+    uint32_t new_width;
+    uint32_t new_height;
+    size_t new_stride;
+    uint8_t *pixels;
+    uint32_t y;
+    uint32_t x;
+    if (!image || !image->pixels || !image->width || !image->height) return;
+    degrees %= 360;
+    if (degrees < 0) degrees += 360;
+    if (degrees == 0) return;
+    if (degrees != 90 && degrees != 180 && degrees != 270) return;
+    bytes_per_pixel = image->format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+    if (degrees == 180) {
+        new_width = image->width;
+        new_height = image->height;
+    } else {
+        new_width = image->height;
+        new_height = image->width;
+    }
+    new_stride = (size_t)new_width * bytes_per_pixel;
+    if (new_stride / bytes_per_pixel != new_width ||
+        new_stride > SIZE_MAX / new_height)
+        return;
+    pixels = (uint8_t *)malloc(new_stride * new_height);
+    if (!pixels) return;
+    for (y = 0u; y < image->height; ++y) {
+        for (x = 0u; x < image->width; ++x) {
+            uint32_t dst_x;
+            uint32_t dst_y;
+            const uint8_t *source =
+                image->pixels + (size_t)y * image->stride +
+                (size_t)x * bytes_per_pixel;
+            uint8_t *target;
+            if (degrees == 90) {
+                dst_x = image->height - 1u - y;
+                dst_y = x;
+            } else if (degrees == 180) {
+                dst_x = image->width - 1u - x;
+                dst_y = image->height - 1u - y;
+            } else {
+                dst_x = y;
+                dst_y = image->width - 1u - x;
+            }
+            target = pixels + (size_t)dst_y * new_stride +
+                     (size_t)dst_x * bytes_per_pixel;
+            memcpy(target, source, bytes_per_pixel);
+        }
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->size = new_stride * new_height;
+    image->stride = new_stride;
+    image->width = new_width;
+    image->height = new_height;
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -393,6 +452,11 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     ? hwpx_clip_pixels(qw_xml_att(clip_node, "right")) : 0u;
                 unsigned clip_bottom = clip_node
                     ? hwpx_clip_pixels(qw_xml_att(clip_node, "bottom")) : 0u;
+                QwXmlNode *rotation_node = hwpx_find_descendant(
+                    qw_xml_down(node), "rotationInfo", 0u, &search_nodes);
+                int rotation = rotation_node
+                    ? (int)strtod(qw_xml_att(rotation_node, "angle"), NULL)
+                    : 0;
                 unsigned display_width = 0u;
                 unsigned display_height = 0u;
                 const char *reference =
@@ -438,6 +502,7 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                  (hwpx_crop_image(&decoded, clip_left, clip_top,
                                                   clip_right, clip_bottom),
                                   1)) &&
+                                (hwpx_rotate_image(&decoded, rotation), 1) &&
                                 qw_image_encode(&decoded, QW_IMAGE_ENCODE_PNG,
                                                 &png, &png_size) ==
                                     QW_IMAGE_OK &&
