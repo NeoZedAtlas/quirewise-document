@@ -1096,6 +1096,22 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 const char *cell_color = NULL;
                 const char *cell_border = NULL;
                 unsigned border_px = 1u;
+                const char *vertical_align = qw_xml_att(node, "vAlign");
+                const char *text_direction =
+                    qw_xml_att(node, "textDirection");
+                const char *css_vertical = NULL;
+                int vertical_text = 0;
+                if (vertical_align) {
+                    if (strcasecmp(vertical_align, "CENTER") == 0)
+                        css_vertical = "middle";
+                    else if (strcasecmp(vertical_align, "BOTTOM") == 0)
+                        css_vertical = "bottom";
+                    else if (strcasecmp(vertical_align, "TOP") == 0)
+                        css_vertical = "top";
+                }
+                if (text_direction &&
+                    strcasecmp(text_direction, "VERTICAL") == 0)
+                    vertical_text = 1;
                 if (fill_ref && context) {
                     unsigned long fill_id = strtoul(fill_ref, NULL, 10);
                     if (fill_id < HWPX_MAX_CHAR_STYLES &&
@@ -1109,7 +1125,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                         }
                     }
                 }
-                if (colspan > 1u || rowspan > 1u || cell_color || cell_border) {
+                if (colspan > 1u || rowspan > 1u || cell_color || cell_border ||
+                    css_vertical || vertical_text) {
                     size_t used = (size_t)snprintf(cell_open,
                                                    sizeof(cell_open), "<td");
                     if (colspan > 1u && used < sizeof(cell_open))
@@ -1120,7 +1137,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                         used += (size_t)snprintf(cell_open + used,
                                                  sizeof(cell_open) - used,
                                                  " rowspan=\"%u\"", rowspan);
-                    if ((cell_color || cell_border) &&
+                    if ((cell_color || cell_border || css_vertical ||
+                         vertical_text) &&
                         used < sizeof(cell_open)) {
                         used += (size_t)snprintf(
                             cell_open + used, sizeof(cell_open) - used,
@@ -1134,6 +1152,14 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                             used += (size_t)snprintf(
                                 cell_open + used, sizeof(cell_open) - used,
                                 "background-color:%s;", cell_color);
+                        if (css_vertical)
+                            used += (size_t)snprintf(
+                                cell_open + used, sizeof(cell_open) - used,
+                                "vertical-align:%s;", css_vertical);
+                        if (vertical_text)
+                            used += (size_t)snprintf(
+                                cell_open + used, sizeof(cell_open) - used,
+                                "writing-mode:vertical-rl;");
                         if (used < sizeof(cell_open))
                             cell_open[used++] = '"';
                     }
