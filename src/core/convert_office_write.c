@@ -45,6 +45,7 @@ typedef struct OfficeTag {
     const uint8_t *href;
     size_t href_size;
     int colspan;
+    int rowspan;
 } OfficeTag;
 
 typedef struct OfficeDocxImage {
@@ -274,6 +275,29 @@ static size_t office_parse_tag(const uint8_t *data, size_t size, size_t start,
             }
         }
         for (position = index; position + 8u < (size_t)end; ++position) {
+            if ((data[position] == 'r' || data[position] == 'R') &&
+                (data[position + 1u] == 'o' || data[position + 1u] == 'O') &&
+                (data[position + 2u] == 'w' || data[position + 2u] == 'W') &&
+                (data[position + 3u] == 's' || data[position + 3u] == 'S') &&
+                (data[position + 4u] == 'p' || data[position + 4u] == 'P') &&
+                (data[position + 5u] == 'a' || data[position + 5u] == 'A') &&
+                (data[position + 6u] == 'n' || data[position + 6u] == 'N') &&
+                data[position + 7u] == '=' &&
+                (data[position + 8u] == '"' || data[position + 8u] == '\'')) {
+                char quote = (char)data[position + 8u];
+                int value = 0;
+                position += 9u;
+                while (position < (size_t)end && data[position] != quote &&
+                       data[position] >= '0' && data[position] <= '9') {
+                    value = value * 10 + (data[position] - '0');
+                    if (value > 64) value = 64;
+                    ++position;
+                }
+                tag->rowspan = value;
+                break;
+            }
+        }
+        for (position = index; position + 8u < (size_t)end; ++position) {
             if ((data[position] == 'c' || data[position] == 'C') &&
                 (data[position + 1u] == 'o' || data[position + 1u] == 'O') &&
                 (data[position + 2u] == 'l' || data[position + 2u] == 'L') &&
@@ -366,6 +390,8 @@ typedef struct DocxState {
     int table_open;
     int table_row_open;
     int table_cell_active;
+    size_t table_column;
+    int vmerge_remaining[64];
     int link_open;
     size_t link_index;
 } DocxState;
@@ -520,6 +546,25 @@ static int office_append_docx_drawing(OfficeBuffer *body, size_t index,
     return office_append(body, xml, (size_t)length);
 }
 
+static int docx_emit_vmerge_cell(DocxState *state, int restart)
+{
+    if (!office_text(&state->body, "<w:tc><w:tcPr><w:vMerge")) return 0;
+    if (restart && !office_text(&state->body, " w:val=\"restart\"")) return 0;
+    if (!office_text(&state->body, "/></w:tcPr></w:tc>")) return 0;
+    return 1;
+}
+
+static int docx_flush_vmerge_gap(DocxState *state)
+{
+    while (state->table_column < 64u &&
+           state->vmerge_remaining[state->table_column] > 0) {
+        if (!docx_emit_vmerge_cell(state, 0)) return 0;
+        --state->vmerge_remaining[state->table_column];
+        ++state->table_column;
+    }
+    return 1;
+}
+
 static int docx_flush_paragraph(DocxState *state);
 
 static int docx_close_cell(DocxState *state)
@@ -540,6 +585,7 @@ static int docx_close_row(DocxState *state)
 {
     if (!state->table_row_open) return 1;
     if (!docx_close_cell(state)) return 0;
+    if (!docx_flush_vmerge_gap(state)) return 0;
     if (!office_text(&state->body, "</w:tr>")) return 0;
     state->table_row_open = 0;
     return 1;
@@ -709,6 +755,8 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                     state.table_open = 1;
                     state.table_row_open = 0;
                     state.table_cell_active = 0;
+                    memset(state.vmerge_remaining, 0,
+                           sizeof(state.vmerge_remaining));
                 }
             } else if (strcmp(tag.name, "tr") == 0) {
                 if (!state.table_open) {
@@ -722,6 +770,7 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                 if (!office_text(&state.body, "<w:tr>")) goto out_of_memory;
                 state.table_row_open = 1;
                 state.table_cell_open = 0;
+                state.table_column = 0u;
                 state.first_cell = 1;
             } else if (strcmp(tag.name, "td") == 0 ||
                        strcmp(tag.name, "th") == 0) {
@@ -738,6 +787,7 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                     state.table_row_open = 1;
                 }
                 if (!docx_flush_paragraph(&state)) goto out_of_memory;
+                if (!docx_flush_vmerge_gap(&state)) goto out_of_memory;
                 if (!office_text(&state.body, "<w:tc><w:tcPr>")) goto out_of_memory;
                 if (tag.colspan > 1) {
                     char span[64];
@@ -748,9 +798,22 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                         !office_append(&state.body, span, (size_t)length))
                         goto out_of_memory;
                 }
+                if (tag.rowspan > 1 && state.table_column < 64u) {
+                    size_t column;
+                    if (!office_text(&state.body,
+                                     "<w:vMerge w:val=\"restart\"/>"))
+                        goto out_of_memory;
+                    for (column = 0u;
+                         column < (size_t)(tag.colspan > 0 ? tag.colspan : 1) &&
+                         state.table_column + column < 64u;
+                         ++column)
+                        state.vmerge_remaining[state.table_column + column] =
+                            tag.rowspan - 1;
+                }
                 if (!office_text(&state.body, "</w:tcPr>")) goto out_of_memory;
                 state.table_cell_active = 1;
                 state.table_cell_open = 1;
+                state.table_column += tag.colspan > 0 ? (size_t)tag.colspan : 1u;
                 state.first_cell = 0;
                 if (strcmp(tag.name, "th") == 0) state.bold = 1;
             } else if (strcmp(tag.name, "a") == 0) {
