@@ -11,6 +11,7 @@
 #include "../backends/document_backend.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static int image_target(QwOutputFormat target, QwImageEncodeFormat *out)
@@ -47,15 +48,96 @@ static int image_status(int status)
     }
 }
 
-int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
-                                QwOutputFormat output_format,
-                                uint8_t **out_data, size_t *out_size,
-                                QwConvertReport *report)
+
+static unsigned image_channels(QwImagePixelFormat format)
+{
+    return format == QW_IMAGE_PIXEL_GRAY8 ? 1u : 3u;
+}
+
+static int image_apply_crop(QwImage *image, const QwConvertOptions *options)
+{
+    uint32_t left = options->image_crop_left;
+    uint32_t top = options->image_crop_top;
+    uint32_t right = options->image_crop_right;
+    uint32_t bottom = options->image_crop_bottom;
+    uint32_t width;
+    uint32_t height;
+    unsigned channels;
+    uint8_t *pixels;
+    uint32_t row;
+    if (!left && !top && !right && !bottom) return 1;
+    if ((uint64_t)left + right >= image->width ||
+        (uint64_t)top + bottom >= image->height)
+        return 0;
+    width = image->width - left - right;
+    height = image->height - top - bottom;
+    channels = image_channels(image->format);
+    pixels = (uint8_t *)malloc((size_t)width * channels * height);
+    if (!pixels) return 0;
+    for (row = 0u; row < height; ++row) {
+        memcpy(pixels + (size_t)row * width * channels,
+               image->pixels + (size_t)(row + top) * image->stride +
+                   (size_t)left * channels,
+               (size_t)width * channels);
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->width = width;
+    image->height = height;
+    image->stride = (size_t)width * channels;
+    image->size = image->stride * height;
+    return 1;
+}
+
+static int image_apply_resize(QwImage *image, const QwConvertOptions *options)
+{
+    uint32_t width = options->image_resize_width;
+    uint32_t height = options->image_resize_height;
+    unsigned channels;
+    uint8_t *pixels;
+    uint32_t row;
+    if (!width && !height) return 1;
+    if (!width)
+        width = (uint32_t)(((uint64_t)height * image->width / image->height) ?
+                           ((uint64_t)height * image->width / image->height) : 1u);
+    else if (!height)
+        height = (uint32_t)(((uint64_t)width * image->height / image->width) ?
+                            ((uint64_t)width * image->height / image->width) : 1u);
+    if (!width || !height || width > 8192u || height > 8192u) return 0;
+    if (width == image->width && height == image->height) return 1;
+    channels = image_channels(image->format);
+    pixels = (uint8_t *)malloc((size_t)width * channels * height);
+    if (!pixels) return 0;
+    for (row = 0u; row < height; ++row) {
+        uint32_t source_row =
+            (uint32_t)((uint64_t)row * image->height / height);
+        uint32_t column;
+        for (column = 0u; column < width; ++column) {
+            uint32_t source_column =
+                (uint32_t)((uint64_t)column * image->width / width);
+            memcpy(pixels + ((size_t)row * width + column) * channels,
+                   image->pixels + (size_t)source_row * image->stride +
+                       (size_t)source_column * channels,
+                   channels);
+        }
+    }
+    free(image->pixels);
+    image->pixels = pixels;
+    image->width = width;
+    image->height = height;
+    image->stride = (size_t)width * channels;
+    image->size = image->stride * height;
+    return 1;
+}
+
+int qw_doc_convert_image_memory_with_options(
+    const uint8_t *data, size_t size, QwOutputFormat output_format,
+    const QwConvertOptions *options, uint8_t **out_data, size_t *out_size,
+    QwConvertReport *report)
 {
     QwImageEncodeFormat encode_format;
     QwImage image;
     int status;
-
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
     *out_size = 0u;
@@ -74,6 +156,15 @@ int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
             snprintf(report->note, sizeof(report->note),
                      "image decode failed (%d)", status);
         return image_status(status);
+    }
+    if (options &&
+        (!image_apply_crop(&image, options) ||
+         !image_apply_resize(&image, options))) {
+        qw_image_free(&image);
+        if (report)
+            snprintf(report->note, sizeof(report->note),
+                     "image crop/resize request is outside the decoded raster");
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
     }
     status = qw_image_encode(&image, encode_format, out_data, out_size);
     qw_image_free(&image);
@@ -94,8 +185,23 @@ int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
         report->output_format = output_format;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
-                 "raster re-encoded to %s; no resampling or color conversion",
-                 qw_format_name(output_format));
+                 "raster re-encoded to %s%s", qw_format_name(output_format),
+                 options && (options->image_crop_left || options->image_crop_top ||
+                             options->image_crop_right ||
+                             options->image_crop_bottom ||
+                             options->image_resize_width ||
+                             options->image_resize_height)
+                     ? " with the requested crop/resize"
+                     : "; no resampling or color conversion");
     }
     return QW_STATUS_OK;
+}
+
+int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
+                                QwOutputFormat output_format,
+                                uint8_t **out_data, size_t *out_size,
+                                QwConvertReport *report)
+{
+    return qw_doc_convert_image_memory_with_options(
+        data, size, output_format, NULL, out_data, out_size, report);
 }

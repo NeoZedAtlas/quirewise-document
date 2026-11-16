@@ -1924,8 +1924,8 @@ int qw_convert_to_format_memory(const void *data, size_t size,
                                           out_size, report);
     }
     if (qw_image_probe(bytes, size)) {
-        int image_status = qw_doc_convert_image_memory(
-            bytes, size, output_format, out_data, out_size, report);
+        int image_status = qw_doc_convert_image_memory_with_options(
+            bytes, size, output_format, options, out_data, out_size, report);
         if (image_status != QW_STATUS_ERR_UNSUPPORTED) return image_status;
     }
     if (output_format == QW_FORMAT_HTML) {

@@ -113,6 +113,10 @@ int qw_doc_convert_hwpx_memory(const uint8_t *data, size_t size,
 
 /* Raster re-encoding: decoded PNG/BMP/TIFF/JPEG/WebP input to an encodable
  * target. The image package currently writes PNG/BMP/TIFF/JPEG/WebP. */
+int qw_doc_convert_image_memory_with_options(
+    const uint8_t *data, size_t size, QwOutputFormat output_format,
+    const QwConvertOptions *options, uint8_t **out_data, size_t *out_size,
+    QwConvertReport *report);
 int qw_doc_convert_image_memory(const uint8_t *data, size_t size,
                                 QwOutputFormat output_format,
                                 uint8_t **out_data, size_t *out_size,
