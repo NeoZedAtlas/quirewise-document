@@ -45,12 +45,22 @@ typedef struct HwpxManifestItem {
     int is_section;
 } HwpxManifestItem;
 
+#define HWPX_MAX_CHAR_STYLES 128u
+
+typedef struct HwpxCharStyle {
+    int used;
+    int bold;
+    int italic;
+    char color[8];
+} HwpxCharStyle;
+
 typedef struct HwpxRenderContext {
     QwZipArchive *zip;
     const HwpxManifestItem *items;
     size_t item_count;
     size_t image_count;
     size_t image_bytes;
+    HwpxCharStyle char_styles[HWPX_MAX_CHAR_STYLES];
 } HwpxRenderContext;
 
 static int hwpx_html_append(HwpxHtml *html, const char *data, size_t size)
@@ -439,6 +449,80 @@ static int hwpx_flag_value(const char *value)
     return 1;
 }
 
+static void hwpx_load_char_styles(HwpxRenderContext *context)
+{
+    size_t header_size = 0u;
+    void *header_data;
+    QwXmlNode *root;
+    QwXmlNode *properties;
+    QwXmlNode *style;
+    QwXmlError error;
+    size_t visited = 0u;
+    if (!context || !context->zip) return;
+    header_data = hwpx_extract_entry(context->zip, "Contents/header.xml",
+                                     HWPX_XML_LIMIT, &header_size);
+    if (!header_data) return;
+    memset(&error, 0, sizeof(error));
+    root = qw_xml_parse(header_data, header_size, &error);
+    free(header_data);
+    if (!root) return;
+    properties = hwpx_find_descendant(qw_xml_root(root), "charProperties", 0u,
+                                      &visited);
+    for (style = properties ? qw_xml_down(properties) : NULL; style;
+         style = qw_xml_next(style)) {
+        const char *tag = qw_xml_tag(style);
+        const char *id_text;
+        unsigned long id;
+        QwXmlNode *child;
+        HwpxCharStyle *entry;
+        if (!tag || strcmp(hwpx_local_name(tag), "charPr") != 0) continue;
+        id_text = qw_xml_att(style, "id");
+        if (!id_text) continue;
+        id = strtoul(id_text, NULL, 10);
+        if (id >= HWPX_MAX_CHAR_STYLES) continue;
+        entry = &context->char_styles[id];
+        entry->used = 1;
+        {
+            const char *color = qw_xml_att(style, "textColor");
+            if (color) {
+                const char *hex = color;
+                size_t length;
+                if (hex[0] == '#') ++hex;
+                else if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X'))
+                    hex += 2;
+                length = strlen(hex);
+                if (length == 6u) {
+                    size_t i;
+                    int valid = 1;
+                    for (i = 0u; i < 6u; ++i) {
+                        char ch = hex[i];
+                        if (!((ch >= '0' && ch <= '9') ||
+                              (ch >= 'a' && ch <= 'f') ||
+                              (ch >= 'A' && ch <= 'F'))) {
+                            valid = 0;
+                            break;
+                        }
+                    }
+                    if (valid) {
+                        entry->color[0] = '#';
+                        memcpy(entry->color + 1u, hex, 6u);
+                        entry->color[7] = '\0';
+                    }
+                }
+            }
+        }
+        for (child = qw_xml_down(style); child; child = qw_xml_next(child)) {
+            const char *child_tag = qw_xml_tag(child);
+            if (!child_tag) continue;
+            if (strcmp(hwpx_local_name(child_tag), "bold") == 0)
+                entry->bold = 1;
+            else if (strcmp(hwpx_local_name(child_tag), "italic") == 0)
+                entry->italic = 1;
+        }
+    }
+    qw_xml_drop(root);
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -456,7 +540,69 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             continue;
         }
         tag = hwpx_local_name(qw_xml_tag(node));
-        if (strcmp(tag, "p") == 0) {
+        if (strcmp(tag, "run") == 0) {
+            char run_open[96];
+            char run_close[96];
+            size_t open_length = 0u;
+            size_t close_length = 0u;
+            const char *style_id = qw_xml_att(node, "charPrIDRef");
+            unsigned long id = style_id ? strtoul(style_id, NULL, 10) : 0u;
+            const HwpxCharStyle *style =
+                (context && style_id && id < HWPX_MAX_CHAR_STYLES &&
+                 context->char_styles[id].used)
+                    ? &context->char_styles[id] : NULL;
+            run_open[0] = '\0';
+            run_close[0] = '\0';
+            if (style && style->bold) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<strong>");
+                close_length += (size_t)snprintf(run_close, sizeof(run_close),
+                                                 "</strong>");
+            }
+            if (style && style->italic) {
+                open_length += (size_t)snprintf(run_open + open_length,
+                                                sizeof(run_open) - open_length,
+                                                "<em>");
+                close_length += (size_t)snprintf(run_close + close_length,
+                                                 sizeof(run_close) - close_length,
+                                                 "</em>");
+            }
+            if (style && style->color[0]) {
+                open_length += (size_t)snprintf(
+                    run_open + open_length, sizeof(run_open) - open_length,
+                    "<span style=\"color:%s\">", style->color);
+                close_length += (size_t)snprintf(
+                    run_close + close_length,
+                    sizeof(run_close) - close_length, "</span>");
+            }
+            if (open_length) {
+                /* Reverse the closing tags to match nesting order. */
+                char reversed[96];
+                size_t position = 0u;
+                char *cursor = run_close;
+                char *tags[3];
+                size_t tag_count = 0u;
+                size_t i;
+                while (*cursor && tag_count < 3u) {
+                    if (*cursor == '<') tags[tag_count++] = cursor;
+                    ++cursor;
+                }
+                reversed[0] = '\0';
+                for (i = tag_count; i > 0u; --i) {
+                    char *end = strchr(tags[i - 1u], '>');
+                    size_t length;
+                    if (!end) break;
+                    length = (size_t)(end - tags[i - 1u]) + 1u;
+                    memcpy(reversed + position, tags[i - 1u], length);
+                    position += length;
+                }
+                reversed[position] = '\0';
+                memcpy(run_close, reversed, position + 1u);
+                open = run_open;
+                close = run_close;
+            }
+        } else if (strcmp(tag, "p") == 0) {
             char p_open[64];
             size_t align_nodes = 0u;
             QwXmlNode *align_node = hwpx_find_descendant(
@@ -924,6 +1070,7 @@ static QwHwpxStatus hwpx_parse_archive(
         image_context.zip = &zip;
         image_context.items = items;
         image_context.item_count = item_count;
+        hwpx_load_char_styles(&image_context);
         for (QwXmlNode *ref = qw_xml_down(spine); ref; ref = qw_xml_next(ref)) {
             const HwpxManifestItem *item;
             const char *idref;
