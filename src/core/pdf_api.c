@@ -49,6 +49,34 @@ int qw_pdf_open_with_password(const uint8_t *data, size_t size,
     return QW_STATUS_OK;
 }
 
+static int pdf_info_string(QwPdfDocument *document, char *buffer,
+                            size_t capacity, int author)
+{
+    QwPdfReader *reader = (QwPdfReader *)document;
+    char empty;
+    if (!document || !buffer || capacity == 0u)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    buffer[0] = '\0';
+    if (!qw_pdf_reader_info(reader, author ? &empty : buffer,
+                            author ? 0u : capacity,
+                            author ? buffer : &empty,
+                            author ? capacity : 0u))
+        return QW_STATUS_OK;
+    return QW_STATUS_OK;
+}
+
+int qw_pdf_document_title(QwPdfDocument *document, char *buffer,
+                          size_t capacity)
+{
+    return pdf_info_string(document, buffer, capacity, 0);
+}
+
+int qw_pdf_document_author(QwPdfDocument *document, char *buffer,
+                           size_t capacity)
+{
+    return pdf_info_string(document, buffer, capacity, 1);
+}
+
 int qw_pdf_open_structure(const uint8_t *data, size_t size,
                           QwPdfDocument **out_document,
                           size_t *out_page_count, QwConvertReport *report)

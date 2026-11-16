@@ -351,6 +351,16 @@ target_link_libraries(quirewise_document_image_edit_test PRIVATE
 add_test(NAME quirewise_document_image_edit
     COMMAND quirewise_document_image_edit_test)
 
+add_executable(quirewise_document_pdf_info_test
+    tests/pdf_info_test.c)
+target_compile_features(quirewise_document_pdf_info_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_pdf_info_test PRIVATE
+    QUIREWISE_INFO_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/info.pdf")
+target_link_libraries(quirewise_document_pdf_info_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_pdf_info
+    COMMAND quirewise_document_pdf_info_test)
+
 add_executable(quirewise_document_docx_rowspan_write_test
     tests/docx_rowspan_write_test.c)
 target_compile_features(quirewise_document_docx_rowspan_write_test PRIVATE c_std_11)

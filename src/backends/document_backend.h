@@ -195,6 +195,9 @@ int qw_pdf_render_page_memory(const uint8_t *data,
                              QwPageImage *out_page,
                              QwConvertReport *report);
 
+int qw_pdf_reader_info(QwPdfReader *reader, char *title, size_t title_capacity,
+                       char *author, size_t author_capacity);
+
 int qw_pdf_reader_open_password(const uint8_t *data,
                                      size_t size,
                                      const char *password,

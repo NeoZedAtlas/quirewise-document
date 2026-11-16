@@ -88,6 +88,7 @@ struct QwPdfReader {
     int text_ready;
 };
 
+
 static void pdf_reader_free(QwPdfReader *reader)
 {
     size_t index;
@@ -833,6 +834,255 @@ static int pdf_object_body(const QwPdfReader *reader, size_t object,
 
 static int pdf_decrypt_object_data(const QwPdfReader *reader, size_t object,
                                    uint8_t *data, size_t *size);
+
+static int pdf_info_utf8_append(char *out, size_t capacity, size_t *used,
+                                unsigned int code)
+{
+    char encoded[4];
+    size_t size;
+    if (code == 0u || code > 0x10ffffu ||
+        (code >= 0xd800u && code <= 0xdfffu))
+        code = 0xfffdu;
+    if (code < 0x80u) {
+        encoded[0] = (char)code;
+        size = 1u;
+    } else if (code < 0x800u) {
+        encoded[0] = (char)(0xc0u | (code >> 6));
+        encoded[1] = (char)(0x80u | (code & 0x3fu));
+        size = 2u;
+    } else if (code < 0x10000u) {
+        encoded[0] = (char)(0xe0u | (code >> 12));
+        encoded[1] = (char)(0x80u | ((code >> 6) & 0x3fu));
+        encoded[2] = (char)(0x80u | (code & 0x3fu));
+        size = 3u;
+    } else {
+        encoded[0] = (char)(0xf0u | (code >> 18));
+        encoded[1] = (char)(0x80u | ((code >> 12) & 0x3fu));
+        encoded[2] = (char)(0x80u | ((code >> 6) & 0x3fu));
+        encoded[3] = (char)(0x80u | (code & 0x3fu));
+        size = 4u;
+    }
+    if (*used + size + 1u > capacity) return 0;
+    memcpy(out + *used, encoded, size);
+    *used += size;
+    return 1;
+}
+
+static int pdf_info_literal(const char *text, size_t size, size_t *position,
+                            char *out, size_t capacity)
+{
+    size_t used = 0u;
+    int depth = 1;
+    ++*position;
+    while (*position < size) {
+        unsigned char chr = (unsigned char)text[*position];
+        if (chr == '\\') {
+            unsigned char escaped;
+            if (++*position >= size) break;
+            escaped = (unsigned char)text[*position];
+            switch (escaped) {
+            case 'n': chr = '\n'; ++*position; break;
+            case 'r': chr = '\r'; ++*position; break;
+            case 't': chr = '\t'; ++*position; break;
+            case 'b': chr = '\b'; ++*position; break;
+            case 'f': chr = '\f'; ++*position; break;
+            case '(': case ')': case '\\': chr = escaped; ++*position; break;
+            default:
+                if (escaped >= '0' && escaped <= '7') {
+                    int value = 0;
+                    int digits = 0;
+                    while (digits < 3 && *position < size &&
+                           text[*position] >= '0' && text[*position] <= '7') {
+                        value = value * 8 + (text[*position] - '0');
+                        ++*position;
+                        ++digits;
+                    }
+                    chr = (unsigned char)value;
+                } else {
+                    ++*position;
+                    continue;
+                }
+                break;
+            }
+        } else if (chr == '(') {
+            ++depth;
+            ++*position;
+        } else if (chr == ')') {
+            if (--depth == 0) {
+                ++*position;
+                break;
+            }
+            ++*position;
+        } else {
+            ++*position;
+        }
+        if (used + 1u >= capacity) return 0;
+        out[used++] = (char)chr;
+    }
+    out[used] = '\0';
+    return 1;
+}
+
+static int pdf_info_hex(const char *text, size_t size, size_t *position,
+                        char *out, size_t capacity)
+{
+    size_t used = 0u;
+    int high = -1;
+    size_t cursor = *position + 1u;
+    while (cursor < size && text[cursor] != '>') {
+        char chr = text[cursor];
+        int digit = -1;
+        if (chr >= '0' && chr <= '9') digit = chr - '0';
+        else if (chr >= 'a' && chr <= 'f') digit = chr - 'a' + 10;
+        else if (chr >= 'A' && chr <= 'F') digit = chr - 'A' + 10;
+        ++cursor;
+        if (digit < 0) continue;
+        if (high < 0) {
+            high = digit;
+        } else {
+            if (used + 1u >= capacity) return 0;
+            out[used++] = (char)((high << 4) | digit);
+            high = -1;
+        }
+    }
+    if (cursor < size && text[cursor] == '>') ++cursor;
+    *position = cursor;
+    out[used] = '\0';
+    return 1;
+}
+
+static void pdf_info_normalize(char *text, size_t *size)
+{
+    size_t used = 0u;
+    size_t index = 0u;
+    if (*size >= 2u && (unsigned char)text[0] == 0xfeu &&
+        (unsigned char)text[1] == 0xffu) {
+        index = 2u;
+        while (index + 1u < *size) {
+            unsigned int code = ((unsigned int)(unsigned char)text[index] << 8) |
+                                (unsigned int)(unsigned char)text[index + 1u];
+            if (code >= 0xd800u && code <= 0xdbffu && index + 3u < *size) {
+                unsigned int low =
+                    ((unsigned int)(unsigned char)text[index + 2u] << 8) |
+                    (unsigned int)(unsigned char)text[index + 3u];
+                if (low >= 0xdc00u && low <= 0xdfffu) {
+                    code = 0x10000u + ((code - 0xd800u) << 10) +
+                           (low - 0xdc00u);
+                    index += 4u;
+                } else {
+                    index += 2u;
+                }
+            } else {
+                index += 2u;
+            }
+            (void)pdf_info_utf8_append(text, *size + 1u, &used, code);
+        }
+        text[used] = '\0';
+        *size = used;
+        return;
+    }
+    if (*size >= 2u && (unsigned char)text[0] == 0xffu &&
+        (unsigned char)text[1] == 0xfeu) {
+        /* UTF-16LE BOM. */
+        index = 2u;
+        while (index + 1u < *size) {
+            unsigned int code = ((unsigned int)(unsigned char)text[index]) |
+                                ((unsigned int)(unsigned char)text[index + 1u] << 8);
+            index += 2u;
+            (void)pdf_info_utf8_append(text, *size + 1u, &used, code);
+        }
+        text[used] = '\0';
+        *size = used;
+    }
+}
+
+static int pdf_info_read_string(const char *dict, size_t dict_size,
+                                const char *key, char *out, size_t capacity)
+{
+    static const char utf16be[] = {(char)0xfeu, (char)0xffu};
+    size_t key_size = strlen(key);
+    size_t index = 0u;
+    if (capacity) out[0] = '\0';
+    while (index + key_size + 2u <= dict_size) {
+        if (dict[index] == '/' && memcmp(dict + index, key, key_size) == 0) {
+            size_t position = index + key_size;
+            while (position < dict_size &&
+                   isspace((unsigned char)dict[position]))
+                ++position;
+            if (position < dict_size && dict[position] == '(') {
+                size_t raw_size;
+                if (!pdf_info_literal(dict, dict_size, &position, out,
+                                      capacity))
+                    return 0;
+                raw_size = strlen(out);
+                if (raw_size >= 2u &&
+                    memcmp(out, utf16be, 2u) == 0)
+                    pdf_info_normalize(out, &raw_size);
+                return 1;
+            }
+            if (position < dict_size && dict[position] == '<' &&
+                position + 1u < dict_size && dict[position + 1u] != '<') {
+                size_t raw_size;
+                if (!pdf_info_hex(dict, dict_size, &position, out, capacity))
+                    return 0;
+                raw_size = strlen(out);
+                pdf_info_normalize(out, &raw_size);
+                return 1;
+            }
+            return 0;
+        }
+        ++index;
+    }
+    return 0;
+}
+
+static int pdf_info_reference(const QwPdfReader *reader, size_t *out_object)
+{
+    size_t search = 0u;
+    int found = 0;
+    size_t object = 0u;
+    while (search + 7u < reader->size) {
+        const char *position = pdf_memmem((const char *)reader->data + search,
+                                          reader->size - search, "trailer",
+                                          7u);
+        size_t offset;
+        size_t available;
+        size_t candidate;
+        if (!position) break;
+        offset = (size_t)(position - (const char *)reader->data);
+        available = reader->size - offset;
+        if (available > 4096u) available = 4096u;
+        if (pdf_find_reference(position, available, "/Info", &candidate)) {
+            object = candidate;
+            found = 1;
+        }
+        search = offset + 7u;
+    }
+    if (!found) return 0;
+    *out_object = object;
+    return 1;
+}
+
+int qw_pdf_reader_info(QwPdfReader *reader, char *title, size_t title_capacity,
+                       char *author, size_t author_capacity)
+{
+    size_t object = 0u;
+    const char *body = NULL;
+    size_t body_size = 0u;
+    if (!reader) return 0;
+    if (title && title_capacity) title[0] = '\0';
+    if (author && author_capacity) author[0] = '\0';
+    if (reader->encrypted) return 0;
+    if (!pdf_info_reference(reader, &object)) return 0;
+    if (!pdf_object_body(reader, object, &body, &body_size)) return 0;
+    if (title && title_capacity)
+        (void)pdf_info_read_string(body, body_size, "/Title", title,
+                                   title_capacity);
+    if (author && author_capacity)
+        (void)pdf_info_read_string(body, body_size, "/Author", author,
+                                   author_capacity);
+    return 1;
+}
 
 /* Locate a stream payload inside an object body.
  *
