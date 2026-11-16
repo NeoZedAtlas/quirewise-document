@@ -510,9 +510,24 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                             goto out_of_memory;
                         list_open = 1;
                     }
-                    if (!html_append_text(&buffer,
-                                          list_item ? "<li>" : "<pre>"))
+                    if (list_item) {
+                        unsigned list_depth =
+                            ((unsigned)first_flags >>
+                             QW_EPUB_STYLE_LIST_DEPTH_SHIFT) &
+                            QW_EPUB_STYLE_LIST_DEPTH_MASK;
+                        char item_tag[64];
+                        if (list_depth) {
+                            snprintf(item_tag, sizeof(item_tag),
+                                     "<li style=\"margin-left:%uem\">",
+                                     list_depth * 2u);
+                            if (!html_append_text(&buffer, item_tag))
+                                goto out_of_memory;
+                        } else if (!html_append_text(&buffer, "<li>")) {
+                            goto out_of_memory;
+                        }
+                    } else if (!html_append_text(&buffer, "<pre>")) {
                         goto out_of_memory;
+                    }
                     for (run_index = 0u; run_index < paragraph.run_count;
                          ++run_index) {
                         QwEpubRunView run;

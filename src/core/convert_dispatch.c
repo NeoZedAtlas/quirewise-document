@@ -353,9 +353,27 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                               "<ul>", strlen("<ul>"));
                         list_open = 1;
                     }
-                    ok = epub_html_append(&html, &length, &capacity,
-                                          list_item ? "<li>" : "<pre>",
-                                          strlen(list_item ? "<li>" : "<pre>"));
+                    if (list_item) {
+                        unsigned list_depth =
+                            ((unsigned)first_flags >>
+                             QW_EPUB_STYLE_LIST_DEPTH_SHIFT) &
+                            QW_EPUB_STYLE_LIST_DEPTH_MASK;
+                        char item_tag[64];
+                        if (list_depth) {
+                            snprintf(item_tag, sizeof(item_tag),
+                                     "<li style=\"margin-left:%uem\">",
+                                     list_depth * 2u);
+                            ok = epub_html_append(&html, &length, &capacity,
+                                                  item_tag,
+                                                  strlen(item_tag));
+                        } else {
+                            ok = epub_html_append(&html, &length, &capacity,
+                                                  "<li>", 4u);
+                        }
+                    } else {
+                        ok = epub_html_append(&html, &length, &capacity,
+                                              "<pre>", 5u);
+                    }
                     for (run_index = 0u; ok && run_index < paragraph.run_count;
                          ++run_index) {
                         QwEpubRunView run;
