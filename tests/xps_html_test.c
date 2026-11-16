@@ -12,6 +12,10 @@
 #error "QUIREWISE_XPS_SAMPLE must be defined"
 #endif
 
+#ifndef QUIREWISE_XPS_IMAGE_SAMPLE
+#error "QUIREWISE_XPS_IMAGE_SAMPLE must be defined"
+#endif
+
 static uint8_t *read_file(const char *path, size_t *out_size)
 {
     FILE *file = fopen(path, "rb");
@@ -94,6 +98,36 @@ int main(void)
         return 1;
     }
     free(markdown);
+    {
+        uint8_t *image_xps;
+        size_t image_xps_size = 0u;
+        uint8_t *image_md = NULL;
+        size_t image_md_size = 0u;
+        image_xps = read_file(QUIREWISE_XPS_IMAGE_SAMPLE, &image_xps_size);
+        if (!image_xps || !image_xps_size) {
+            fputs("FAIL: cannot read the XPS image fixture\n", stderr);
+            return 1;
+        }
+        memset(&report, 0, sizeof(report));
+        if (qw_doc_convert_markdown_memory(image_xps, image_xps_size, "xps",
+                                           &image_md, &image_md_size,
+                                           &report) != QW_STATUS_OK ||
+            !image_md || !image_md_size) {
+            fprintf(stderr, "FAIL: XPS image to Markdown (%s)\n",
+                    report.note);
+            free(image_xps);
+            return 1;
+        }
+        free(image_xps);
+        if (!contains(image_md, image_md_size,
+                      "![](data:image/png;base64,") ||
+            !contains(image_md, image_md_size, "XPS image page")) {
+            fputs("FAIL: XPS Markdown image was dropped\n", stderr);
+            free(image_md);
+            return 1;
+        }
+        free(image_md);
+    }
     puts("Quirewise XPS HTML tests passed");
     return 0;
 }

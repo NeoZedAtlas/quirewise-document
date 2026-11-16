@@ -412,7 +412,8 @@ add_executable(quirewise_document_xps_html_test
     tests/xps_html_test.c)
 target_compile_features(quirewise_document_xps_html_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_xps_html_test PRIVATE
-    QUIREWISE_XPS_SAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sample.xps")
+    QUIREWISE_XPS_SAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/sample.xps"
+    QUIREWISE_XPS_IMAGE_SAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/image.xps")
 target_include_directories(quirewise_document_xps_html_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
 target_link_libraries(quirewise_document_xps_html_test PRIVATE
