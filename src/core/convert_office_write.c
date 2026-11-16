@@ -7,8 +7,8 @@
  *
  * - EPUB: one XHTML chapter, OPF manifest/spine and NCX table of contents.
  * - DOCX: WordprocessingML body with paragraphs, heading styles, character
- *   emphasis and bullet lists; links and tables are flattened, images are
- *   reduced to alt text. There is no numbering, theme or section layout.
+ *   emphasis, bullet lists, hyperlinks and embedded images; tables are
+ *   flattened. There is no numbering, theme or section layout.
  *
  * The packages are validated in the test suite by reading them back with the
  * package's own EPUB and DOCX parsers.
@@ -42,6 +42,8 @@ typedef struct OfficeTag {
     char alt[512];
     const uint8_t *src;
     size_t src_size;
+    const uint8_t *href;
+    size_t href_size;
 } OfficeTag;
 
 typedef struct OfficeDocxImage {
@@ -57,6 +59,17 @@ typedef struct OfficeDocxImages {
     OfficeDocxImage images[OFFICE_DOCX_MAX_IMAGES];
     size_t count;
 } OfficeDocxImages;
+
+#define OFFICE_DOCX_MAX_LINKS 64u
+
+typedef struct OfficeDocxLink {
+    char href[2048];
+} OfficeDocxLink;
+
+typedef struct OfficeDocxLinks {
+    OfficeDocxLink links[OFFICE_DOCX_MAX_LINKS];
+    size_t count;
+} OfficeDocxLinks;
 
 static int office_reserve(OfficeBuffer *buffer, size_t additional)
 {
@@ -259,6 +272,23 @@ static size_t office_parse_tag(const uint8_t *data, size_t size, size_t start,
                 break;
             }
         }
+        for (position = index; position + 6u < (size_t)end; ++position) {
+            if ((data[position] == 'h' || data[position] == 'H') &&
+                (data[position + 1u] == 'r' || data[position + 1u] == 'R') &&
+                (data[position + 2u] == 'e' || data[position + 2u] == 'E') &&
+                (data[position + 3u] == 'f' || data[position + 3u] == 'F') &&
+                data[position + 4u] == '=' &&
+                (data[position + 5u] == '"' || data[position + 5u] == '\'')) {
+                char quote = (char)data[position + 5u];
+                size_t start_value = position + 6u;
+                position = start_value;
+                while (position < (size_t)end && data[position] != quote)
+                    ++position;
+                tag->href = data + start_value;
+                tag->href_size = position - start_value;
+                break;
+            }
+        }
         return (size_t)end + 1u - start;
     }
 }
@@ -309,6 +339,8 @@ typedef struct DocxState {
     int pre;
     int table_cell_open;
     int first_cell;
+    int link_open;
+    size_t link_index;
 } DocxState;
 
 static int docx_open_paragraph(DocxState *state)
@@ -468,8 +500,24 @@ static int docx_flush_paragraph(DocxState *state)
     return office_text(&state->body, "</w:p>\n");
 }
 
+static int office_link_is_safe(const uint8_t *href, size_t size)
+{
+    size_t i;
+    if (!href || size == 0u) return 0;
+    for (i = 0u; i < size; ++i) {
+        if (href[i] == ' ' || href[i] == '"' || href[i] == '\'' ||
+            href[i] == '\r' || href[i] == '\n' || href[i] == '\t')
+            return 0;
+    }
+    if (size >= 7u && memcmp(href, "http://", 7u) == 0) return 1;
+    if (size >= 8u && memcmp(href, "https://", 8u) == 0) return 1;
+    if (size >= 7u && memcmp(href, "mailto:", 7u) == 0) return 1;
+    return 0;
+}
+
 static int docx_body_from_html(const uint8_t *html, size_t size,
                                OfficeDocxImages *images,
+                               OfficeDocxLinks *links,
                                OfficeBuffer *body)
 {
     DocxState state;
@@ -499,12 +547,7 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
             index += consumed;
             if (!tag.name[0]) continue;
             if (strcmp(tag.name, "head") == 0) {
-                if (!tag.closing) {
-                    in_head = 1;
-                    index = office_skip_element(html, size, index, "head");
-                } else {
-                    in_head = 0;
-                }
+                in_head = tag.closing ? 0 : 1;
                 continue;
             }
             if (strcmp(tag.name, "script") == 0 ||
@@ -543,6 +586,12 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                 } else if (strcmp(tag.name, "td") == 0 ||
                            strcmp(tag.name, "th") == 0) {
                     /* Cells are separated when the next cell opens. */
+                } else if (strcmp(tag.name, "a") == 0) {
+                    if (state.link_open) {
+                        if (!office_text(&state.body, "</w:hyperlink>"))
+                            goto out_of_memory;
+                        state.link_open = 0;
+                    }
                 }
                 continue;
             }
@@ -599,6 +648,29 @@ static int docx_body_from_html(const uint8_t *html, size_t size,
                 }
                 state.table_cell_open = 1;
                 state.first_cell = 0;
+            } else if (strcmp(tag.name, "a") == 0) {
+                if (links && state.link_index < OFFICE_DOCX_MAX_LINKS &&
+                           office_link_is_safe(tag.href, tag.href_size)) {
+                    size_t href_size = tag.href_size;
+                    if (href_size >= sizeof(links->links[state.link_index].href))
+                        href_size = sizeof(links->links[state.link_index].href) - 1u;
+                    if (!docx_open_paragraph(&state)) goto out_of_memory;
+                    memcpy(links->links[state.link_index].href, tag.href,
+                           href_size);
+                    links->links[state.link_index].href[href_size] = '\0';
+                    {
+                        char opening[64];
+                        int length = snprintf(opening, sizeof(opening),
+                                              "<w:hyperlink r:id=\"rIdLink%lu\">",
+                                              (unsigned long)state.link_index);
+                        if (length <= 0 || (size_t)length >= sizeof(opening) ||
+                            !office_append(&state.body, opening, (size_t)length))
+                            goto out_of_memory;
+                    }
+                    state.link_open = 1;
+                    ++links->count;
+                    ++state.link_index;
+                }
             } else if (strcmp(tag.name, "img") == 0) {
                 int embedded = 0;
                 if (images && images->count < OFFICE_DOCX_MAX_IMAGES &&
@@ -792,6 +864,7 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
     OfficeBuffer document;
     OfficeBuffer docx_rels;
     OfficeDocxImages images;
+    OfficeDocxLinks links;
     QwZipWriter writer;
     int status;
 
@@ -807,7 +880,8 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
     if (status != QW_STATUS_OK) return status;
     memset(&body, 0, sizeof(body));
     memset(&images, 0, sizeof(images));
-    if (!docx_body_from_html(html, html_size, &images, &body)) {
+    memset(&links, 0, sizeof(links));
+    if (!docx_body_from_html(html, html_size, &images, &links, &body)) {
         free(html);
         return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
                            "DOCX body", "out of memory");
@@ -847,6 +921,30 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
                 (unsigned long)image_index, (unsigned long)image_index);
             if (length <= 0 || (size_t)length >= sizeof(relationship) ||
                 !office_append(&docx_rels, relationship, (size_t)length)) {
+                free(body.data);
+                free(document.data);
+                free(docx_rels.data);
+                return office_fail(report, QW_STATUS_ERR_OUT_OF_MEMORY,
+                                   "DOCX build", "out of memory");
+            }
+        }
+    }
+    {
+        size_t link_index;
+        for (link_index = 0u; link_index < links.count; ++link_index) {
+            char relationship[128];
+            int length = snprintf(
+                relationship, sizeof(relationship),
+                "<Relationship Id=\"rIdLink%lu\" Type=\"http://schemas."
+                "openxmlformats.org/officeDocument/2006/relationships/"
+                "hyperlink\" Target=\"",
+                (unsigned long)link_index);
+            if (length <= 0 || (size_t)length >= sizeof(relationship) ||
+                !office_append(&docx_rels, relationship, (size_t)length) ||
+                !office_escape_xml(&docx_rels,
+                                   (const uint8_t *)links.links[link_index].href,
+                                   strlen(links.links[link_index].href)) ||
+                !office_text(&docx_rels, "\" TargetMode=\"External\"/>")) {
                 free(body.data);
                 free(document.data);
                 free(docx_rels.data);
@@ -927,8 +1025,9 @@ int qw_doc_convert_docx_memory(const uint8_t *data, size_t size,
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
                  "minimal WordprocessingML package: paragraphs, headings, "
-                 "character emphasis, bullet text and %zu embedded image(s); "
-                 "links and tables are flattened", images.count);
+                 "character emphasis, bullet text, %zu embedded image(s) and "
+                 "%zu hyperlink(s); tables are flattened",
+                 images.count, links.count);
     }
     return QW_STATUS_OK;
 }

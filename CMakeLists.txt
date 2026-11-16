@@ -341,7 +341,19 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_reader_aes
         COMMAND quirewise_document_pdf_reader_aes_test)
 
-    add_executable(quirewise_document_epub_image_write_test
+    add_executable(quirewise_document_docx_link_write_test
+    tests/docx_link_write_test.c)
+target_compile_features(quirewise_document_docx_link_write_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_docx_link_write_test PRIVATE
+    QUIREWISE_LINK_ODT_SRC="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/link.odt")
+target_include_directories(quirewise_document_docx_link_write_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_docx_link_write_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_docx_link_write
+    COMMAND quirewise_document_docx_link_write_test)
+
+add_executable(quirewise_document_epub_image_write_test
     tests/epub_image_write_test.c)
 target_compile_features(quirewise_document_epub_image_write_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_epub_image_write_test PRIVATE
