@@ -42,6 +42,7 @@ typedef struct QwPdfImage {
 typedef struct QwPdfLines {
     QwPdfText *items;
     unsigned char *heading;
+    unsigned char *page_break;
     size_t *image_refs; /* SIZE_MAX for text lines */
     QwPdfImage *images;
     size_t image_count;
@@ -111,12 +112,14 @@ static void pdf_lines_free(QwPdfLines *lines)
     }
     free(lines->items);
     free(lines->heading);
+    free(lines->page_break);
     free(lines->image_refs);
     for (size_t image = 0u; image < lines->image_count; ++image)
         free(lines->images[image].stream);
     free(lines->images);
     lines->items = NULL;
     lines->heading = NULL;
+    lines->page_break = NULL;
     lines->image_refs = NULL;
     lines->images = NULL;
     lines->image_count = 0u;
@@ -131,6 +134,7 @@ static int pdf_lines_reserve(QwPdfLines *lines)
     size_t capacity;
     QwPdfText *items;
     unsigned char *heading;
+    unsigned char *page_break;
     if (lines->count < lines->capacity) return 1;
     if (lines->count >= QW_PDF_MAX_LINES) return 0;
     capacity = lines->capacity ? lines->capacity * 2u : 64u;
@@ -140,6 +144,9 @@ static int pdf_lines_reserve(QwPdfLines *lines)
     heading = (unsigned char *)realloc(lines->heading, capacity);
     if (!heading) return 0;
     lines->heading = heading;
+    page_break = (unsigned char *)realloc(lines->page_break, capacity);
+    if (!page_break) return 0;
+    lines->page_break = page_break;
     {
         size_t *refs = (size_t *)realloc(lines->image_refs,
                                          capacity * sizeof(*refs));
@@ -151,13 +158,14 @@ static int pdf_lines_reserve(QwPdfLines *lines)
 }
 
 static int pdf_lines_flush(QwPdfLines *lines, QwPdfText *current,
-                           unsigned char level)
+                           unsigned char level, int break_before)
 {
     if (!current->size) return 1;
     if (lines->total_bytes + current->size > QW_PDF_MAX_TEXT_BYTES) return 0;
     if (!pdf_lines_reserve(lines)) return 0;
     lines->items[lines->count] = *current;
     lines->heading[lines->count] = level;
+    lines->page_break[lines->count] = break_before ? 1u : 0u;
     lines->image_refs[lines->count] = SIZE_MAX;
     lines->total_bytes += current->size;
     lines->count += 1u;
@@ -371,7 +379,7 @@ static int pdf_append_image(QwPdfLines *lines, const char *tag, size_t size,
         qw_image_free(&image);
         free(encoded);
     }
-    if (!pdf_lines_flush(lines, current, 0u)) {
+    if (!pdf_lines_flush(lines, current, 0u, 0)) {
         free(stored.stream);
         return 0;
     }
@@ -394,6 +402,7 @@ static int pdf_append_image(QwPdfLines *lines, const char *tag, size_t size,
     if (!pdf_lines_reserve(lines)) return 0;
     memset(&lines->items[lines->count], 0, sizeof(lines->items[lines->count]));
     lines->heading[lines->count] = 0u;
+    lines->page_break[lines->count] = 0u;
     lines->image_refs[lines->count] = lines->image_count;
     lines->count += 1u;
     lines->image_count += 1u;
@@ -545,6 +554,7 @@ static int pdf_parse_html(const char *html, size_t size, QwPdfLines *lines)
     QwPdfText current = {NULL, 0u, 0u};
     unsigned char level = 0u;
     unsigned char pending_heading = 0u;
+    int pending_break = 0;
     int space_pending = 0;
     int ok = 1;
 
@@ -621,17 +631,40 @@ static int pdf_parse_html(const char *html, size_t size, QwPdfLines *lines)
                                                     name_length)) {
                     unsigned char heading = pdf_heading_level(
                         (const char *)cursor.data + name_start, name_length);
+                    if (!closing && start - 1u < cursor.position) {
+                        const char *tag_text =
+                            (const char *)cursor.data + start - 1u;
+                        size_t tag_size = cursor.position - (start - 1u);
+                        size_t scan_style = 0u;
+                        while (scan_style + 19u <= tag_size) {
+                            if (memcmp(tag_text + scan_style,
+                                       "page-break-before", 17u) == 0) {
+                                size_t check = scan_style + 17u;
+                                while (check < tag_size &&
+                                       (tag_text[check] == ' ' ||
+                                        tag_text[check] == ':' ||
+                                        tag_text[check] == '\t'))
+                                    ++check;
+                                if (check + 6u <= tag_size &&
+                                    memcmp(tag_text + check, "always", 6u) == 0)
+                                    pending_break = 1;
+                                break;
+                            }
+                            ++scan_style;
+                        }
+                    }
                     if (!closing && heading) {
                         pending_heading = heading;
                     }
                     if (!closing && name_length == 2u &&
                         memcmp(cursor.data + name_start, "br", 2u) == 0) {
-                        ok = pdf_lines_flush(lines, &current, level);
+                        ok = pdf_lines_flush(lines, &current, level, pending_break);
                         continue;
                     }
                     if (current.size) {
                         level = pending_heading;
-                        ok = pdf_lines_flush(lines, &current, level);
+                        ok = pdf_lines_flush(lines, &current, level, pending_break);
+                        pending_break = 0;
                         if (closing || !heading) pending_heading = 0u;
                     } else if (closing && heading) {
                         pending_heading = 0u;
@@ -667,7 +700,7 @@ static int pdf_parse_html(const char *html, size_t size, QwPdfLines *lines)
                                        cursor.position - start);
         }
     }
-    if (ok) ok = pdf_lines_flush(lines, &current, level);
+    if (ok) ok = pdf_lines_flush(lines, &current, level, pending_break);
     pdf_text_free(&current);
     return ok;
 }
@@ -960,6 +993,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         size_t image_index; /* SIZE_MAX for text */
         double font_size;
         double space;      /* vertical space consumed, in points */
+        int break_before;
     } QwPdfSegment;
     QwPdfOut out;
     QwPdfSegment *segments = NULL;
@@ -1010,11 +1044,14 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 lines->image_refs[line_index];
             segments[segment_count].font_size = 0.0;
             segments[segment_count].space = height + 6.0;
+            segments[segment_count].break_before =
+                lines->page_break[line_index] != 0u;
             segment_count += 1u;
             continue;
         }
         size_t break_count = 0u;
         size_t segment_start = 0u;
+        int line_break = lines->page_break[line_index] != 0u;
         size_t break_index;
         if (!pdf_wrap_line(item->data ? item->data : "", item->size,
                            page_width - 2.0 * margin, font_size,
@@ -1039,6 +1076,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             segments[segment_count].image_index = SIZE_MAX;
             segments[segment_count].font_size = font_size;
             segments[segment_count].space = font_size * line_gap;
+            segments[segment_count].break_before =
+                break_index == 0u && line_break;
             segment_count += 1u;
             segment_start = segment_end < item->size ? segment_end + 1u : item->size;
             if (segment_start > item->size) segment_start = item->size;
@@ -1057,7 +1096,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
 
             while (line_index < segment_count) {
                 double space = segments[line_index].space;
-                if (used > 0.0 && used + space > usable) break;
+                if (used > 0.0 && (segments[line_index].break_before ||
+                                  used + space > usable))
+                    break;
                 used += space;
                 line_index += 1u;
             }

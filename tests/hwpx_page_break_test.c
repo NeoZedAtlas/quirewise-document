@@ -1,5 +1,7 @@
 /* HWPX paraPr breakSetting maps to CSS page-break-before. */
 
+#include "document_backend.h"
+
 #include <quirewise/hwpx.h>
 
 #include <stdio.h>
@@ -69,6 +71,30 @@ int main(void)
         free(hwpx);
         fputs("FAIL: HWPX page break was not preserved\n", stderr);
         return 1;
+    }
+    {
+        uint8_t *pdf = NULL;
+        size_t pdf_size = 0u;
+        QwConvertReport report;
+        memset(&report, 0, sizeof(report));
+        if (qw_doc_convert_memory(hwpx, hwpx_size, ".hwpx", 0, &pdf,
+                                  &pdf_size, &report) != QW_STATUS_OK ||
+            !pdf || !pdf_size) {
+            qw_hwpx_document_free(document);
+            free(hwpx);
+            fprintf(stderr, "FAIL: HWPX page break to PDF (%s)\n",
+                    report.note);
+            return 1;
+        }
+        if (!contains((const char *)pdf, pdf_size, "/Count 2")) {
+            qw_hwpx_document_free(document);
+            free(hwpx);
+            free(pdf);
+            fputs("FAIL: HWPX page break did not start a second PDF page\n",
+                  stderr);
+            return 1;
+        }
+        free(pdf);
     }
     qw_hwpx_document_free(document);
     free(hwpx);
