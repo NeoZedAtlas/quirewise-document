@@ -560,6 +560,71 @@ static char *merge_rewrite_references(const char *text, size_t size, size_t offs
     return output;
 }
 
+typedef struct QwMergeOutlineEntry {
+    char title[256];
+    size_t page_index;
+    int depth;
+} QwMergeOutlineEntry;
+
+static int merge_outline_append(const uint8_t *data, size_t size,
+                                size_t page_start, size_t page_count,
+                                QwMergeOutlineEntry **entries,
+                                size_t *count, size_t *capacity)
+{
+    QwPdfReader *reader = NULL;
+    QwPdfOutlineEntry *parsed = NULL;
+    size_t parsed_count = 0u;
+    size_t pages = 0u;
+    size_t index;
+    int status = qw_pdf_reader_open(data, size, &reader, &pages, NULL);
+    if (status != QW_STATUS_OK || !reader) return 1;
+    if (!qw_pdf_reader_outline(reader, NULL, 0u, &parsed_count) ||
+        parsed_count == 0u) {
+        qw_pdf_reader_close(reader);
+        return 1;
+    }
+    parsed = (QwPdfOutlineEntry *)malloc(parsed_count * sizeof(*parsed));
+    if (!parsed) {
+        qw_pdf_reader_close(reader);
+        return 0;
+    }
+    if (!qw_pdf_reader_outline(reader, parsed, parsed_count, &parsed_count)) {
+        free(parsed);
+        qw_pdf_reader_close(reader);
+        return 1;
+    }
+    for (index = 0u; index < parsed_count; ++index) {
+        QwMergeOutlineEntry *grown;
+        size_t copy;
+        if (parsed[index].page_index >= page_count) continue;
+        if (*count >= 4096u) break;
+        if (*count >= *capacity) {
+            size_t next = *capacity ? *capacity * 2u : 16u;
+            grown = (QwMergeOutlineEntry *)realloc(
+                *entries, next * sizeof(**entries));
+            if (!grown) {
+                free(parsed);
+                qw_pdf_reader_close(reader);
+                return 0;
+            }
+            *entries = grown;
+            *capacity = next;
+        }
+        memset(&(*entries)[*count], 0, sizeof(**entries));
+        copy = strlen(parsed[index].title);
+        if (copy >= sizeof((*entries)[*count].title))
+            copy = sizeof((*entries)[*count].title) - 1u;
+        memcpy((*entries)[*count].title, parsed[index].title, copy);
+        (*entries)[*count].title[copy] = '\0';
+        (*entries)[*count].page_index = page_start + parsed[index].page_index;
+        (*entries)[*count].depth = parsed[index].depth;
+        ++*count;
+    }
+    free(parsed);
+    qw_pdf_reader_close(reader);
+    return 1;
+}
+
 int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
                                  size_t count, uint8_t **out_pdf, size_t *out_size,
                                  size_t *out_pages, QwConvertReport *report)
@@ -581,6 +646,11 @@ int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
     uint8_t *merged = NULL;
     size_t merged_size = 0u;
     size_t capacity = 0u;
+    QwMergeOutlineEntry *outline_entries = NULL;
+    size_t outline_count = 0u;
+    size_t outline_capacity = 0u;
+    size_t outline_root = 0u;
+    size_t outline_items = 0u;
 
     if (out_pdf) *out_pdf = NULL;
     if (out_size) *out_size = 0u;
@@ -751,10 +821,27 @@ int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
         }
     }
 
+    for (input_index = 0u; input_index < count; ++input_index) {
+        if (!merge_outline_append(inputs[input_index].data,
+                                  inputs[input_index].size,
+                                  inputs[input_index].page_start,
+                                  inputs[input_index].page_count,
+                                  &outline_entries, &outline_count,
+                                  &outline_capacity)) {
+            rc = QW_STATUS_ERR_OUT_OF_MEMORY;
+            goto cleanup;
+        }
+    }
     object_total = running_offset;
     catalog_object = object_total + 1u;
     pages_object = object_total + 2u;
-    object_total += 2u;
+    if (outline_count) {
+        outline_root = object_total + 3u;
+        outline_items = object_total + 4u;
+        object_total += 3u + outline_count;
+    } else {
+        object_total += 2u;
+    }
 
     capacity = 1u << 20;
     merged = (uint8_t *)malloc(capacity);
@@ -827,7 +914,8 @@ int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
         }
 
         {
-            size_t needed = 256u + page_total * 32u;
+            size_t needed = 256u + page_total * 32u +
+                            outline_count * 1024u + 512u;
             if (position + needed > capacity) {
                 uint8_t *grown;
                 capacity += needed;
@@ -843,10 +931,7 @@ int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
         {
             char extra[160];
             size_t used = 0u;
-            size_t outline_ref =
-                inputs[0].outline_object
-                    ? inputs[0].outline_object + inputs[0].object_offset
-                    : 0u;
+            size_t outline_ref = outline_count ? outline_root : 0u;
             size_t metadata_ref =
                 inputs[0].metadata_object
                     ? inputs[0].metadata_object + inputs[0].object_offset
@@ -878,6 +963,147 @@ int qw_pdf_merge_documents(const uint8_t *const *pdfs, const size_t *sizes,
         }
         position += (size_t)snprintf((char *)merged + position, capacity - position,
                                      "] >>\nendobj\n");
+        if (outline_count) {
+            long *parents = (long *)malloc(outline_count * sizeof(*parents));
+            long *nexts = (long *)malloc(outline_count * sizeof(*nexts));
+            long *firsts = (long *)malloc(outline_count * sizeof(*firsts));
+            long *lasts = (long *)malloc(outline_count * sizeof(*lasts));
+            size_t item;
+            if (!parents || !nexts || !firsts || !lasts) {
+                free(parents);
+                free(nexts);
+                free(firsts);
+                free(lasts);
+                rc = QW_STATUS_ERR_OUT_OF_MEMORY;
+                goto cleanup;
+            }
+            for (item = 0u; item < outline_count; ++item) {
+                size_t previous;
+                parents[item] = -1;
+                nexts[item] = -1;
+                firsts[item] = -1;
+                lasts[item] = -1;
+                for (previous = item; previous > 0u; --previous) {
+                    if (outline_entries[previous - 1u].depth <
+                        outline_entries[item].depth) {
+                        parents[item] = (long)(previous - 1u);
+                        break;
+                    }
+                }
+            }
+            for (item = 0u; item < outline_count; ++item) {
+                size_t previous;
+                for (previous = item + 1u; previous < outline_count;
+                     ++previous) {
+                    if (outline_entries[previous].depth ==
+                        outline_entries[item].depth &&
+                        parents[previous] == parents[item]) {
+                        nexts[item] = (long)previous;
+                        break;
+                    }
+                }
+                for (previous = item + 1u; previous < outline_count;
+                     ++previous) {
+                    if (outline_entries[previous].depth >
+                        outline_entries[item].depth) {
+                        if (parents[previous] == (long)item) {
+                            if (firsts[item] < 0)
+                                firsts[item] = (long)previous;
+                            lasts[item] = (long)previous;
+                        }
+                    } else if (outline_entries[previous].depth <=
+                               outline_entries[item].depth) {
+                        break;
+                    }
+                }
+            }
+            xref_offsets[outline_root] = position;
+            position += (size_t)snprintf(
+                (char *)merged + position, capacity - position,
+                "%zu 0 obj\n<< /Type /Outlines", outline_root);
+            {
+                long first_root = -1;
+                long last_root = -1;
+                for (item = 0u; item < outline_count; ++item) {
+                    if (parents[item] < 0) {
+                        if (first_root < 0) first_root = (long)item;
+                        last_root = (long)item;
+                    }
+                }
+                if (first_root >= 0) {
+                    position += (size_t)snprintf(
+                        (char *)merged + position, capacity - position,
+                        " /First %zu 0 R /Last %zu 0 R", outline_items +
+                        (size_t)first_root, outline_items + (size_t)last_root);
+                }
+                position += (size_t)snprintf(
+                    (char *)merged + position, capacity - position,
+                    " /Count %zu >>\nendobj\n", outline_count);
+            }
+            for (item = 0u; item < outline_count; ++item) {
+                size_t page = outline_entries[item].page_index;
+                size_t page_object = 0u;
+                size_t cursor;
+                if (page < page_total) {
+                    page_object =
+                        pages[page].object_number +
+                        inputs[pages[page].input_index].object_offset;
+                }
+                xref_offsets[outline_items + item] = position;
+                position += (size_t)snprintf(
+                    (char *)merged + position, capacity - position,
+                    "%zu 0 obj\n<< /Title (", outline_items + item);
+                for (cursor = 0u; outline_entries[item].title[cursor];
+                     ++cursor) {
+                    char chr = outline_entries[item].title[cursor];
+                    if (chr == '(' || chr == ')' || chr == '\\') {
+                        if (position + 1u >= capacity) break;
+                        merged[position++] = '\\';
+                    }
+                    if (position + 1u >= capacity) break;
+                    merged[position++] = (uint8_t)chr;
+                }
+                position += (size_t)snprintf(
+                    (char *)merged + position, capacity - position,
+                    ") /Dest [%zu 0 R /Fit]", page_object);
+                if (parents[item] < 0)
+                    position += (size_t)snprintf(
+                        (char *)merged + position, capacity - position,
+                        " /Parent %zu 0 R", outline_root);
+                else
+                    position += (size_t)snprintf(
+                        (char *)merged + position, capacity - position,
+                        " /Parent %zu 0 R",
+                        outline_items + (size_t)parents[item]);
+                if (nexts[item] >= 0)
+                    position += (size_t)snprintf(
+                        (char *)merged + position, capacity - position,
+                        " /Next %zu 0 R",
+                        outline_items + (size_t)nexts[item]);
+                if (firsts[item] >= 0) {
+                    size_t child;
+                    size_t descendants = 0u;
+                    for (child = item + 1u; child < outline_count; ++child) {
+                        if (outline_entries[child].depth <=
+                            outline_entries[item].depth)
+                            break;
+                        ++descendants;
+                    }
+                    position += (size_t)snprintf(
+                        (char *)merged + position, capacity - position,
+                        " /First %zu 0 R /Last %zu 0 R /Count %zu",
+                        outline_items + (size_t)firsts[item],
+                        outline_items + (size_t)lasts[item], descendants);
+                }
+                position += (size_t)snprintf(
+                    (char *)merged + position, capacity - position,
+                    " >>\nendobj\n");
+            }
+            free(parents);
+            free(nexts);
+            free(firsts);
+            free(lasts);
+        }
 
         {
             size_t number;
@@ -941,6 +1167,7 @@ cleanup:
     free(inputs);
     free(pages);
     free(xref_offsets);
+    free(outline_entries);
     free(merged);
     return rc;
 }

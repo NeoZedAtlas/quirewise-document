@@ -3002,14 +3002,29 @@ static int pdf_outline_collect(QwPdfReader *reader, size_t object, int depth,
     size_t next = 0u;
     size_t page_object = 0u;
     if (!reader || depth > 32 || *count >= 4096u) return 1;
-    if (!pdf_object_body(reader, object, &body, &body_size)) return 1;
+    if (!pdf_object_body(reader, object, &body, &body_size)) {
+        return 1;
+    }
     if (entries && *count < capacity) {
         QwPdfOutlineEntry *entry = &entries[*count];
         memset(entry, 0, sizeof(*entry));
         (void)pdf_info_read_string(body, body_size, "/Title", entry->title,
                                    sizeof(entry->title));
         entry->depth = depth;
-        if (pdf_find_reference(body, body_size, "/Dest", &page_object)) {
+        {
+            const char *dest = pdf_memmem(body, body_size, "/Dest", 5u);
+            if (dest) {
+                size_t position = (size_t)(dest - body) + 5u;
+                while (position < body_size &&
+                       isspace((unsigned char)body[position]))
+                    ++position;
+                if (position < body_size && body[position] == '[') ++position;
+                if (!pdf_parse_reference_at(body, body_size, &position,
+                                            &page_object))
+                    page_object = 0u;
+            }
+        }
+        if (page_object) {
             size_t page;
             for (page = 0u; page < reader->page_count; ++page) {
                 if (reader->page_objects[page] == page_object) {
