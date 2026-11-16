@@ -314,18 +314,46 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                         if (run.style_flags & QW_EPUB_STYLE_TABLE_CELL) {
                             int header = (run.style_flags &
                                           QW_EPUB_STYLE_TABLE_HEADER) != 0;
+                            unsigned colspan =
+                                ((unsigned)run.style_flags >>
+                                 QW_EPUB_TABLE_COLSPAN_SHIFT) &
+                                QW_EPUB_TABLE_COLSPAN_MASK;
+                            unsigned rowspan =
+                                ((unsigned)run.style_flags >>
+                                 QW_EPUB_TABLE_ROWSPAN_SHIFT) &
+                                QW_EPUB_TABLE_ROWSPAN_MASK;
+                            char cell_tag[96];
+                            if (!colspan) colspan = 1u;
+                            if (!rowspan) rowspan = 1u;
                             if (cell_open)
                                 ok = epub_html_append(&html, &length,
                                                       &capacity,
-                                                      header ? "</th>" : "</td>",
-                                                      strlen(header ? "</th>"
-                                                                    : "</td>"));
-                            if (ok)
+                                                      cell_open == 2 ? "</th>"
+                                                                     : "</td>",
+                                                      strlen(cell_open == 2
+                                                                 ? "</th>"
+                                                                 : "</td>"));
+                            if (ok) {
+                                size_t used = (size_t)snprintf(
+                                    cell_tag, sizeof(cell_tag), "%s",
+                                    header ? "<th" : "<td");
+                                if (colspan > 1u && used < sizeof(cell_tag))
+                                    used += (size_t)snprintf(
+                                        cell_tag + used,
+                                        sizeof(cell_tag) - used,
+                                        " colspan=\"%u\"", colspan);
+                                if (rowspan > 1u && used < sizeof(cell_tag))
+                                    used += (size_t)snprintf(
+                                        cell_tag + used,
+                                        sizeof(cell_tag) - used,
+                                        " rowspan=\"%u\"", rowspan);
+                                if (used < sizeof(cell_tag))
+                                    snprintf(cell_tag + used,
+                                             sizeof(cell_tag) - used, ">");
                                 ok = epub_html_append(&html, &length,
-                                                      &capacity,
-                                                      header ? "<th>" : "<td>",
-                                                      strlen(header ? "<th>"
-                                                                    : "<td>"));
+                                                      &capacity, cell_tag,
+                                                      strlen(cell_tag));
+                            }
                             cell_open = header ? 2 : 1;
                         }
                         if (ok && run.utf8_text && run.text_size)
