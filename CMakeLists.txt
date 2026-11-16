@@ -346,7 +346,8 @@ if(BUILD_TESTING)
 target_compile_features(quirewise_document_spreadsheet_merge_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_spreadsheet_merge_test PRIVATE
     QUIREWISE_MERGED_XLSX="${CMAKE_CURRENT_SOURCE_DIR}/../quirewise-spreadsheet/tests/data/merged.xlsx"
-    QUIREWISE_MERGED_FODS="${CMAKE_CURRENT_SOURCE_DIR}/../quirewise-spreadsheet/tests/data/merged.fods")
+    QUIREWISE_MERGED_FODS="${CMAKE_CURRENT_SOURCE_DIR}/../quirewise-spreadsheet/tests/data/merged.fods"
+    QUIREWISE_MERGED_XLS="${CMAKE_CURRENT_SOURCE_DIR}/../quirewise-spreadsheet/tests/data/merged.xls")
 target_include_directories(quirewise_document_spreadsheet_merge_test PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
 target_link_libraries(quirewise_document_spreadsheet_merge_test PRIVATE

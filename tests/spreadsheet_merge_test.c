@@ -14,6 +14,9 @@
 #ifndef QUIREWISE_MERGED_FODS
 #error "QUIREWISE_MERGED_FODS must be defined"
 #endif
+#ifndef QUIREWISE_MERGED_XLS
+#error "QUIREWISE_MERGED_XLS must be defined"
+#endif
 
 static int read_file(const char *path, uint8_t **out, size_t *out_size)
 {
@@ -102,6 +105,7 @@ int main(void)
 {
     if (check_merge(QUIREWISE_MERGED_XLSX, "xlsx") != 0) return 1;
     if (check_merge(QUIREWISE_MERGED_FODS, "fods") != 0) return 1;
+    if (check_merge(QUIREWISE_MERGED_XLS, "xls") != 0) return 1;
     puts("Quirewise merged spreadsheet tests passed");
     return 0;
 }
