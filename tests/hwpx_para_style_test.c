@@ -65,7 +65,7 @@ int main(void)
     if (!html || !html_size ||
         !contains((const char *)html, html_size,
                   "<p style=\"text-align:center;text-indent:16px;"
-                  "margin-left:8px;margin-top:16px;margin-bottom:8px\">"
+                  "margin-left:8px;margin-top:16px;margin-bottom:8px;line-height:160%\">"
                   "Styled paragraph</p>")) {
         qw_hwpx_document_free(document);
         free(hwpx);

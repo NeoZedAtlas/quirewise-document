@@ -61,6 +61,7 @@ typedef struct HwpxParaStyle {
     unsigned left;
     unsigned prev;
     unsigned next;
+    unsigned line_percent;
 } HwpxParaStyle;
 
 typedef struct HwpxRenderContext {
@@ -576,6 +577,14 @@ static void hwpx_load_para_styles(HwpxRenderContext *context)
                 const char *horizontal = qw_xml_att(child, "horizontal");
                 if (horizontal && strlen(horizontal) < sizeof(entry->align))
                     memcpy(entry->align, horizontal, strlen(horizontal) + 1u);
+            } else if (strcmp(name, "lineSpacing") == 0) {
+                const char *type = qw_xml_att(child, "type");
+                const char *value = qw_xml_att(child, "value");
+                if ((!type || strcasecmp(type, "PERCENT") == 0) && value) {
+                    unsigned long percent = strtoul(value, NULL, 10);
+                    if (percent >= 50u && percent <= 1000u)
+                        entry->line_percent = (unsigned)percent;
+                }
             } else if (strcmp(name, "margin") == 0) {
                 for (margin_child = qw_xml_down(child); margin_child;
                      margin_child = qw_xml_next(margin_child)) {
@@ -736,7 +745,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             }
             if (align_style || (para_style &&
                                 (para_style->intent || para_style->left ||
-                                 para_style->prev || para_style->next))) {
+                                 para_style->prev || para_style->next ||
+                                 para_style->line_percent))) {
                 size_t used = 0u;
                 if (heading_level)
                     used += (size_t)snprintf(p_open + used,
@@ -770,6 +780,11 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                              sizeof(p_open) - used,
                                              "margin-bottom:%upx;",
                                              para_style->next);
+                if (para_style && para_style->line_percent)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "line-height:%u%%;",
+                                             para_style->line_percent);
                 if (used > 0u && used < sizeof(p_open))
                     p_open[used - 1u] = '"';
                 if (used + 2u < sizeof(p_open)) {
