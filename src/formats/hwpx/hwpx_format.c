@@ -425,7 +425,41 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             open = "<tr>";
             close = "</tr>";
         } else if (strcmp(tag, "tc") == 0) {
-            open = "<td>";
+            char cell_open[64];
+            size_t span_nodes = 0u;
+            QwXmlNode *span_node = hwpx_find_descendant(
+                qw_xml_down(node), "cellSpan", 0u, &span_nodes);
+            unsigned colspan = 1u;
+            unsigned rowspan = 1u;
+            if (span_node) {
+                const char *value = qw_xml_att(span_node, "colSpan");
+                if (value) {
+                    unsigned parsed = (unsigned)strtoul(value, NULL, 10);
+                    if (parsed > 0u && parsed < 100u) colspan = parsed;
+                }
+                value = qw_xml_att(span_node, "rowSpan");
+                if (value) {
+                    unsigned parsed = (unsigned)strtoul(value, NULL, 10);
+                    if (parsed > 0u && parsed < 100u) rowspan = parsed;
+                }
+            }
+            if (colspan > 1u || rowspan > 1u) {
+                size_t used = (size_t)snprintf(cell_open, sizeof(cell_open),
+                                               "<td");
+                if (colspan > 1u && used < sizeof(cell_open))
+                    used += (size_t)snprintf(cell_open + used,
+                                             sizeof(cell_open) - used,
+                                             " colspan=\"%u\"", colspan);
+                if (rowspan > 1u && used < sizeof(cell_open))
+                    used += (size_t)snprintf(cell_open + used,
+                                             sizeof(cell_open) - used,
+                                             " rowspan=\"%u\"", rowspan);
+                if (used < sizeof(cell_open))
+                    snprintf(cell_open + used, sizeof(cell_open) - used, ">");
+                open = cell_open;
+            } else {
+                open = "<td>";
+            }
             close = "</td>";
         } else if (strcmp(tag, "lineBreak") == 0 ||
                    strcmp(tag, "br") == 0) {
