@@ -47,6 +47,11 @@ typedef struct HwpxManifestItem {
 
 #define HWPX_MAX_CHAR_STYLES 128u
 
+typedef struct HwpxBorderFill {
+    int used;
+    char color[8];
+} HwpxBorderFill;
+
 typedef struct HwpxCharStyle {
     int used;
     int bold;
@@ -80,6 +85,7 @@ typedef struct HwpxRenderContext {
     size_t image_bytes;
     HwpxCharStyle char_styles[HWPX_MAX_CHAR_STYLES];
     HwpxParaStyle para_styles[HWPX_MAX_CHAR_STYLES];
+    HwpxBorderFill border_fills[HWPX_MAX_CHAR_STYLES];
 } HwpxRenderContext;
 
 static int hwpx_html_append(HwpxHtml *html, const char *data, size_t size)
@@ -678,6 +684,71 @@ static void hwpx_load_para_styles(HwpxRenderContext *context)
     qw_xml_drop(root);
 }
 
+static void hwpx_load_border_fills(HwpxRenderContext *context)
+{
+    size_t header_size = 0u;
+    void *header_data;
+    QwXmlNode *root;
+    QwXmlNode *fills;
+    QwXmlNode *fill;
+    QwXmlError error;
+    size_t visited = 0u;
+    if (!context || !context->zip) return;
+    header_data = hwpx_extract_entry(context->zip, "Contents/header.xml",
+                                     HWPX_XML_LIMIT, &header_size);
+    if (!header_data) return;
+    memset(&error, 0, sizeof(error));
+    root = qw_xml_parse(header_data, header_size, &error);
+    free(header_data);
+    if (!root) return;
+    fills = hwpx_find_descendant(qw_xml_root(root), "borderFills", 0u,
+                                 &visited);
+    for (fill = fills ? qw_xml_down(fills) : NULL; fill;
+         fill = qw_xml_next(fill)) {
+        const char *tag = qw_xml_tag(fill);
+        const char *id_text;
+        unsigned long id;
+        QwXmlNode *brush;
+        QwXmlNode *face;
+        const char *color;
+        const char *hex;
+        size_t i;
+        int valid = 1;
+        if (!tag || strcmp(hwpx_local_name(tag), "borderFill") != 0) continue;
+        id_text = qw_xml_att(fill, "id");
+        if (!id_text) continue;
+        id = strtoul(id_text, NULL, 10);
+        if (id >= HWPX_MAX_CHAR_STYLES) continue;
+        {
+            size_t brush_nodes = 0u;
+            brush = hwpx_find_descendant(qw_xml_down(fill), "winBrush", 0u,
+                                         &brush_nodes);
+        }
+        if (!brush) continue;
+        face = brush;
+        color = qw_xml_att(face, "faceColor");
+        if (!color) continue;
+        hex = color;
+        if (hex[0] == '#') ++hex;
+        else if (hex[0] == '0' && (hex[1] == 'x' || hex[1] == 'X')) hex += 2;
+        if (strlen(hex) != 6u) continue;
+        for (i = 0u; i < 6u; ++i) {
+            char ch = hex[i];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+                  (ch >= 'A' && ch <= 'F'))) {
+                valid = 0;
+                break;
+            }
+        }
+        if (!valid) continue;
+        context->border_fills[id].used = 1;
+        context->border_fills[id].color[0] = '#';
+        memcpy(context->border_fills[id].color + 1u, hex, 6u);
+        context->border_fills[id].color[7] = '\0';
+    }
+    qw_xml_drop(root);
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -972,22 +1043,37 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     if (parsed > 0u && parsed < 100u) rowspan = parsed;
                 }
             }
-            if (colspan > 1u || rowspan > 1u) {
-                size_t used = (size_t)snprintf(cell_open, sizeof(cell_open),
-                                               "<td");
-                if (colspan > 1u && used < sizeof(cell_open))
-                    used += (size_t)snprintf(cell_open + used,
-                                             sizeof(cell_open) - used,
-                                             " colspan=\"%u\"", colspan);
-                if (rowspan > 1u && used < sizeof(cell_open))
-                    used += (size_t)snprintf(cell_open + used,
-                                             sizeof(cell_open) - used,
-                                             " rowspan=\"%u\"", rowspan);
-                if (used < sizeof(cell_open))
-                    snprintf(cell_open + used, sizeof(cell_open) - used, ">");
-                open = cell_open;
-            } else {
-                open = "<td>";
+            {
+                const char *fill_ref = qw_xml_att(node, "borderFillIDRef");
+                const char *cell_color = NULL;
+                if (fill_ref && context) {
+                    unsigned long fill_id = strtoul(fill_ref, NULL, 10);
+                    if (fill_id < HWPX_MAX_CHAR_STYLES &&
+                        context->border_fills[fill_id].used)
+                        cell_color = context->border_fills[fill_id].color;
+                }
+                if (colspan > 1u || rowspan > 1u || cell_color) {
+                    size_t used = (size_t)snprintf(cell_open,
+                                                   sizeof(cell_open), "<td");
+                    if (colspan > 1u && used < sizeof(cell_open))
+                        used += (size_t)snprintf(cell_open + used,
+                                                 sizeof(cell_open) - used,
+                                                 " colspan=\"%u\"", colspan);
+                    if (rowspan > 1u && used < sizeof(cell_open))
+                        used += (size_t)snprintf(cell_open + used,
+                                                 sizeof(cell_open) - used,
+                                                 " rowspan=\"%u\"", rowspan);
+                    if (cell_color && used < sizeof(cell_open))
+                        used += (size_t)snprintf(
+                            cell_open + used, sizeof(cell_open) - used,
+                            " style=\"background-color:%s\"", cell_color);
+                    if (used < sizeof(cell_open))
+                        snprintf(cell_open + used, sizeof(cell_open) - used,
+                                 ">");
+                    open = cell_open;
+                } else {
+                    open = "<td>";
+                }
             }
             close = "</td>";
         } else if (strcmp(tag, "lineBreak") == 0 ||
@@ -1393,6 +1479,7 @@ static QwHwpxStatus hwpx_parse_archive(
         image_context.item_count = item_count;
         hwpx_load_char_styles(&image_context);
         hwpx_load_para_styles(&image_context);
+        hwpx_load_border_fills(&image_context);
         for (QwXmlNode *ref = qw_xml_down(spine); ref; ref = qw_xml_next(ref)) {
             const HwpxManifestItem *item;
             const char *idref;

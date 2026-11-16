@@ -499,6 +499,16 @@ target_link_libraries(quirewise_document_hwpx_header_footer_test PRIVATE
 add_test(NAME quirewise_document_hwpx_header_footer
     COMMAND quirewise_document_hwpx_header_footer_test)
 
+add_executable(quirewise_document_hwpx_cell_background_test
+    tests/hwpx_cell_background_test.c)
+target_compile_features(quirewise_document_hwpx_cell_background_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_cell_background_test PRIVATE
+    QUIREWISE_HWPX_CELL_BACKGROUND="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cell-background.hwpx")
+target_link_libraries(quirewise_document_hwpx_cell_background_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_cell_background
+    COMMAND quirewise_document_hwpx_cell_background_test)
+
 add_executable(quirewise_document_hwpx_page_break_test
     tests/hwpx_page_break_test.c)
 target_compile_features(quirewise_document_hwpx_page_break_test PRIVATE c_std_11)
