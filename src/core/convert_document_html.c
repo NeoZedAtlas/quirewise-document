@@ -738,6 +738,27 @@ static int html_from_pdf_text(const uint8_t *data, size_t size,
     return status;
 }
 
+
+typedef struct HtmlMergeRange {
+    size_t row1;
+    size_t column1;
+    size_t row2;
+    size_t column2;
+} HtmlMergeRange;
+
+static const HtmlMergeRange *html_find_merge(const HtmlMergeRange *merges,
+                                             size_t count, size_t row,
+                                             size_t column)
+{
+    size_t i;
+    for (i = 0u; i < count; ++i) {
+        if (row >= merges[i].row1 && row <= merges[i].row2 &&
+            column >= merges[i].column1 && column <= merges[i].column2)
+            return &merges[i];
+    }
+    return NULL;
+}
+
 static int html_from_spreadsheet(QwSpreadsheetFormat format,
                                  const uint8_t *data, size_t size,
                                  uint8_t **out, size_t *out_size,
@@ -763,6 +784,8 @@ static int html_from_spreadsheet(QwSpreadsheetFormat format,
         const char *name;
         size_t cell_count;
         HtmlCellRef *refs = NULL;
+        HtmlMergeRange *merges = NULL;
+        size_t merge_count = 0u;
         size_t ref_index;
         size_t current_row = 0u;
         size_t current_column = 0u;
@@ -782,6 +805,23 @@ static int html_from_spreadsheet(QwSpreadsheetFormat format,
                 goto out_of_memory;
             if (!html_append_text(&buffer, "</table>\n")) goto out_of_memory;
             continue;
+        }
+        merge_count = qw_spreadsheet_sheet_merge_count(sheet);
+        if (merge_count > 4096u) merge_count = 4096u;
+        if (merge_count) {
+            size_t merge_index;
+            merges = (HtmlMergeRange *)malloc(merge_count * sizeof(*merges));
+            if (!merges) goto out_of_memory;
+            for (merge_index = 0u; merge_index < merge_count; ++merge_index) {
+                if (qw_spreadsheet_sheet_merge_at(
+                        sheet, merge_index, &merges[merge_index].row1,
+                        &merges[merge_index].column1,
+                        &merges[merge_index].row2,
+                        &merges[merge_index].column2) != QW_SPREADSHEET_OK) {
+                    merges[merge_index].row1 = (size_t)-1;
+                    merges[merge_index].row2 = (size_t)-1;
+                }
+            }
         }
         if (cell_count) {
             refs = (HtmlCellRef *)malloc(cell_count * sizeof(*refs));
@@ -811,6 +851,7 @@ static int html_from_spreadsheet(QwSpreadsheetFormat format,
                 if (qw_spreadsheet_cell_at(sheet, refs[ref_index].index,
                                            &cell) != QW_SPREADSHEET_OK)
                     continue;
+                const HtmlMergeRange *merge;
                 while (current_row < cell.row) {
                     if (row_open) {
                         if (!html_append_text(&buffer, "</tr>\n"))
@@ -825,13 +866,37 @@ static int html_from_spreadsheet(QwSpreadsheetFormat format,
                         goto out_of_memory;
                     row_open = 1;
                 }
+                merge = html_find_merge(merges, merge_count, cell.row,
+                                        cell.column);
+                if (merge && !(merge->row1 == cell.row &&
+                               merge->column1 == cell.column)) {
+                    /* Covered by a merged rectangle: its top-left cell
+                     * already emitted the colspan/rowspan. */
+                    continue;
+                }
                 while (current_column < cell.column) {
-                    if (!html_append_text(&buffer, "<td></td>"))
+                    if (html_find_merge(merges, merge_count, cell.row,
+                                        current_column) == NULL &&
+                        !html_append_text(&buffer, "<td></td>"))
                         goto out_of_memory;
                     ++current_column;
                 }
                 current_column = cell.column + 1u;
-                if (!html_append_text(&buffer, "<td>") ||
+                if (!html_append_text(&buffer, "<td"))
+                    goto out_of_memory;
+                if (merge) {
+                    char span[64];
+                    size_t rowspan = merge->row2 - merge->row1 + 1u;
+                    size_t colspan = merge->column2 - merge->column1 + 1u;
+                    int length = snprintf(span, sizeof(span),
+                                          " colspan=\"%lu\" rowspan=\"%lu\"",
+                                          (unsigned long)colspan,
+                                          (unsigned long)rowspan);
+                    if (length <= 0 || (size_t)length >= sizeof(span) ||
+                        !html_append_text(&buffer, span))
+                        goto out_of_memory;
+                }
+                if (!html_append_text(&buffer, ">") ||
                     (cell.value && cell.value_size &&
                      !html_append_escaped(&buffer, cell.value,
                                             cell.value_size)) ||
@@ -842,6 +907,7 @@ static int html_from_spreadsheet(QwSpreadsheetFormat format,
                 goto out_of_memory;
             free(refs);
         }
+        free(merges);
         if (!html_append_text(&buffer, "</table>\n")) goto out_of_memory;
     }
     if (!html_append_text(&buffer, "</body></html>\n")) goto out_of_memory;
