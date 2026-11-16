@@ -604,6 +604,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              HwpxRenderContext *context)
 {
     char p_open[160];
+    char p_close[16];
+    char p_tag[8];
     char cell_open[64];
     char run_open[96];
     char run_close[96];
@@ -682,11 +684,27 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             }
         } else if (strcmp(tag, "p") == 0) {
             size_t align_nodes = 0u;
+            size_t heading_nodes = 0u;
+            QwXmlNode *heading_node = hwpx_find_descendant(
+                qw_xml_down(node), "heading", 0u, &heading_nodes);
+            unsigned heading_level = 0u;
             QwXmlNode *align_node = hwpx_find_descendant(
                 qw_xml_down(node), "align", 0u, &align_nodes);
             const char *horizontal =
                 align_node ? qw_xml_att(align_node, "horizontal") : NULL;
             const char *align_style = NULL;
+            if (heading_node) {
+                const char *type = qw_xml_att(heading_node, "type");
+                const char *level = qw_xml_att(heading_node, "level");
+                if ((!type || (strcasecmp(type, "OUTLINE") == 0 ||
+                               strcasecmp(type, "NUMBER") == 0)) &&
+                    level) {
+                    unsigned long parsed = strtoul(level, NULL, 10);
+                    if (parsed < 6u) heading_level = (unsigned)parsed + 1u;
+                }
+            }
+            snprintf(p_tag, sizeof(p_tag), "%s",
+                     heading_level ? "h" : "p");
             const HwpxParaStyle *para_style = NULL;
             {
                 size_t ref_nodes = 0u;
@@ -720,8 +738,14 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                 (para_style->intent || para_style->left ||
                                  para_style->prev || para_style->next))) {
                 size_t used = 0u;
-                used += (size_t)snprintf(p_open + used, sizeof(p_open) - used,
-                                         "<p style=\"");
+                if (heading_level)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "<h%u style=\"", heading_level);
+                else
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "<p style=\"");
                 if (align_style)
                     used += (size_t)snprintf(p_open + used,
                                              sizeof(p_open) - used,
@@ -753,10 +777,18 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     p_open[used + 1u] = '\0';
                 }
                 open = p_open;
+            } else if (heading_level) {
+                snprintf(p_open, sizeof(p_open), "<h%u>", heading_level);
+                open = p_open;
             } else {
                 open = "<p>";
             }
-            close = "</p>\n";
+            if (heading_level) {
+                snprintf(p_close, sizeof(p_close), "</h%u>\n", heading_level);
+                close = p_close;
+            } else {
+                close = "</p>\n";
+            }
         } else if (strcmp(tag, "tbl") == 0) {
             open = "<table>";
             close = "</table>\n";
