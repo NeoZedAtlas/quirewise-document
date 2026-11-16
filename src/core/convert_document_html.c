@@ -31,6 +31,7 @@
 #include <quirewise/text_archive.h>
 
 #include "../backends/document_backend.h"
+#include "../formats/xps/xps_package.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -370,6 +371,29 @@ static int html_from_htmlz(const uint8_t *data, size_t size, uint8_t **out,
                              out_size);
     qw_htmlz_document_free(&document);
     return status;
+}
+
+static int html_from_xps(const uint8_t *data, size_t size, uint8_t **out,
+                         size_t *out_size, QwConvertReport *report)
+{
+    QwLayoutDocument document;
+    int status;
+    int rc;
+    memset(&document, 0, sizeof(document));
+    status = qw_xps_native_open_layout(data, size, QW_FORMAT_XPS, NULL,
+                                       &document, report);
+    if (status != QW_STATUS_OK) {
+        if (document.dispose) document.dispose(document.context);
+        return status;
+    }
+    rc = html_copy_bytes(document.html_utf8, document.html_size, out, out_size);
+    if (document.dispose) document.dispose(document.context);
+    if (rc == QW_STATUS_OK && report) {
+        snprintf(report->note, sizeof(report->note),
+                 "XPS layout HTML: page text rendered; images, vector paths "
+                 "and exact positioning are not preserved");
+    }
+    return rc;
 }
 
 static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
@@ -1189,8 +1213,7 @@ int qw_doc_convert_html_memory_with_options(
     if (html_extension_is(extension, "pdf"))
         return html_from_pdf_text(data, size, out_html, out_size, report);
     if (html_extension_is(extension, "xps"))
-        return html_fail(report, QW_STATUS_ERR_UNSUPPORTED, "layout HTML",
-                         "XPS is reader-only; no HTML route");
+        return html_from_xps(data, size, out_html, out_size, report);
 
     /* No extension: detect from content. */
     if (html_region_equals(data, size, 0u, "%PDF-"))
