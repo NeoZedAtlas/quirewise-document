@@ -499,6 +499,16 @@ target_link_libraries(quirewise_document_hwpx_header_footer_test PRIVATE
 add_test(NAME quirewise_document_hwpx_header_footer
     COMMAND quirewise_document_hwpx_header_footer_test)
 
+add_executable(quirewise_document_hwpx_cell_margin_test
+    tests/hwpx_cell_margin_test.c)
+target_compile_features(quirewise_document_hwpx_cell_margin_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_cell_margin_test PRIVATE
+    QUIREWISE_HWPX_CELL_MARGIN="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cell-margin.hwpx")
+target_link_libraries(quirewise_document_hwpx_cell_margin_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_cell_margin
+    COMMAND quirewise_document_hwpx_cell_margin_test)
+
 add_executable(quirewise_document_hwpx_cell_align_test
     tests/hwpx_cell_align_test.c)
 target_compile_features(quirewise_document_hwpx_cell_align_test PRIVATE c_std_11)

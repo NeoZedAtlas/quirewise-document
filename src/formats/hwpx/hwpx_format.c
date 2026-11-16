@@ -1101,6 +1101,25 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     qw_xml_att(node, "textDirection");
                 const char *css_vertical = NULL;
                 int vertical_text = 0;
+                unsigned margin_left = 0u;
+                unsigned margin_right = 0u;
+                unsigned margin_top = 0u;
+                unsigned margin_bottom = 0u;
+                {
+                    size_t margin_nodes = 0u;
+                    QwXmlNode *margin_node = hwpx_find_descendant(
+                        qw_xml_down(node), "cellMargin", 0u, &margin_nodes);
+                    if (margin_node) {
+                        margin_left = hwpx_clip_pixels(
+                            qw_xml_att(margin_node, "left"));
+                        margin_right = hwpx_clip_pixels(
+                            qw_xml_att(margin_node, "right"));
+                        margin_top = hwpx_clip_pixels(
+                            qw_xml_att(margin_node, "top"));
+                        margin_bottom = hwpx_clip_pixels(
+                            qw_xml_att(margin_node, "bottom"));
+                    }
+                }
                 if (vertical_align) {
                     if (strcasecmp(vertical_align, "CENTER") == 0)
                         css_vertical = "middle";
@@ -1126,7 +1145,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     }
                 }
                 if (colspan > 1u || rowspan > 1u || cell_color || cell_border ||
-                    css_vertical || vertical_text) {
+                    css_vertical || vertical_text || margin_left ||
+                    margin_right || margin_top || margin_bottom) {
                     size_t used = (size_t)snprintf(cell_open,
                                                    sizeof(cell_open), "<td");
                     if (colspan > 1u && used < sizeof(cell_open))
@@ -1138,7 +1158,8 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                                                  sizeof(cell_open) - used,
                                                  " rowspan=\"%u\"", rowspan);
                     if ((cell_color || cell_border || css_vertical ||
-                         vertical_text) &&
+                         vertical_text || margin_left || margin_right ||
+                         margin_top || margin_bottom) &&
                         used < sizeof(cell_open)) {
                         used += (size_t)snprintf(
                             cell_open + used, sizeof(cell_open) - used,
@@ -1160,6 +1181,12 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                             used += (size_t)snprintf(
                                 cell_open + used, sizeof(cell_open) - used,
                                 "writing-mode:vertical-rl;");
+                        if (margin_left || margin_right || margin_top ||
+                            margin_bottom)
+                            used += (size_t)snprintf(
+                                cell_open + used, sizeof(cell_open) - used,
+                                "padding:%upx %upx %upx %upx;", margin_top,
+                                margin_right, margin_bottom, margin_left);
                         if (used < sizeof(cell_open))
                             cell_open[used++] = '"';
                     }
