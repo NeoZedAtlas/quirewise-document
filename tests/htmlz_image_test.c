@@ -68,6 +68,7 @@ int main(void)
     free(archive);
     if (!contains(html, html_size, "src=\"data:image/png;base64,") ||
         !contains(html, html_size, "alt=\"pic\"") ||
+        !contains(html, html_size, "<style>body { color: #123456; }</style>") ||
         !contains(html, html_size, "Before image.") ||
         !contains(html, html_size, "After image.") ||
         !contains((const uint8_t *)report.note, strlen(report.note),
