@@ -421,6 +421,18 @@ target_link_libraries(quirewise_document_xps_html_test PRIVATE
 add_test(NAME quirewise_document_xps_html
     COMMAND quirewise_document_xps_html_test)
 
+add_executable(quirewise_document_epub_table_caption_test
+    tests/epub_table_caption_test.c)
+target_compile_features(quirewise_document_epub_table_caption_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_epub_table_caption_test PRIVATE
+    QUIREWISE_TABLE_CAPTION_EPUB="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/table-caption.epub")
+target_include_directories(quirewise_document_epub_table_caption_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_epub_table_caption_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_epub_table_caption
+    COMMAND quirewise_document_epub_table_caption_test)
+
 add_executable(quirewise_document_epub_definition_list_test
     tests/epub_definition_list_test.c)
 target_compile_features(quirewise_document_epub_definition_list_test PRIVATE c_std_11)

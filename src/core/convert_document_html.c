@@ -884,6 +884,31 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         goto out_of_memory;
                     list_open = 0;
                 }
+                if (first_flags & QW_EPUB_STYLE_TABLE_CAPTION) {
+                    if (!table_open) {
+                        if (!html_append_text(&buffer, "<table>"))
+                            goto out_of_memory;
+                        table_open = 1;
+                    }
+                    if (!html_append_text(&buffer, "<caption>"))
+                        goto out_of_memory;
+                    for (run_index = 0u; run_index < paragraph.run_count;
+                         ++run_index) {
+                        QwEpubRunView run;
+                        memset(&run, 0, sizeof(run));
+                        if (qw_epub_run_at(document, section_index,
+                                           paragraph_index, run_index,
+                                           &run) != QW_EPUB_OK)
+                            continue;
+                        if (run.utf8_text && run.text_size &&
+                            !html_append_escaped(&buffer, run.utf8_text,
+                                                 run.text_size))
+                            goto out_of_memory;
+                    }
+                    if (!html_append_text(&buffer, "</caption>"))
+                        goto out_of_memory;
+                    continue;
+                }
                 if (first_flags & QW_EPUB_STYLE_TABLE_ROW) {
                     int cell_open = 0;
                     if (!table_open) {
