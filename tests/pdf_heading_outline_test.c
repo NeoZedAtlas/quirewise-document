@@ -96,7 +96,8 @@ int main(void)
     memset(title, 0, sizeof(title));
     if (qw_pdf_bookmark_at(document, 1u, title, sizeof(title), &page_index,
                            &depth) != QW_STATUS_OK ||
-        strcmp(title, "Heading two") != 0 || page_index != 0u) {
+        strcmp(title, "Heading two") != 0 || page_index != 0u ||
+        depth != 1) {
         qw_pdf_close(document);
         free(pdf);
         fputs("FAIL: second bookmark is wrong\n", stderr);

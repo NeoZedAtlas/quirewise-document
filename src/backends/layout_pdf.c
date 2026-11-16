@@ -55,6 +55,7 @@ typedef struct QwPdfLines {
 typedef struct QwPdfOutlineLine {
     size_t line_index;
     size_t page_index;
+    unsigned char level;
 } QwPdfOutlineLine;
 
 typedef struct QwPdfCursor {
@@ -1162,6 +1163,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                         outline_entries[outline_count].line_index = index;
                         outline_entries[outline_count].page_index =
                             line_page[index];
+                        outline_entries[outline_count].level =
+                            lines->heading[index];
                         outline_count += 1u;
                     }
                 }
@@ -1327,52 +1330,145 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 ok = 0;
             }
         }
-        for (object = 0u; ok && outline_count && object < outline_count;
-             ++object) {
-            const QwPdfText *item =
-                &lines->items[outline_entries[object].line_index];
-            char title[256];
-            size_t title_size = 0u;
-            size_t source = 0u;
-            size_t page_object =
-                first_page_object + outline_entries[object].page_index * 2u;
-            size_t outline_object = outline_object_base + object;
-            while (source < item->size && title_size + 2u < sizeof(title) &&
-                   title_size < 160u) {
-                unsigned char ch =
-                    (unsigned char)item->data[item->size ? source : 0u];
-                if (ch == '(' || ch == ')' || ch == '\\')
-                    title[title_size++] = '\\';
-                if (ch >= 0x20u && ch < 0x7fu)
-                    title[title_size++] = (char)ch;
-                else
-                    title[title_size++] = ' ';
-                ++source;
+        /* Build the heading tree: each item's parent is the nearest prior
+         * heading with a lower level. */
+        {
+            size_t *parent = NULL;
+            size_t *first_child = NULL;
+            size_t *last_child = NULL;
+            size_t *next_sibling = NULL;
+            size_t *prev_sibling = NULL;
+            size_t *child_count = NULL;
+            size_t stack[7];
+            size_t stack_depth = 0u;
+            size_t item;
+            if (outline_count) {
+                parent = (size_t *)malloc(outline_count * sizeof(*parent));
+                first_child = (size_t *)malloc(outline_count *
+                                               sizeof(*first_child));
+                last_child = (size_t *)malloc(outline_count *
+                                              sizeof(*last_child));
+                next_sibling = (size_t *)malloc(outline_count *
+                                                sizeof(*next_sibling));
+                prev_sibling = (size_t *)malloc(outline_count *
+                                                sizeof(*prev_sibling));
+                child_count = (size_t *)calloc(outline_count,
+                                               sizeof(*child_count));
+                if (!parent || !first_child || !last_child || !next_sibling ||
+                    !prev_sibling || !child_count) {
+                    ok = 0;
+                }
+                for (item = 0u; ok && item < outline_count; ++item) {
+                    size_t level = outline_entries[item].level;
+                    size_t parent_item;
+                    if (level == 0u) level = 1u;
+                    if (level > 6u) level = 6u;
+                    while (stack_depth &&
+                           outline_entries[stack[stack_depth - 1u]].level >=
+                               level)
+                        --stack_depth;
+                    parent_item = stack_depth ? stack[stack_depth - 1u]
+                                              : SIZE_MAX;
+                    parent[item] = parent_item;
+                    first_child[item] = SIZE_MAX;
+                    last_child[item] = SIZE_MAX;
+                    next_sibling[item] = SIZE_MAX;
+                    prev_sibling[item] = SIZE_MAX;
+                    if (parent_item == SIZE_MAX) {
+                        if (outline_count && stack_depth == 0u) {
+                            /* Top-level siblings are chained through item 0. */
+                        }
+                    } else {
+                        if (first_child[parent_item] == SIZE_MAX)
+                            first_child[parent_item] = item;
+                        if (last_child[parent_item] != SIZE_MAX)
+                            next_sibling[last_child[parent_item]] = item;
+                        prev_sibling[item] = last_child[parent_item];
+                        last_child[parent_item] = item;
+                        child_count[parent_item] += 1u;
+                    }
+                    stack[stack_depth++] = item;
+                }
+                /* Chain top-level items in document order. */
+                {
+                    size_t previous = SIZE_MAX;
+                    for (item = 0u; ok && item < outline_count; ++item) {
+                        if (parent[item] != SIZE_MAX) continue;
+                        if (previous != SIZE_MAX)
+                            next_sibling[previous] = item;
+                        prev_sibling[item] = previous;
+                        previous = item;
+                    }
+                }
             }
-            if (!pdf_out_track(&out, out.bytes.size) ||
-                !pdf_out_printf(&out,
-                    "%zu 0 obj\n<< /Title (%.*s) /Parent %zu 0 R",
-                    outline_object, (int)title_size, title,
-                    outline_root_object)) {
-                ok = 0;
-                break;
+            for (item = 0u; ok && outline_count && item < outline_count;
+                 ++item) {
+                const QwPdfText *text_item =
+                    &lines->items[outline_entries[item].line_index];
+                char title[256];
+                size_t title_size = 0u;
+                size_t source = 0u;
+                size_t page_object =
+                    first_page_object + outline_entries[item].page_index * 2u;
+                size_t outline_object = outline_object_base + item;
+                size_t parent_object =
+                    parent[item] == SIZE_MAX
+                        ? outline_root_object
+                        : outline_object_base + parent[item];
+                while (source < text_item->size &&
+                       title_size + 2u < sizeof(title) && title_size < 160u) {
+                    unsigned char ch =
+                        (unsigned char)text_item->data[source];
+                    if (ch == '(' || ch == ')' || ch == '\\')
+                        title[title_size++] = '\\';
+                    if (ch >= 0x20u && ch < 0x7fu)
+                        title[title_size++] = (char)ch;
+                    else
+                        title[title_size++] = ' ';
+                    ++source;
+                }
+                if (!pdf_out_track(&out, out.bytes.size) ||
+                    !pdf_out_printf(&out,
+                        "%zu 0 obj\n<< /Title (%.*s) /Parent %zu 0 R",
+                        outline_object, (int)title_size, title,
+                        parent_object)) {
+                    ok = 0;
+                    break;
+                }
+                if (prev_sibling[item] != SIZE_MAX &&
+                    !pdf_out_printf(&out, " /Prev %zu 0 R",
+                                    outline_object_base + prev_sibling[item])) {
+                    ok = 0;
+                    break;
+                }
+                if (next_sibling[item] != SIZE_MAX &&
+                    !pdf_out_printf(&out, " /Next %zu 0 R",
+                                    outline_object_base + next_sibling[item])) {
+                    ok = 0;
+                    break;
+                }
+                if (first_child[item] != SIZE_MAX &&
+                    (!pdf_out_printf(&out, " /First %zu 0 R",
+                                     outline_object_base + first_child[item]) ||
+                     !pdf_out_printf(&out, " /Last %zu 0 R",
+                                     outline_object_base + last_child[item]) ||
+                     !pdf_out_printf(&out, " /Count %zu",
+                                     child_count[item]))) {
+                    ok = 0;
+                    break;
+                }
+                if (!pdf_out_printf(&out, " /Dest [%zu 0 R /Fit] >>\nendobj\n",
+                                    page_object)) {
+                    ok = 0;
+                    break;
+                }
             }
-            if (object > 0u && !pdf_out_printf(&out, " /Prev %zu 0 R",
-                                               outline_object - 1u)) {
-                ok = 0;
-                break;
-            }
-            if (object + 1u < outline_count &&
-                !pdf_out_printf(&out, " /Next %zu 0 R",
-                                outline_object + 1u)) {
-                ok = 0;
-                break;
-            }
-            if (!pdf_out_printf(&out, " /Dest [%zu 0 R /Fit] >>\nendobj\n",
-                                page_object)) {
-                ok = 0;
-                break;
-            }
+            free(parent);
+            free(first_child);
+            free(last_child);
+            free(next_sibling);
+            free(prev_sibling);
+            free(child_count);
         }
         if (ok && outline_count) {
             if (!pdf_out_track(&out, out.bytes.size) ||
