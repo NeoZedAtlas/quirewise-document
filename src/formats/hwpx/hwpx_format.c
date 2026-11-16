@@ -54,6 +54,15 @@ typedef struct HwpxCharStyle {
     char color[8];
 } HwpxCharStyle;
 
+typedef struct HwpxParaStyle {
+    int used;
+    char align[8];
+    unsigned intent;
+    unsigned left;
+    unsigned prev;
+    unsigned next;
+} HwpxParaStyle;
+
 typedef struct HwpxRenderContext {
     QwZipArchive *zip;
     const HwpxManifestItem *items;
@@ -61,6 +70,7 @@ typedef struct HwpxRenderContext {
     size_t image_count;
     size_t image_bytes;
     HwpxCharStyle char_styles[HWPX_MAX_CHAR_STYLES];
+    HwpxParaStyle para_styles[HWPX_MAX_CHAR_STYLES];
 } HwpxRenderContext;
 
 static int hwpx_html_append(HwpxHtml *html, const char *data, size_t size)
@@ -523,10 +533,80 @@ static void hwpx_load_char_styles(HwpxRenderContext *context)
     qw_xml_drop(root);
 }
 
+static void hwpx_load_para_styles(HwpxRenderContext *context)
+{
+    size_t header_size = 0u;
+    void *header_data;
+    QwXmlNode *root;
+    QwXmlNode *properties;
+    QwXmlNode *style;
+    QwXmlError error;
+    size_t visited = 0u;
+    if (!context || !context->zip) return;
+    header_data = hwpx_extract_entry(context->zip, "Contents/header.xml",
+                                     HWPX_XML_LIMIT, &header_size);
+    if (!header_data) return;
+    memset(&error, 0, sizeof(error));
+    root = qw_xml_parse(header_data, header_size, &error);
+    free(header_data);
+    if (!root) return;
+    properties = hwpx_find_descendant(qw_xml_root(root), "paraProperties", 0u,
+                                      &visited);
+    for (style = properties ? qw_xml_down(properties) : NULL; style;
+         style = qw_xml_next(style)) {
+        const char *tag = qw_xml_tag(style);
+        const char *id_text;
+        unsigned long id;
+        QwXmlNode *child;
+        HwpxParaStyle *entry;
+        if (!tag || strcmp(hwpx_local_name(tag), "paraPr") != 0) continue;
+        id_text = qw_xml_att(style, "id");
+        if (!id_text) continue;
+        id = strtoul(id_text, NULL, 10);
+        if (id >= HWPX_MAX_CHAR_STYLES) continue;
+        entry = &context->para_styles[id];
+        entry->used = 1;
+        for (child = qw_xml_down(style); child; child = qw_xml_next(child)) {
+            const char *child_tag = qw_xml_tag(child);
+            const char *name;
+            QwXmlNode *margin_child;
+            if (!child_tag) continue;
+            name = hwpx_local_name(child_tag);
+            if (strcmp(name, "align") == 0) {
+                const char *horizontal = qw_xml_att(child, "horizontal");
+                if (horizontal && strlen(horizontal) < sizeof(entry->align))
+                    memcpy(entry->align, horizontal, strlen(horizontal) + 1u);
+            } else if (strcmp(name, "margin") == 0) {
+                for (margin_child = qw_xml_down(child); margin_child;
+                     margin_child = qw_xml_next(margin_child)) {
+                    const char *margin_tag = qw_xml_tag(margin_child);
+                    const char *value;
+                    if (!margin_tag) continue;
+                    value = qw_xml_att(margin_child, "value");
+                    if (!value) continue;
+                    if (strcmp(hwpx_local_name(margin_tag), "intent") == 0)
+                        entry->intent = hwpx_clip_pixels(value);
+                    else if (strcmp(hwpx_local_name(margin_tag), "left") == 0)
+                        entry->left = hwpx_clip_pixels(value);
+                    else if (strcmp(hwpx_local_name(margin_tag), "prev") == 0)
+                        entry->prev = hwpx_clip_pixels(value);
+                    else if (strcmp(hwpx_local_name(margin_tag), "next") == 0)
+                        entry->next = hwpx_clip_pixels(value);
+                }
+            }
+        }
+    }
+    qw_xml_drop(root);
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
 {
+    char p_open[160];
+    char cell_open[64];
+    char run_open[96];
+    char run_close[96];
     if (depth > HWPX_MAX_XML_DEPTH || !visited || !omitted_objects) return 0;
     for (; node; node = qw_xml_next(node)) {
         const char *text;
@@ -541,8 +621,6 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
         }
         tag = hwpx_local_name(qw_xml_tag(node));
         if (strcmp(tag, "run") == 0) {
-            char run_open[96];
-            char run_close[96];
             size_t open_length = 0u;
             size_t close_length = 0u;
             const char *style_id = qw_xml_att(node, "charPrIDRef");
@@ -603,13 +681,26 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                 close = run_close;
             }
         } else if (strcmp(tag, "p") == 0) {
-            char p_open[64];
             size_t align_nodes = 0u;
             QwXmlNode *align_node = hwpx_find_descendant(
                 qw_xml_down(node), "align", 0u, &align_nodes);
             const char *horizontal =
                 align_node ? qw_xml_att(align_node, "horizontal") : NULL;
             const char *align_style = NULL;
+            const HwpxParaStyle *para_style = NULL;
+            {
+                size_t ref_nodes = 0u;
+                QwXmlNode *ref_node = hwpx_find_descendant(
+                    qw_xml_down(node), "paraPrIDRef", 0u, &ref_nodes);
+                const char *value = ref_node ? qw_xml_att(ref_node, "value")
+                                             : NULL;
+                if (context && value) {
+                    unsigned long id = strtoul(value, NULL, 10);
+                    if (id < HWPX_MAX_CHAR_STYLES &&
+                        context->para_styles[id].used)
+                        para_style = &context->para_styles[id];
+                }
+            }
             if (horizontal) {
                 if (strcasecmp(horizontal, "CENTER") == 0)
                     align_style = "center";
@@ -617,10 +708,50 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                     align_style = "right";
                 else if (strcasecmp(horizontal, "JUSTIFY") == 0)
                     align_style = "justify";
+            } else if (para_style && para_style->align[0]) {
+                if (strcasecmp(para_style->align, "CENTER") == 0)
+                    align_style = "center";
+                else if (strcasecmp(para_style->align, "RIGHT") == 0)
+                    align_style = "right";
+                else if (strcasecmp(para_style->align, "JUSTIFY") == 0)
+                    align_style = "justify";
             }
-            if (align_style) {
-                snprintf(p_open, sizeof(p_open),
-                         "<p style=\"text-align:%s\">", align_style);
+            if (align_style || (para_style &&
+                                (para_style->intent || para_style->left ||
+                                 para_style->prev || para_style->next))) {
+                size_t used = 0u;
+                used += (size_t)snprintf(p_open + used, sizeof(p_open) - used,
+                                         "<p style=\"");
+                if (align_style)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "text-align:%s;", align_style);
+                if (para_style && para_style->intent)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "text-indent:%upx;",
+                                             para_style->intent);
+                if (para_style && para_style->left)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "margin-left:%upx;",
+                                             para_style->left);
+                if (para_style && para_style->prev)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "margin-top:%upx;",
+                                             para_style->prev);
+                if (para_style && para_style->next)
+                    used += (size_t)snprintf(p_open + used,
+                                             sizeof(p_open) - used,
+                                             "margin-bottom:%upx;",
+                                             para_style->next);
+                if (used > 0u && used < sizeof(p_open))
+                    p_open[used - 1u] = '"';
+                if (used + 2u < sizeof(p_open)) {
+                    p_open[used] = '>';
+                    p_open[used + 1u] = '\0';
+                }
                 open = p_open;
             } else {
                 open = "<p>";
@@ -633,7 +764,6 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
             open = "<tr>";
             close = "</tr>";
         } else if (strcmp(tag, "tc") == 0) {
-            char cell_open[64];
             size_t span_nodes = 0u;
             QwXmlNode *span_node = hwpx_find_descendant(
                 qw_xml_down(node), "cellSpan", 0u, &span_nodes);
@@ -1071,6 +1201,7 @@ static QwHwpxStatus hwpx_parse_archive(
         image_context.items = items;
         image_context.item_count = item_count;
         hwpx_load_char_styles(&image_context);
+        hwpx_load_para_styles(&image_context);
         for (QwXmlNode *ref = qw_xml_down(spine); ref; ref = qw_xml_next(ref)) {
             const HwpxManifestItem *item;
             const char *idref;

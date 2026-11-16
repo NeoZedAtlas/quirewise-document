@@ -433,6 +433,16 @@ target_link_libraries(quirewise_document_epub_figure_test PRIVATE
 add_test(NAME quirewise_document_epub_figure
     COMMAND quirewise_document_epub_figure_test)
 
+add_executable(quirewise_document_hwpx_para_style_test
+    tests/hwpx_para_style_test.c)
+target_compile_features(quirewise_document_hwpx_para_style_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_para_style_test PRIVATE
+    QUIREWISE_HWPX_PARA_STYLE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/paragraph-style.hwpx")
+target_link_libraries(quirewise_document_hwpx_para_style_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_para_style
+    COMMAND quirewise_document_hwpx_para_style_test)
+
 add_executable(quirewise_document_hwpx_styles_test
     tests/hwpx_styles_test.c)
 target_compile_features(quirewise_document_hwpx_styles_test PRIVATE c_std_11)
