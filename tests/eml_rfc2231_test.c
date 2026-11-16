@@ -68,7 +68,9 @@ int main(void)
     }
     free(eml);
     if (!contains(html, html_size, "中文.txt") ||
+        !contains(html, html_size, "附件.txt") ||
         !contains(html, html_size, "attachment body") ||
+        !contains(html, html_size, "split attachment body") ||
         contains(html, html_size, "%E4%B8%AD") ||
         !contains(html, html_size, "RFC 2231 sample")) {
         fputs("FAIL: RFC 2231 filename was not decoded\n", stderr);

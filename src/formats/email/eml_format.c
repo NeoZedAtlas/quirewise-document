@@ -302,6 +302,32 @@ static int eml_parse_headers(EmlOwner *owner,
 static int eml_hex(unsigned char ch);
 
 /* RFC 2231 extended parameter: charset'language'percent-encoded-bytes. */
+
+static int eml_percent_decode_append(const char *value, size_t size,
+                                     char *out, size_t out_capacity,
+                                     size_t *used)
+{
+    size_t i = 0u;
+    size_t written = *used;
+    while (i < size) {
+        unsigned char chr;
+        if (value[i] == '%' && i + 2u < size) {
+            int high = eml_hex((unsigned char)value[i + 1u]);
+            int low = eml_hex((unsigned char)value[i + 2u]);
+            if (high < 0 || low < 0) return 0;
+            chr = (unsigned char)((high << 4) | low);
+            i += 3u;
+        } else {
+            chr = (unsigned char)value[i++];
+        }
+        if (written + 1u >= out_capacity) return 0;
+        out[written++] = (char)chr;
+    }
+    out[written] = '\0';
+    *used = written;
+    return 1;
+}
+
 static int eml_rfc2231_decode(const char *value, size_t size, char *out,
                               size_t out_capacity)
 {
@@ -339,6 +365,12 @@ static int eml_parameter(const char *value,
                          int *out_extended)
 {
     const char *cursor = strchr(value, ';');
+    const char *part_start[32];
+    size_t part_size[32];
+    int part_index[32];
+    int part_extended[32];
+    size_t part_count = 0u;
+    size_t wanted_size = strlen(wanted);
     if (out_capacity) out[0] = '\0';
     if (out_extended) *out_extended = 0;
     while (cursor && *cursor) {
@@ -397,10 +429,59 @@ static int eml_parameter(const char *value,
                 (name_end > name && name_end[-1] == '*')) *out_extended = 1;
             return value_size < out_capacity;
         }
-        if (out_extended && name_size > strlen(wanted) &&
-            name_size >= strlen(wanted) + 1u && name_end[-1] == '*' &&
-            eml_span_equal((const uint8_t *)name, name_size - 1u, wanted))
-            *out_extended = 1;
+        if (name_size > wanted_size + 1u &&
+            eml_span_equal((const uint8_t *)name, wanted_size, wanted) &&
+            name[wanted_size] == '*') {
+            size_t digit = wanted_size + 1u;
+            int index = 0;
+            int digits = 0;
+            int extended = 0;
+            while (digit < name_size && name[digit] >= '0' &&
+                   name[digit] <= '9' && digits < 2) {
+                index = index * 10 + (name[digit] - '0');
+                ++digit;
+                ++digits;
+            }
+            if (digits > 0 && digit < name_size && name[digit] == '*') {
+                extended = 1;
+                ++digit;
+            }
+            if (digits > 0 && digit == name_size &&
+                part_count < sizeof(part_index) / sizeof(part_index[0])) {
+                part_start[part_count] = value_start;
+                part_size[part_count] = value_size;
+                part_index[part_count] = index;
+                part_extended[part_count] = extended;
+                ++part_count;
+            }
+        }
+    }
+    if (part_count > 0u) {
+        size_t used = 0u;
+        int index;
+        for (index = 0; index < 32; ++index) {
+            size_t part;
+            int found = 0;
+            for (part = 0u; part < part_count; ++part) {
+                if (part_index[part] != index) continue;
+                found = 1;
+                if (index == 0 && part_extended[part]) {
+                    if (!eml_rfc2231_decode(part_start[part],
+                                            part_size[part], out,
+                                            out_capacity))
+                        return 0;
+                    used = strlen(out);
+                } else if (!eml_percent_decode_append(
+                               part_start[part], part_size[part], out,
+                               out_capacity, &used)) {
+                    return 0;
+                }
+                break;
+            }
+            if (!found) break;
+        }
+        if (out_extended) *out_extended = 0;
+        return used > 0u;
     }
     return 0;
 }
