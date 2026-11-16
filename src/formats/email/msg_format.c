@@ -914,9 +914,162 @@ static int msg_rtf_is_skip_destination(const char *word, size_t size)
     return 0;
 }
 
+typedef struct MsgRtfImage {
+    uint8_t *data;
+    size_t size;
+    char mime[16];
+} MsgRtfImage;
+
+typedef struct MsgRtfImages {
+    MsgRtfImage *items;
+    size_t count;
+    size_t capacity;
+} MsgRtfImages;
+
+static void msg_rtf_images_dispose(MsgRtfImages *images)
+{
+    size_t index;
+    if (!images) return;
+    for (index = 0u; index < images->count; ++index)
+        free(images->items[index].data);
+    free(images->items);
+    memset(images, 0, sizeof(*images));
+}
+
+static int msg_rtf_add_image(MsgRtfImages *images, const uint8_t *data,
+                             size_t size, const char *mime)
+{
+    MsgRtfImage *grown;
+    uint8_t *copy;
+    if (!images || !data || !size || images->count >= 64u) return 0;
+    if (images->count >= images->capacity) {
+        size_t next = images->capacity ? images->capacity * 2u : 4u;
+        grown = (MsgRtfImage *)realloc(images->items,
+                                       next * sizeof(*images->items));
+        if (!grown) return 0;
+        images->items = grown;
+        images->capacity = next;
+    }
+    copy = (uint8_t *)malloc(size);
+    if (!copy) return 0;
+    memcpy(copy, data, size);
+    images->items[images->count].data = copy;
+    images->items[images->count].size = size;
+    snprintf(images->items[images->count].mime,
+             sizeof(images->items[images->count].mime), "%s", mime);
+    ++images->count;
+    return 1;
+}
+
+/* Parse a \pict group starting after the control word; returns the index
+ * after the closing brace. */
+static int msg_rtf_hex_digit(unsigned char ch)
+{
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+static const uint8_t *msg_rtf_find_hex_signature(const uint8_t *data,
+                                                 size_t start, size_t end,
+                                                 const char *signature)
+{
+    size_t size = strlen(signature);
+    size_t index;
+    if (size == 0u || end < start || end - start < size) return NULL;
+    for (index = start; index + size <= end; ++index) {
+        size_t offset;
+        int matches = 1;
+        for (offset = 0u; offset < size; ++offset) {
+            int expected = msg_rtf_hex_digit((unsigned char)signature[offset]);
+            int actual = msg_rtf_hex_digit(data[index + offset]);
+            if (expected < 0 || actual != expected) {
+                matches = 0;
+                break;
+            }
+        }
+        if (matches) return data + index;
+    }
+    return NULL;
+}
+
+/* Parse a \pict group starting after the control word; returns the index
+ * after the closing brace. */
+static size_t msg_rtf_parse_picture(const uint8_t *data, size_t size,
+                                    size_t index, MsgRtfImages *images)
+{
+    size_t cursor = index;
+    size_t close = size;
+    int depth = 1;
+    const char *mime = NULL;
+    size_t hex_start = 0u;
+    size_t hex_end = 0u;
+    while (cursor < size) {
+        if (data[cursor] == '{') ++depth;
+        else if (data[cursor] == '}') {
+            if (--depth == 0) { close = cursor; break; }
+        }
+        ++cursor;
+    }
+    if (close >= size) return cursor;
+    {
+        static const char png_tag[] = "pngblip";
+        static const char jpeg_tag[] = "jpegblip";
+        size_t region = index;
+        size_t tag = SIZE_MAX;
+        while (region + 7u <= close) {
+            if (memcmp(data + region, png_tag, 7u) == 0) {
+                mime = "image/png";
+                tag = region + 7u;
+                break;
+            }
+            if (region + 8u <= close &&
+                memcmp(data + region, jpeg_tag, 8u) == 0) {
+                mime = "image/jpeg";
+                tag = region + 8u;
+                break;
+            }
+            ++region;
+        }
+        if (mime) {
+            const uint8_t *signature =
+                msg_rtf_find_hex_signature(data, tag, close,
+                                           strcmp(mime, "image/png") == 0
+                                               ? "89504e47" : "ffd8");
+            hex_start = signature ? (size_t)(signature - data) : tag;
+            hex_end = close;
+        }
+    }
+    if (mime && hex_end > hex_start) {
+        uint8_t *decoded = (uint8_t *)malloc((hex_end - hex_start) / 2u + 2u);
+        size_t written = 0u;
+        int high = -1;
+        size_t i;
+        if (decoded) {
+            for (i = hex_start; i < hex_end; ++i) {
+                int digit = msg_rtf_hex_digit(data[i]);
+                if (digit < 0) continue;
+                if (high < 0) high = digit;
+                else {
+                    decoded[written++] = (uint8_t)((high << 4) | digit);
+                    high = -1;
+                }
+            }
+            if (written && !msg_rtf_add_image(images, decoded, written, mime)) {
+                free(decoded);
+                return close + 1u;
+            }
+        }
+        free(decoded);
+    }
+    return close + 1u;
+}
+
 /* Conservative RTF-to-text extraction for message bodies: paragraphs, tabs,
  * escaped bytes and \uN escapes; destination groups are skipped. */
-static int msg_rtf_to_text(const uint8_t *data, size_t size, char **out_text,
+static int msg_rtf_to_text(const uint8_t *data, size_t size,
+                           MsgRtfImages *images, char **out_text,
                            size_t *out_size)
 {
     QwTextBuffer out;
@@ -1008,6 +1161,19 @@ static int msg_rtf_to_text(const uint8_t *data, size_t size, char **out_text,
                     ++index;
                 }
                 if (index < size && data[index] == ' ') ++index;
+                if (word_size == 4u && memcmp(word, "pict", 4u) == 0) {
+                    if (skip_depth < 0 && images) {
+                        size_t after = msg_rtf_parse_picture(data, size, index,
+                                                             images);
+                        if (!qw_text_buffer_append(&out, "\x02", 1u))
+                            goto out_of_memory;
+                        index = after;
+                        if (depth > 0) --depth;
+                        continue;
+                    }
+                    if (skip_depth < 0) skip_depth = depth;
+                    continue;
+                }
                 if (msg_rtf_is_skip_destination(word, word_size)) {
                     if (skip_depth < 0) skip_depth = depth;
                     continue;
@@ -1071,15 +1237,46 @@ static int msg_html_escape_range(QwTextBuffer *out, const char *text,
 }
 
 /* Render RTF text carrying 0x1d/0x1f/0x1e row/cell/row-end markers. */
-static int msg_rtf_render_html(QwTextBuffer *out, const char *text, size_t size)
+static int msg_rtf_render_html(QwTextBuffer *out, const char *text, size_t size,
+                               MsgRtfImages *images)
 {
     size_t index = 0u;
     int table_open = 0;
     int row_open = 0;
     int cell_open = 0;
     int paragraph_open = 0;
+    size_t image_index = 0u;
     while (index < size) {
         char chr = text[index];
+        if (chr == '\x02') {
+            if (images && image_index < images->count) {
+                if (row_open && !cell_open) {
+                    if (!qw_text_buffer_append(out, "<td>", 4u)) return 0;
+                    cell_open = 1;
+                } else if (!row_open && !paragraph_open) {
+                    if (table_open) {
+                        if (!qw_text_buffer_append(out, "</table><p>", 11u))
+                            return 0;
+                        table_open = 0;
+                    } else if (!qw_text_buffer_append(out, "<p>", 3u)) {
+                        return 0;
+                    }
+                    paragraph_open = 1;
+                }
+                if (!qw_text_buffer_append(out, "<img alt=\"image\" src=\"data:",
+                                           sizeof("<img alt=\"image\" src=\"data:") - 1u) ||
+                    !qw_text_buffer_append(out, images->items[image_index].mime,
+                                           strlen(images->items[image_index].mime)) ||
+                    !qw_text_buffer_append(out, ";base64,", 8u) ||
+                    !msg_base64_append(out, images->items[image_index].data,
+                                       images->items[image_index].size) ||
+                    !qw_text_buffer_append(out, "\"/>", 2u))
+                    return 0;
+                ++image_index;
+            }
+            ++index;
+            continue;
+        }
         if (chr == '\x1d') {
             if (cell_open && !qw_text_buffer_append(out, "</td>", 5u)) return 0;
             cell_open = 0;
@@ -1315,15 +1512,17 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                                     &rtf_plain_size)) {
                 char *rtf_text = NULL;
                 size_t rtf_text_size = 0u;
-                if (msg_rtf_to_text(rtf_plain, rtf_plain_size, &rtf_text,
-                                    &rtf_text_size) &&
+                MsgRtfImages rtf_images = {0};
+                if (msg_rtf_to_text(rtf_plain, rtf_plain_size, &rtf_images,
+                                    &rtf_text, &rtf_text_size) &&
                     rtf_text) {
                     if (!qw_text_buffer_append(&html,
                             "<div class=\"rtf-body\">", 22u) ||
                         !msg_rtf_render_html(&html, rtf_text,
-                                             rtf_text_size) ||
+                                             rtf_text_size, &rtf_images) ||
                         !qw_text_buffer_append(&html, "</div>", 6u)) {
                         free(rtf_text);
+                        msg_rtf_images_dispose(&rtf_images);
                         free(rtf_plain);
                         free(rtf_raw);
                         rc = QW_STATUS_ERR_OUT_OF_MEMORY;
@@ -1331,6 +1530,7 @@ int qw_msg_to_html(const uint8_t *data, size_t size, uint8_t **out_html,
                     }
                     used_rtf_body = 1;
                     free(rtf_text);
+                    msg_rtf_images_dispose(&rtf_images);
                 }
                 free(rtf_plain);
             }
