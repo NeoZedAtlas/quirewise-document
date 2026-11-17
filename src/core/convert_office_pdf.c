@@ -624,8 +624,6 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
         "wordprocessingml/2006/main\"><w:body>";
     QwPdfDocument *document = NULL;
     size_t page_count = 0u;
-    uint8_t *text = NULL;
-    size_t text_size = 0u;
     OfficePdfBuffer body;
     QwZipWriter writer;
     int status;
@@ -640,30 +638,41 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                              &page_count, report)
                  : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
-    status = qw_pdf_extract_text(document, &text, &text_size, report);
-    qw_pdf_close(document);
-    if (status != QW_STATUS_OK) {
-        qw_pdf_free(text);
-        return status;
-    }
     memset(&body, 0, sizeof(body));
     if (!pdf_buffer_text(&body, document_prefix)) goto out_of_memory;
-    {
+    for (index = 0u; index < page_count; ++index) {
+        uint8_t *page_text = NULL;
+        size_t page_size = 0u;
         size_t start = 0u;
-        for (index = 0u; index <= text_size; ++index) {
-            if (index == text_size || text[index] == '\n') {
-                size_t line = index - start;
-                if (line && text[start + line - 1u] == '\r') line -= 1u;
+        size_t cursor;
+        status = qw_doc_pdf_extract_page_text(document, index, &page_text,
+                                              &page_size);
+        if (status != QW_STATUS_OK) goto out_of_memory;
+        if (index &&
+            !pdf_buffer_text(&body,
+                             "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")) {
+            qw_pdf_free(page_text);
+            goto out_of_memory;
+        }
+        for (cursor = 0u; cursor <= page_size; ++cursor) {
+            if (cursor == page_size || page_text[cursor] == '\n') {
+                size_t line = cursor - start;
+                if (line && page_text[start + line - 1u] == '\r') line -= 1u;
                 if (!pdf_buffer_text(
                         &body,
                         "<w:p><w:r><w:t xml:space=\"preserve\">") ||
-                    !pdf_buffer_escape(&body, text + start, line) ||
-                    !pdf_buffer_text(&body, "</w:t></w:r></w:p>"))
+                    !pdf_buffer_escape(&body, page_text + start, line) ||
+                    !pdf_buffer_text(&body, "</w:t></w:r></w:p>")) {
+                    qw_pdf_free(page_text);
                     goto out_of_memory;
-                start = index + 1u;
+                }
+                start = cursor + 1u;
             }
         }
+        qw_pdf_free(page_text);
     }
+    qw_pdf_close(document);
+    document = NULL;
     if (!pdf_buffer_text(&body, "</w:body></w:document>"))
         goto out_of_memory;
     if (!qw_zip_writer_init_heap(&writer, 0u, 0u)) goto out_of_memory;
@@ -679,22 +688,21 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
     zip_open = 0;
     free(body.data);
-    qw_pdf_free(text);
     if (report) {
         report->format = QW_FORMAT_PDF;
         report->output_format = QW_FORMAT_DOCX;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
                  "editable-text DOCX: %zu page(s) extracted into paragraphs "
-                 "(text layer only, layout not reconstructed)",
+                 "with page breaks (text layer only, layout not reconstructed)",
                  page_count);
     }
     return QW_STATUS_OK;
 
 out_of_memory:
     if (zip_open) qw_zip_writer_end(&writer);
+    if (document) qw_pdf_close(document);
     free(body.data);
-    qw_pdf_free(text);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
 }
 
@@ -731,11 +739,10 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     static const char chapter_prefix[] =
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<!DOCTYPE html><html xmlns=\"http://www.w3.org/1999/xhtml\"><head>"
-        "<title>Quirewise PDF text</title></head><body>";
+        "<title>Quirewise PDF text</title><style>.page{margin:0 0 2em 0}"
+        "</style></head><body>";
     QwPdfDocument *document = NULL;
     size_t page_count = 0u;
-    uint8_t *text = NULL;
-    size_t text_size = 0u;
     OfficePdfBuffer chapter;
     QwZipWriter writer;
     int status;
@@ -750,28 +757,38 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                                              &page_count, report)
                  : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
-    status = qw_pdf_extract_text(document, &text, &text_size, report);
-    qw_pdf_close(document);
-    if (status != QW_STATUS_OK) {
-        qw_pdf_free(text);
-        return status;
-    }
     memset(&chapter, 0, sizeof(chapter));
     if (!pdf_buffer_text(&chapter, chapter_prefix)) goto out_of_memory;
-    {
+    for (index = 0u; index < page_count; ++index) {
+        uint8_t *page_text = NULL;
+        size_t page_size = 0u;
         size_t start = 0u;
-        for (index = 0u; index <= text_size; ++index) {
-            if (index == text_size || text[index] == '\n') {
-                size_t line = index - start;
-                if (line && text[start + line - 1u] == '\r') line -= 1u;
+        size_t cursor;
+        status = qw_doc_pdf_extract_page_text(document, index, &page_text,
+                                              &page_size);
+        if (status != QW_STATUS_OK) goto out_of_memory;
+        if (!pdf_buffer_text(&chapter, "<div class=\"page\">")) {
+            qw_pdf_free(page_text);
+            goto out_of_memory;
+        }
+        for (cursor = 0u; cursor <= page_size; ++cursor) {
+            if (cursor == page_size || page_text[cursor] == '\n') {
+                size_t line = cursor - start;
+                if (line && page_text[start + line - 1u] == '\r') line -= 1u;
                 if (!pdf_buffer_text(&chapter, "<p>") ||
-                    !pdf_buffer_escape(&chapter, text + start, line) ||
-                    !pdf_buffer_text(&chapter, "</p>"))
+                    !pdf_buffer_escape(&chapter, page_text + start, line) ||
+                    !pdf_buffer_text(&chapter, "</p>")) {
+                    qw_pdf_free(page_text);
                     goto out_of_memory;
-                start = index + 1u;
+                }
+                start = cursor + 1u;
             }
         }
+        qw_pdf_free(page_text);
+        if (!pdf_buffer_text(&chapter, "</div>")) goto out_of_memory;
     }
+    qw_pdf_close(document);
+    document = NULL;
     if (!pdf_buffer_text(&chapter, "</body></html>")) goto out_of_memory;
     if (!qw_zip_writer_init_heap(&writer, 0u, 0u)) goto out_of_memory;
     zip_open = 1;
@@ -787,13 +804,12 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
     zip_open = 0;
     free(chapter.data);
-    qw_pdf_free(text);
     if (report) {
         report->format = QW_FORMAT_PDF;
         report->output_format = QW_FORMAT_EPUB;
         report->output_size = *out_size;
         snprintf(report->note, sizeof(report->note),
-                 "editable-text EPUB: %zu page(s) extracted into paragraphs "
+                 "editable-text EPUB: %zu page(s) extracted into page sections "
                  "(text layer only, layout not reconstructed)",
                  page_count);
     }
@@ -801,7 +817,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
 
 out_of_memory:
     if (zip_open) qw_zip_writer_end(&writer);
+    if (document) qw_pdf_close(document);
     free(chapter.data);
-    qw_pdf_free(text);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
 }

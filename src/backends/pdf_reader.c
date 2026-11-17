@@ -3126,6 +3126,27 @@ int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
     return QW_STATUS_OK;
 }
 
+int qw_doc_pdf_extract_page_text(QwPdfReader *reader, size_t page_index,
+                                 uint8_t **out_text, size_t *out_size)
+{
+    QwPdfBuffer text;
+    if (!reader || !out_text || !out_size)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_text = NULL;
+    *out_size = 0u;
+    if (page_index >= reader->page_count)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (reader->encryption_unsupported) return QW_STATUS_ERR_UNSUPPORTED;
+    memset(&text, 0, sizeof(text));
+    if (!pdf_extract_page_text(reader, reader->page_objects[page_index], &text)) {
+        free(text.data);
+        return QW_STATUS_ERR_DECODE;
+    }
+    *out_text = text.data;
+    *out_size = text.size;
+    return QW_STATUS_OK;
+}
+
 int qw_pdf_reader_extract_text_to_stream(QwPdfReader *reader, FILE *stream,
                                                size_t max_output_bytes,
                                                size_t *out_size,

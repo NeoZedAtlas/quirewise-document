@@ -90,6 +90,10 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
 /* Container/text writers: HTMLZ (index.html), TXTZ (index.txt) and a minimal
  * HWPX package, all built from the HTML intermediate. */
 /* Layout-preserving PDF -> DOCX/EPUB: rasterize pages and embed them. */
+/* Extract one page's text layer; used by the editable PDF -> Office writers. */
+int qw_doc_pdf_extract_page_text(QwPdfReader *reader, size_t page_index,
+                                 uint8_t **out_text, size_t *out_size);
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,

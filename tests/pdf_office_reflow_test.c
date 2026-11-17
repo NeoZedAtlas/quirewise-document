@@ -1,5 +1,6 @@
 /* PDF -> DOCX/EPUB: layout-preserving page images vs editable text mode. */
 #include <quirewise/convert.h>
+#include <quirewise/pdf.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +71,39 @@ int main(void)
     free(pdf);
     free(docx);
     free(epub);
+    /* Two-page PDF (CSS page break): reflow keeps page boundaries. */
+    {
+        static const char *two_page_html =
+            "<html><body><p>page one</p>"
+            "<p style=\"page-break-before: always\">second page</p>"
+            "</body></html>";
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *two_page_pdf = NULL;
+        size_t two_page_size = 0u;
+        uint8_t *two_docx = NULL;
+        size_t two_docx_size = 0u;
+        uint8_t *two_epub = NULL;
+        size_t two_epub_size = 0u;
+
+        CHECK(qw_convert_to_pdf_memory(two_page_html, strlen(two_page_html),
+                                       &opts, &two_page_pdf, &two_page_size,
+                                       NULL) == QW_STATUS_OK);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(two_page_pdf, two_page_size,
+                                          QW_FORMAT_DOCX, &opts, &two_docx,
+                                          &two_docx_size, NULL) == QW_STATUS_OK);
+        CHECK(contains(two_docx, two_docx_size, "w:type=\"page\""));
+        CHECK(contains(two_docx, two_docx_size, "second page"));
+        CHECK(qw_convert_to_format_memory(two_page_pdf, two_page_size,
+                                          QW_FORMAT_EPUB, &opts, &two_epub,
+                                          &two_epub_size, NULL) == QW_STATUS_OK);
+        CHECK(contains(two_epub, two_epub_size, "class=\"page\""));
+        CHECK(contains(two_epub, two_epub_size, "second page"));
+        free(two_page_pdf);
+        free(two_docx);
+        free(two_epub);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }
