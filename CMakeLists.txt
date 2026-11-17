@@ -121,6 +121,14 @@ if(BUILD_TESTING)
     add_test(NAME quirewise_document_pdf_font_embed
         COMMAND quirewise_document_pdf_font_embed_test)
 
+    add_executable(quirewise_document_pdf_office_reflow_test
+        tests/pdf_office_reflow_test.c)
+    target_compile_features(quirewise_document_pdf_office_reflow_test PRIVATE c_std_11)
+    target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
+        quirewise_document)
+    add_test(NAME quirewise_document_pdf_office_reflow
+        COMMAND quirewise_document_pdf_office_reflow_test)
+
     add_executable(quirewise_document_odt_pdf_test tests/odt_pdf_end_to_end_test.c)
     target_compile_features(quirewise_document_odt_pdf_test PRIVATE c_std_11)
     target_include_directories(quirewise_document_odt_pdf_test PRIVATE

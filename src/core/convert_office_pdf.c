@@ -586,3 +586,222 @@ out_of_memory:
     office_pdf_pages_free(pages, page_count);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
 }
+
+
+/* Editable-text PDF -> DOCX. The package keeps the same shape as the
+ * layout-preserving writer, but the body holds one paragraph per extracted
+ * line and the package has no media parts. Layout is not reconstructed; the
+ * text layer is what survives. */
+
+int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
+                                     const char *password,
+                                     uint8_t **out_data, size_t *out_size,
+                                     QwConvertReport *report)
+{
+    static const char content_types[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/"
+        "content-types\">"
+        "<Default Extension=\"rels\" ContentType=\"application/"
+        "vnd.openxmlformats-package.relationships+xml\"/>"
+        "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+        "<Override PartName=\"/word/document.xml\" ContentType=\"application/"
+        "vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
+        "\"/></Types>";
+    static const char package_rels[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/"
+        "2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://"
+        "schemas.openxmlformats.org/officeDocument/2006/relationships/"
+        "officeDocument\" Target=\"word/document.xml\"/></Relationships>";
+    static const char document_rels[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/"
+        "2006/relationships\"/>";
+    static const char document_prefix[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n"
+        "<w:document xmlns:w=\"http://schemas.openxmlformats.org/"
+        "wordprocessingml/2006/main\"><w:body>";
+    QwPdfDocument *document = NULL;
+    size_t page_count = 0u;
+    uint8_t *text = NULL;
+    size_t text_size = 0u;
+    OfficePdfBuffer body;
+    QwZipWriter writer;
+    int status;
+    int zip_open = 0;
+    size_t index;
+
+    if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_data = NULL;
+    *out_size = 0u;
+    status = password
+                 ? qw_pdf_open_with_password(data, size, password, &document,
+                                             &page_count, report)
+                 : qw_pdf_open(data, size, &document, &page_count, report);
+    if (status != QW_STATUS_OK) return status;
+    status = qw_pdf_extract_text(document, &text, &text_size, report);
+    qw_pdf_close(document);
+    if (status != QW_STATUS_OK) {
+        qw_pdf_free(text);
+        return status;
+    }
+    memset(&body, 0, sizeof(body));
+    if (!pdf_buffer_text(&body, document_prefix)) goto out_of_memory;
+    {
+        size_t start = 0u;
+        for (index = 0u; index <= text_size; ++index) {
+            if (index == text_size || text[index] == '\n') {
+                size_t line = index - start;
+                if (line && text[start + line - 1u] == '\r') line -= 1u;
+                if (!pdf_buffer_text(
+                        &body,
+                        "<w:p><w:r><w:t xml:space=\"preserve\">") ||
+                    !pdf_buffer_escape(&body, text + start, line) ||
+                    !pdf_buffer_text(&body, "</w:t></w:r></w:p>"))
+                    goto out_of_memory;
+                start = index + 1u;
+            }
+        }
+    }
+    if (!pdf_buffer_text(&body, "</w:body></w:document>"))
+        goto out_of_memory;
+    if (!qw_zip_writer_init_heap(&writer, 0u, 0u)) goto out_of_memory;
+    zip_open = 1;
+    if (!office_zip_add(&writer, "[Content_Types].xml", content_types,
+                        strlen(content_types)) ||
+        !office_zip_add(&writer, "_rels/.rels", package_rels,
+                        strlen(package_rels)) ||
+        !office_zip_add(&writer, "word/document.xml", body.data, body.size) ||
+        !office_zip_add(&writer, "word/_rels/document.xml.rels",
+                        document_rels, strlen(document_rels)))
+        goto out_of_memory;
+    if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
+    zip_open = 0;
+    free(body.data);
+    qw_pdf_free(text);
+    if (report) {
+        report->format = QW_FORMAT_PDF;
+        report->output_format = QW_FORMAT_DOCX;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "editable-text DOCX: %zu page(s) extracted into paragraphs "
+                 "(text layer only, layout not reconstructed)",
+                 page_count);
+    }
+    return QW_STATUS_OK;
+
+out_of_memory:
+    if (zip_open) qw_zip_writer_end(&writer);
+    free(body.data);
+    qw_pdf_free(text);
+    return QW_STATUS_ERR_OUT_OF_MEMORY;
+}
+
+int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
+                                     const char *password,
+                                     uint8_t **out_data, size_t *out_size,
+                                     QwConvertReport *report)
+{
+    static const char container_xml[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<container version=\"1.0\" xmlns=\"urn:oasis:names:tc:opendocument:"
+        "xmlns:container\"><rootfiles><rootfile full-path=\"OEBPS/"
+        "content.opf\" media-type=\"application/oebps-package+xml\"/>"
+        "</rootfiles></container>";
+    static const char content_opf[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"2.0\" "
+        "unique-identifier=\"bookid\"><metadata xmlns:dc=\"http://purl.org/"
+        "dc/elements/1.1/\"><dc:title>Quirewise PDF text</dc:title>"
+        "<dc:identifier id=\"bookid\">urn:uuid:quirewise-pdf-text</dc:"
+        "identifier><dc:language>und</dc:language></metadata><manifest>"
+        "<item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/"
+        "x-dtbncx+xml\"/><item id=\"chapter\" href=\"chapter1.xhtml\" "
+        "media-type=\"application/xhtml+xml\"/></manifest><spine toc=\"ncx\">"
+        "<itemref idref=\"chapter\"/></spine></package>";
+    static const char toc_ncx[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\""
+        "><head><meta name=\"dtb:uid\" content=\"urn:uuid:quirewise-pdf-text\""
+        "/><meta name=\"dtb:depth\" content=\"1\"/></head><docTitle>"
+        "<text>Quirewise PDF text</text></docTitle><navMap><navPoint "
+        "id=\"chapter\" playOrder=\"1\"><navLabel><text>Text</text></navLabel>"
+        "<content src=\"chapter1.xhtml\"/></navPoint></navMap></ncx>";
+    static const char chapter_prefix[] =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE html><html xmlns=\"http://www.w3.org/1999/xhtml\"><head>"
+        "<title>Quirewise PDF text</title></head><body>";
+    QwPdfDocument *document = NULL;
+    size_t page_count = 0u;
+    uint8_t *text = NULL;
+    size_t text_size = 0u;
+    OfficePdfBuffer chapter;
+    QwZipWriter writer;
+    int status;
+    int zip_open = 0;
+    size_t index;
+
+    if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_data = NULL;
+    *out_size = 0u;
+    status = password
+                 ? qw_pdf_open_with_password(data, size, password, &document,
+                                             &page_count, report)
+                 : qw_pdf_open(data, size, &document, &page_count, report);
+    if (status != QW_STATUS_OK) return status;
+    status = qw_pdf_extract_text(document, &text, &text_size, report);
+    qw_pdf_close(document);
+    if (status != QW_STATUS_OK) {
+        qw_pdf_free(text);
+        return status;
+    }
+    memset(&chapter, 0, sizeof(chapter));
+    if (!pdf_buffer_text(&chapter, chapter_prefix)) goto out_of_memory;
+    {
+        size_t start = 0u;
+        for (index = 0u; index <= text_size; ++index) {
+            if (index == text_size || text[index] == '\n') {
+                size_t line = index - start;
+                if (line && text[start + line - 1u] == '\r') line -= 1u;
+                if (!pdf_buffer_text(&chapter, "<p>") ||
+                    !pdf_buffer_escape(&chapter, text + start, line) ||
+                    !pdf_buffer_text(&chapter, "</p>"))
+                    goto out_of_memory;
+                start = index + 1u;
+            }
+        }
+    }
+    if (!pdf_buffer_text(&chapter, "</body></html>")) goto out_of_memory;
+    if (!qw_zip_writer_init_heap(&writer, 0u, 0u)) goto out_of_memory;
+    zip_open = 1;
+    if (!office_zip_add(&writer, "mimetype", "application/epub+zip", 20u) ||
+        !office_zip_add(&writer, "META-INF/container.xml", container_xml,
+                        strlen(container_xml)) ||
+        !office_zip_add(&writer, "OEBPS/content.opf", content_opf,
+                        strlen(content_opf)) ||
+        !office_zip_add(&writer, "OEBPS/toc.ncx", toc_ncx, strlen(toc_ncx)) ||
+        !office_zip_add(&writer, "OEBPS/chapter1.xhtml", chapter.data,
+                        chapter.size))
+        goto out_of_memory;
+    if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
+    zip_open = 0;
+    free(chapter.data);
+    qw_pdf_free(text);
+    if (report) {
+        report->format = QW_FORMAT_PDF;
+        report->output_format = QW_FORMAT_EPUB;
+        report->output_size = *out_size;
+        snprintf(report->note, sizeof(report->note),
+                 "editable-text EPUB: %zu page(s) extracted into paragraphs "
+                 "(text layer only, layout not reconstructed)",
+                 page_count);
+    }
+    return QW_STATUS_OK;
+
+out_of_memory:
+    if (zip_open) qw_zip_writer_end(&writer);
+    free(chapter.data);
+    qw_pdf_free(text);
+    return QW_STATUS_ERR_OUT_OF_MEMORY;
+}

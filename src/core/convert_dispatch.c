@@ -2161,9 +2161,15 @@ int qw_convert_to_format_memory(const void *data, size_t size,
             return pdf_route_to_png(bytes, size, password, out_data,
                                     out_size, report);
         case QW_FORMAT_DOCX:
+            if (options && options->pdf_office_reflow)
+                return qw_doc_office_docx_text_from_pdf(
+                    bytes, size, password, out_data, out_size, report);
             return qw_doc_office_docx_from_pdf(bytes, size, password, out_data,
                                                out_size, report);
         case QW_FORMAT_EPUB:
+            if (options && options->pdf_office_reflow)
+                return qw_doc_office_epub_text_from_pdf(
+                    bytes, size, password, out_data, out_size, report);
             return qw_doc_office_epub_from_pdf(bytes, size, password, out_data,
                                                out_size, report);
         case QW_FORMAT_JPG:
