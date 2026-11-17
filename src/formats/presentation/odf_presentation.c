@@ -468,6 +468,38 @@ static int odp_apply_clip(QwImage *image, QwXmlNode *frame, QwXmlNode *image_nod
     return 1;
 }
 
+static int odp_html_number_literal(OdpReader *reader, int value)
+{
+    char text[32];
+    int length = snprintf(text, sizeof(text), "%d", value);
+    if (length <= 0 || (size_t)length >= sizeof(text)) return 0;
+    return odp_html_literal(reader, text);
+}
+
+static int odp_rotation_degrees(QwXmlNode *frame, QwXmlNode *node)
+{
+    const char *transform = frame ? qw_xml_att(frame, "draw:transform") : NULL;
+    const char *cursor;
+    double value;
+    char *end = NULL;
+    if (!transform || strncmp(transform, "rotate(", 7u) != 0) {
+        transform = frame ? qw_xml_att(frame, "svg:transform") : NULL;
+        if (!transform || strncmp(transform, "rotate(", 7u) != 0)
+            transform = node ? qw_xml_att(node, "draw:transform") : NULL;
+    }
+    if (!transform || strncmp(transform, "rotate(", 7u) != 0) return 0;
+    cursor = transform + 7u;
+    value = strtod(cursor, &end);
+    if (end == cursor) return 0;
+    if (end && (end[0] == 'r' || end[0] == 'R')) value = value * 180.0 / 3.14159265358979323846;
+    {
+        long degrees = (long)(value >= 0.0 ? value + 0.5 : value - 0.5);
+        degrees %= 360L;
+        if (degrees < 0) degrees += 360L;
+        return (int)degrees;
+    }
+}
+
 static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
                             QwXmlNode *frame, double display_width,
                             double display_height)
@@ -484,6 +516,7 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
     size_t png_size = 0u;
     unsigned width;
     unsigned height;
+    int rotation = odp_rotation_degrees(frame, node);
 
     if (reader->image_count >= ODP_MAX_IMAGES)
         return odp_html_literal(reader, omitted);
@@ -556,7 +589,12 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
             height_length = (size_t)written;
         }
         if (length <= 0 || (size_t)length >= sizeof(width_text) ||
-            !odp_html_literal(reader, "<p class=\"picture\"><img alt=\"image\" width=\"") ||
+            !odp_html_literal(reader, "<p class=\"picture\"") ||
+            (rotation &&
+             (!odp_html_literal(reader, " style=\"transform:rotate(") ||
+              !odp_html_number_literal(reader, rotation) ||
+              !odp_html_literal(reader, "deg)\""))) ||
+            !odp_html_literal(reader, "><img alt=\"image\" width=\"") ||
             !odp_html_literal(reader, width_text) ||
             (height != 0u &&
              (!odp_html_literal(reader, "\" height=\"") ||

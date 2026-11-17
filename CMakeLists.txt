@@ -1210,6 +1210,16 @@ target_link_libraries(quirewise_document_odp_image_test PRIVATE
 add_test(NAME quirewise_document_odp_image
     COMMAND quirewise_document_odp_image_test)
 
+add_executable(quirewise_document_odp_rotation_test
+    tests/odp_rotation_test.c)
+target_compile_features(quirewise_document_odp_rotation_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_odp_rotation_test PRIVATE
+    QUIREWISE_ODP_ROTATION_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rotated-slide.odp")
+target_link_libraries(quirewise_document_odp_rotation_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_odp_rotation
+    COMMAND quirewise_document_odp_rotation_test)
+
 add_executable(quirewise_document_pptx_rotation_test
     tests/pptx_rotation_test.c)
 target_compile_features(quirewise_document_pptx_rotation_test PRIVATE c_std_11)
