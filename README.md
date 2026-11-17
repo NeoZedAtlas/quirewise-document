@@ -13,19 +13,27 @@ consumed without the Quirewise application.
   DOCX/DOCM/DOTX/DOTM, ODT/OTT/FODT, RTF, EML, HWPX, PPTX and ODP families,
   XLSX/XLS/ODS and CSV/TSV, EPUB, FB2, MOBI/AZW3, plain text, common image
   formats, HTMLZ, TXTZ and PMLZ.
-- Converts PDF input to plain UTF-8 text or to a PNG of the first page, and
-  passes PDF-to-PDF requests through byte for byte.
+- Converts PDF input to UTF-8 text, HTML or Markdown (text layer), to the first
+  page as PNG/JPEG/BMP/TIFF/WebP, and to DOCX/EPUB as 120 dpi page images
+  (layout-preserving, up to 24 pages). PDF-to-PDF requests pass through byte for
+  byte, and multiple PDFs can be merged with their outlines combined.
 - Reads PDFs: classic cross-reference tables, cross-reference streams, object
-  streams, incremental updates, and RC4/AES standard security with an empty
-  user password. It exposes page count, media/crop boxes and rotation.
+  streams, incremental updates, and RC4/AES standard security with a user
+  password. It exposes page count, media/crop boxes, rotation, title/author and
+  h1-h6 outline entries (`qw_pdf_document_*`, `qw_pdf_bookmark_*`).
 - Rasterises PDF pages to RGB24 at a chosen resolution, and extracts the text
   of every page as UTF-8.
-- Merges unencrypted PDFs into one classic-cross-reference PDF.
+- Merges unencrypted PDFs into one classic-cross-reference PDF and writes nested
+  `/XYZ` outline destinations plus title/author metadata.
 - Checks whether a file can be read through its registered route without
   writing an output file.
 - Renders caller-supplied gray or RGB raster pages into a PDF.
-- Exposes typed readers for DOCX, ODT, ODP, PPTX, HWPX, EML and XPS when a
-  caller needs HTML, layout metadata or attachment/page data instead of PDF.
+- Exposes typed readers for DOCX, ODT, ODP, PPTX, HWPX, EML, MSG and XPS when a
+  caller needs HTML, layout metadata, footnote/header data or attachment/page
+  data instead of PDF.
+- Preserves DOCX/ODT footnotes and endnotes, paragraph indents, and DOCX/ODT
+  header/footer text with run formatting in the HTML route; HWPX additionally
+  carries hyperlinks, page margins, columns and section breaks.
 
 The file API supplies the extension hint that plain text, CSV and spreadsheet
 inputs need; the memory API relies on content detection.
@@ -147,6 +155,7 @@ HTML route and are refused with a specific note.
 | Raster pages to PDF | `qw_raster_pages_to_pdf`, `qw_raster_pages_to_pdf_mode` |
 | Open / inspect a PDF | `qw_pdf_open`, `qw_pdf_open_structure`, `qw_pdf_page_geometry` |
 | Render / extract / merge | `qw_pdf_render_page`, `qw_pdf_extract_text`, `qw_pdf_merge` |
+| Metadata / outline | `qw_pdf_document_title`, `qw_pdf_document_author`, `qw_pdf_bookmark_count`, `qw_pdf_bookmark_at` |
 | Release | `qw_buffer_free`, `qw_pdf_close`, `qw_pdf_free`, `qw_pdf_page_free` |
 
 ## Behavior and limits
@@ -161,10 +170,12 @@ HTML route and are refused with a specific note.
   `qw_pdf_page_free`.
 - A failed conversion may leave `report.note` explaining the refusal. Output
   pointers are set to `NULL` on failure.
-- Family targets (JSON/YAML/TOML/vCard/XML, SRT/VTT/LRC/MicroDVD/ASS/SSA/SAMI/
-  SCC, CSV/TSV) are not layout conversions: the owning package's writer decides
-  what it can represent. XML only accepts the ordered XML document shape, TTML
-  has no writer, and spreadsheet text output writes the first worksheet.
+- Family targets (JSON/YAML/TOML/vCard/XML, SRT/VTT/LRC/MicroDVD/TTML/ASS/SSA/
+  SAMI/SCC, XLSX/ODS/CSV/TSV) are not layout conversions: the owning package's
+  writer decides what it can represent. XML only accepts the ordered XML
+  document shape, TTML output is limited to begin/end/text, XLSX/ODS keep all
+  sheets and merged ranges, and CSV/TSV write the first (or `--sheet`-selected)
+  worksheet.
 - The file API reads at most 512 MiB per input, never overwrites an existing
   output path, and returns `QW_STATUS_ERR_IO` for filesystem failures.
 - The PDF reader accepts at most 100,000 pages and 64 MiB per stream; text
@@ -175,12 +186,13 @@ HTML route and are refused with a specific note.
 - PDF merging rejects encrypted inputs, caps the result at 100,000 pages, and
   writes a classic cross-reference table.
 - Deliberate boundaries: no PDF/A creation or verification, no OCR, no
-  embedded-font or CJK outline rendering, no HTML/Markdown output, and XPS is
-  available only through the reader API, not the conversion dispatch.
+  editable PDF layout/table reconstruction, no embedded-font or CJK outline
+  rendering. PDF→HTML/Markdown is text-layer-only; PDF→DOCX/EPUB is page images.
+  XPS is available through both the reader API and the conversion dispatch.
 
 ## Testing
 
-`ctest` runs 41 tests. They cover PDF xref tables/streams, object streams,
+`ctest` covers PDF xref tables/streams, object streams,
 incremental documents, stream lengths, page order, RC4 and AES decryption,
 ToUnicode extraction, page rendering (paths, images, CCITT G4, JPEG 2000 and
 JBIG2), merging (classic, xref-stream, object-stream, incremental, metadata,

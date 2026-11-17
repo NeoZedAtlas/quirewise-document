@@ -7,8 +7,8 @@
  *
  * - EPUB: one XHTML chapter, OPF manifest/spine and NCX table of contents.
  * - DOCX: WordprocessingML body with paragraphs, heading styles, character
- *   emphasis, bullet lists, hyperlinks and embedded images; tables are
- *   flattened. There is no numbering, theme or section layout.
+ *   emphasis, bullet lists, hyperlinks, embedded images and basic tables
+ *   (colspan/rowspan). There is no numbering, theme or section layout.
  *
  * The packages are validated in the test suite by reading them back with the
  * package's own EPUB and DOCX parsers.

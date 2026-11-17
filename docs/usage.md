@@ -112,13 +112,17 @@ The result is `malloc`-owned; release it with `qw_buffer_free` on every
 success path. A PDF input is copied through unchanged and the report says so.
 Only `options->page_mode` is consumed here, for image inputs.
 
-## 5. Convert PDF to TXT and PNG
+## 5. Convert PDF to text, layout formats and images
 
-For PDF input, `qw_convert_to_format_memory` supports two non-PDF outputs:
+For PDF input, `qw_convert_to_format_memory` supports:
 
 - `QW_FORMAT_TXT`: UTF-8 text from every page; the note says no OCR ran.
-- `QW_FORMAT_PNG`: first page only, fixed 144 dpi, RGB24. Use
-  `qw_pdf_render_page` for another page or resolution.
+- `QW_FORMAT_HTML` / `QW_FORMAT_MARKDOWN`: text-layer reconstruction.
+- `QW_FORMAT_DOCX` / `QW_FORMAT_EPUB`: every page as a 120 dpi JPEG
+  (layout-preserving page images, up to 24 pages; text is not editable).
+- `QW_FORMAT_PNG`, `QW_FORMAT_JPG`, `QW_FORMAT_BMP`, `QW_FORMAT_TIFF`,
+  `QW_FORMAT_WEBP`: first page only, fixed 144 dpi, RGB24. Use
+  `qw_pdf_render_page` for another page, resolution or format.
 
 ```c
 static int pdf_text_and_png(const uint8_t *pdf, size_t pdf_size)
@@ -143,9 +147,11 @@ static int pdf_text_and_png(const uint8_t *pdf, size_t pdf_size)
 }
 ```
 
-`QW_FORMAT_PDF` is a byte-identical passthrough. `QW_FORMAT_JPG` is refused
-with `QW_STATUS_ERR_UNSUPPORTED` because this package has no JPEG encoder. On
-non-PDF input the same function supports only PDF output.
+`QW_FORMAT_PDF` is a byte-identical passthrough. On non-PDF input the same
+function supports PDF, the readers' HTML/Markdown intermediates, DOCX/EPUB,
+HTMLZ/TXTZ/PMLZ/HWPX, and the family targets owned by the data, subtitle and
+spreadsheet packages. Unsupported combinations return
+`QW_STATUS_ERR_UNSUPPORTED` with a specific note.
 
 ## 6. Check a file
 
@@ -231,25 +237,25 @@ families produce PDF through the package's layout writers:
 
 | Input | Route and fidelity |
 |---|---|
-| DOCX family, ODT family | native layout; text, paragraphs, simple tables |
+| DOCX family, ODT family | native layout; text, tables, footnotes/endnotes, headers/footers, indents |
 | RTF | RTF-to-HTML conversion, then layout |
-| EML | selected body; attachments listed, not exported |
-| HWPX | paragraph text and simple tables |
-| PPTX family, ODP family | slide text; shapes/images/notes/styles omitted |
-| EPUB | reflowed HTML; images and CSS approximated |
+| EML, MSG | selected body; text/image attachments embedded; other attachments listed |
+| HWPX | paragraphs, styles, tables, images, hyperlinks, headers/footers, footnotes, columns/sections |
+| PPTX family, ODP family | slide text, images and notes; CSS positions/rotation kept in HTML, not in PDF |
+| EPUB | reflowed HTML; tables, lists, images, figures, hr and footnotes preserved |
 | FB2 | FictionBook HTML; images approximated |
 | MOBI/AZW3 | PalmDOC text; markup, styles, images and DRM not preserved |
 | HTML | block-level subset; inline markup flattened |
-| TXT, `.md`, `.markdown` | plain-text paragraphs; Markdown is not rendered |
+| TXT, `.md`, `.markdown` | plain-text paragraphs; Markdown renders its supported subset |
 | XLSX/XLSM/XLTX, XLS/XLT, ODS/OTS/FODS | cells rendered as tables |
 | CSV/TSV | cells rendered as an HTML table |
 | HTMLZ, TXTZ, PMLZ | primary member rendered; other members dropped |
+| XPS/OpenXPS | fixed-page XML subset; CLI conversion dispatch supported |
 | Probed images (PNG, JPEG, GIF, BMP, WebP, ...) | one image page per input |
 
 `options->page_mode` selects `QW_RASTER_PAGE_MODE_IMAGE` (page box equals pixel
-size) or `QW_RASTER_PAGE_MODE_A4` for image input. Unknown ZIP packages, SVG
-and TTML are refused with an explanatory note; other Quirewise packages own
-those routes.
+size) or `QW_RASTER_PAGE_MODE_A4` for image input. Unknown ZIP packages and TTML are refused with an explanatory note; SVG, audio and
+page-container routes are owned by other Quirewise packages.
 
 ## 9. Reports and error handling
 
@@ -328,20 +334,18 @@ buffers.
   `STSong-Light` CID font by name. The rasteriser uses a built-in 3x5 ASCII
   approximation font and does not load embedded programs, so CJK glyph shapes
   are not reproduced. Extraction consumes an existing `/ToUnicode` CMap.
-- **No HTML or Markdown layout output target.** PDF is still the only layout
-  output for non-PDF inputs. Structured data, subtitles and worksheets are the
-  exception: `qw_convert_file_to_format` / `qw_convert_to_format_memory` route
-  JSON/JSONL/YAML/TOML/vCard/XML, SRT/WebVTT/LRC/MicroDVD/ASS/SSA/SAMI/SCC and
-  CSV/TSV targets to the owning package's writer. For PDF inputs only PDF, TXT
-  and PNG are available.
-- **XPS is reader-only.** `qw_xps_document_open` and
-  `qw_xps_document_read_page` work, but the conversion dispatch and the
-  application CLI do not route `.xps`, so `qw_convert_file("a.xps", ...)`
-  returns `QW_STATUS_ERR_UNSUPPORTED`.
+- **PDF→DOCX/EPUB is image-based.** Those targets embed 120 dpi page JPEGs, not
+  editable paragraphs, tables or fields. PDF→HTML/Markdown is text-layer-only.
+  Structured data, subtitles and worksheets are routed to the owning package's
+  writer; XLSX/ODS keep all sheets and merged ranges, CSV/TSV the selected sheet.
+- **XPS is available through the dispatch.** `qw_xps_document_open` /
+  `qw_xps_document_read_page` remain the reader API, and the conversion dispatch
+  also routes `.xps` to PDF/HTML/Markdown.
 - **No external PDF engine.** Rendering covers the implemented subset;
   unsupported operators are noted and may leave a page partially drawn.
-- **Encryption requires the empty user password.** RC4, AES-128 and AES-256
-  are supported only in that mode; merging encrypted PDFs is refused.
+- **Encryption accepts a user password.** RC4, AES-128 and AES-256 are
+  supported when the caller supplies the user password; merging encrypted PDFs
+  is still refused.
 
 ## 13. Related packages
 
