@@ -1106,6 +1106,18 @@ target_link_libraries(quirewise_document_pptx_notes_test PRIVATE
 add_test(NAME quirewise_document_pptx_notes
     COMMAND quirewise_document_pptx_notes_test)
 
+add_executable(quirewise_document_docx_header_style_test
+    tests/docx_header_style_test.c)
+target_compile_features(quirewise_document_docx_header_style_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_docx_header_style_test PRIVATE
+    QUIREWISE_DOCX_STYLED_HEADER="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/styled-header.docx")
+target_include_directories(quirewise_document_docx_header_style_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_docx_header_style_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_docx_header_style
+    COMMAND quirewise_document_docx_header_style_test)
+
 add_executable(quirewise_document_odt_indent_test
     tests/odt_indent_test.c)
 target_compile_features(quirewise_document_odt_indent_test PRIVATE c_std_11)

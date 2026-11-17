@@ -568,6 +568,7 @@ static int docx_append_part_text(QwDocxHtml *buffer, const uint8_t *xml,
                                  size_t size)
 {
     size_t i = 0;
+    int bold = 0, italic = 0, underline = 0, strike = 0;
 
     while (i < size) {
         size_t name_start;
@@ -607,6 +608,27 @@ static int docx_append_part_text(QwDocxHtml *buffer, const uint8_t *xml,
                 if (xml[k] == ':') local = k + 1u;
             }
         }
+        if (name_end - local == 1u && xml[local] == 'r' && !closing) {
+            bold = italic = underline = strike = 0;
+            continue;
+        }
+        if (name_end - local == 1u && xml[local] == 'b' && !closing) {
+            bold = !xml_tag_has_false_value(xml, name_end, tag_end);
+            continue;
+        }
+        if (name_end - local == 1u && xml[local] == 'i' && !closing) {
+            italic = !xml_tag_has_false_value(xml, name_end, tag_end);
+            continue;
+        }
+        if (name_end - local == 1u && xml[local] == 'u' && !closing) {
+            underline = !xml_tag_has_false_value(xml, name_end, tag_end);
+            continue;
+        }
+        if (name_end - local == 5u &&
+            memcmp(xml + local, "strike", 5u) == 0 && !closing) {
+            strike = !xml_tag_has_false_value(xml, name_end, tag_end);
+            continue;
+        }
         if (name_end - local != 1u || xml[local] != 't') continue;
         if (tag_end > name_end && xml[tag_end - 1u] == '/') continue;
         {
@@ -615,9 +637,17 @@ static int docx_append_part_text(QwDocxHtml *buffer, const uint8_t *xml,
             while (text_end + 1u < size &&
                    !(xml[text_end] == '<' && xml[text_end + 1u] == '/'))
                 ++text_end;
+            if (bold && !html_literal(buffer, "<strong>")) return 0;
+            if (italic && !html_literal(buffer, "<em>")) return 0;
+            if (underline && !html_literal(buffer, "<u>")) return 0;
+            if (strike && !html_literal(buffer, "<s>")) return 0;
             if (!append_word_text(buffer, xml + text_start,
                                   text_end - text_start))
                 return 0;
+            if (strike && !html_literal(buffer, "</s>")) return 0;
+            if (underline && !html_literal(buffer, "</u>")) return 0;
+            if (italic && !html_literal(buffer, "</em>")) return 0;
+            if (bold && !html_literal(buffer, "</strong>")) return 0;
             while (text_end < size && xml[text_end] != '>') ++text_end;
             i = text_end < size ? text_end + 1u : size;
         }
