@@ -1202,9 +1202,11 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
     size_t cmap_capacity;
     size_t cmap_size = 0u;
     size_t index;
+    int cff;
     int ok = 1;
 
     if (!font || !subset || !subset->data || !subset->size) return 0;
+    cff = qw_pdf_font_is_cff(font);
     qw_pdf_font_metrics(font, &ascent, &descent, &cap_height);
     qw_pdf_font_bbox(font, &x_min, &y_min, &x_max, &y_max);
     font_data = subset->data;
@@ -1296,28 +1298,32 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
                  type0, cid, tounicode);
     }
     if (ok) {
+        const char *subtype = cff ? "CIDFontType0" : "CIDFontType2";
         ok = pdf_out_track(out, out->bytes.size) &&
              pdf_out_printf(out,
-                 "%zu 0 obj\n<< /Type /Font /Subtype /CIDFontType2 "
+                 "%zu 0 obj\n<< /Type /Font /Subtype /%s "
                  "/BaseFont /QWEmbeddedFont /CIDSystemInfo << /Registry (Adobe) "
                  "/Ordering (Identity) /Supplement 0 >> /FontDescriptor %zu 0 R "
                  "/CIDToGIDMap /Identity /DW 1000 /W [%s] >>\nendobj\n",
-                 cid, descriptor, widths ? widths : "");
+                 cid, subtype, descriptor, widths ? widths : "");
     }
     if (ok) {
         ok = pdf_out_track(out, out->bytes.size) &&
              pdf_out_printf(out,
                  "%zu 0 obj\n<< /Type /FontDescriptor /FontName /QWEmbeddedFont "
                  "/Flags 4 /FontBBox [%d %d %d %d] /ItalicAngle 0 /Ascent %d "
-                 "/Descent %d /CapHeight %d /StemV 80 /FontFile2 %zu 0 R >>\nendobj\n",
+                 "/Descent %d /CapHeight %d /StemV 80 /%s %zu 0 R >>\nendobj\n",
                  descriptor, x_min, y_min, x_max, y_max, ascent, descent,
-                 cap_height, fontfile);
+                 cap_height, cff ? "FontFile3" : "FontFile2", fontfile);
     }
     if (ok) {
         const uint8_t *payload = compressed ? compressed : font_data;
         size_t payload_size = compressed ? compressed_size : font_size;
         ok = pdf_out_track(out, out->bytes.size) &&
-             pdf_out_printf(out, "%zu 0 obj\n<< /Length %zu /Length1 %zu%s >>\nstream\n",
+             pdf_out_printf(out,
+                            cff
+                                ? "%zu 0 obj\n<< /Length %zu /Length1 %zu /Subtype /OpenType%s >>\nstream\n"
+                                : "%zu 0 obj\n<< /Length %zu /Length1 %zu%s >>\nstream\n",
                             fontfile, payload_size, font_size,
                             compressed ? " /Filter /FlateDecode" : "") &&
              !(payload_size && !pdf_out_append(out, payload, payload_size)) &&

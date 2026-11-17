@@ -20,6 +20,10 @@
 #error "QUIREWISE_FONT_TEST_PATH must name the test TrueType font"
 #endif
 
+#ifndef QUIREWISE_OTF_TEST_PATH
+#error "QUIREWISE_OTF_TEST_PATH must name the test OpenType font"
+#endif
+
 static int contains(const uint8_t *data, size_t size, const char *needle)
 {
     size_t needle_size = strlen(needle);
@@ -139,6 +143,38 @@ int main(void)
         free(rtf_pdf);
     }
 
-    puts("PASS: PDF font embedding (CIDFontType2 + Identity-H + ToUnicode)");
+    /* OpenType/CFF embeds as CIDFontType0 with FontFile3/OpenType. */
+    {
+        static const char *otf_html =
+            "<html><body><h1>Filee 123</h1></body></html>";
+        uint8_t *otf_pdf = NULL;
+        size_t otf_size = 0u;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_doc_convert_html_with_font(
+                  otf_html, strlen(otf_html), 595.0f, 842.0f,
+                  QUIREWISE_OTF_TEST_PATH, &otf_pdf, &otf_size,
+                  &report) == QW_STATUS_OK);
+        CHECK(otf_pdf != NULL && otf_size > 500u);
+        CHECK(contains(otf_pdf, otf_size, "/CIDFontType0"));
+        CHECK(contains(otf_pdf, otf_size, "/FontFile3"));
+        CHECK(contains(otf_pdf, otf_size, "/Subtype /OpenType"));
+        CHECK(!contains(otf_pdf, otf_size, "/FontFile2"));
+        {
+            QwPdfDocument *document = NULL;
+            size_t pages = 0u;
+            uint8_t *text = NULL;
+            size_t text_size = 0u;
+            CHECK(qw_pdf_open(otf_pdf, otf_size, &document, &pages, NULL) ==
+                  QW_STATUS_OK);
+            CHECK(qw_pdf_extract_text(document, &text, &text_size, NULL) ==
+                  QW_STATUS_OK);
+            CHECK(contains(text, text_size, "Filee 123"));
+            qw_pdf_free(text);
+            qw_pdf_close(document);
+        }
+        free(otf_pdf);
+    }
+
+    puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
     return 0;
 }

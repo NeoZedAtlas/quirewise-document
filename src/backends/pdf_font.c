@@ -27,6 +27,7 @@ struct QwPdfFont {
     unsigned num_glyphs;
     unsigned num_hmetrics;
     int index_to_loc;
+    int cff;
     int ascent;
     int descent;
     int cap_height;
@@ -206,8 +207,9 @@ QwPdfFont *qw_pdf_font_load(const char *path)
     font->size = (size_t)length;
 
     version = read_u32(font->data, font->size, 0u);
-    if (version != 0x00010000u && version != 0x74727565u) {
-        /* CFF/OTTO and unknown sfnt flavours are not embeddable here. */
+    if (version == 0x4F54544Fu) {
+        font->cff = 1; /* OpenType/CFF: no loca/glyf tables */
+    } else if (version != 0x00010000u && version != 0x74727565u) {
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -223,11 +225,15 @@ QwPdfFont *qw_pdf_font_load(const char *path)
         !find_table(font->data, font->size, "hmtx", &font->hmtx,
                     &font->hmtx_size) ||
         !find_table(font->data, font->size, "cmap", &font->cmap,
-                    &font->cmap_size) ||
-        !find_table(font->data, font->size, "loca", &font->loca,
-                    &font->loca_size) ||
-        !find_table(font->data, font->size, "glyf", &font->glyf,
-                    &font->glyf_size)) {
+                    &font->cmap_size)) {
+        qw_pdf_font_free(font);
+        return NULL;
+    }
+    if (!font->cff &&
+        (!find_table(font->data, font->size, "loca", &font->loca,
+                     &font->loca_size) ||
+         !find_table(font->data, font->size, "glyf", &font->glyf,
+                     &font->glyf_size))) {
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -240,7 +246,7 @@ QwPdfFont *qw_pdf_font_load(const char *path)
     font->num_glyphs = read_u16(font->data, font->size, font->maxp + 4u);
     font->num_hmetrics = read_u16(font->data, font->size, font->hhea + 34u);
     if (!font->units_per_em || !font->num_glyphs || !font->num_hmetrics ||
-        font->index_to_loc < 0 || font->index_to_loc > 1) {
+        (!font->cff && (font->index_to_loc < 0 || font->index_to_loc > 1))) {
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -713,6 +719,26 @@ int qw_pdf_font_subset(const QwPdfFont *font, const uint16_t *gids,
     size_t index;
     if (!font || !out || (count && (!gids || !codepoints))) return 0;
     memset(out, 0, sizeof(*out));
+    if (font->cff) {
+        uint16_t *map;
+        uint8_t *copy;
+        unsigned index;
+        map = (uint16_t *)malloc((size_t)font->num_glyphs * sizeof(uint16_t));
+        copy = (uint8_t *)malloc(font->size);
+        if (!map || !copy) {
+            free(map);
+            free(copy);
+            return 0;
+        }
+        memcpy(copy, font->data, font->size);
+        for (index = 0u; index < font->num_glyphs; ++index)
+            map[index] = (uint16_t)index;
+        out->data = copy;
+        out->size = font->size;
+        out->map = map;
+        out->num_glyphs = font->num_glyphs;
+        return 1;
+    }
     memset(&build, 0, sizeof(build));
     build.font = font;
     build.map = (uint16_t *)malloc((size_t)font->num_glyphs * sizeof(uint16_t));
@@ -770,4 +796,9 @@ void qw_pdf_font_subset_free(QwPdfFontSubset *subset)
     free(subset->data);
     free(subset->map);
     memset(subset, 0, sizeof(*subset));
+}
+
+int qw_pdf_font_is_cff(const QwPdfFont *font)
+{
+    return font ? font->cff : 0;
 }

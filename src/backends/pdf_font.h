@@ -29,6 +29,9 @@ uint16_t qw_pdf_font_advance(const QwPdfFont *font, uint16_t gid);
 /* Raw font program bytes, embedded as the FontFile2 stream. */
 const uint8_t *qw_pdf_font_data(const QwPdfFont *font, size_t *size);
 
+/* Return 1 when the font program is CFF/OpenType (OTTO). */
+int qw_pdf_font_is_cff(const QwPdfFont *font);
+
 /* Font metrics in 1000/em units. Returns 0 for a NULL font. */
 int qw_pdf_font_metrics(const QwPdfFont *font, int *ascent, int *descent,
                         int *cap_height);
