@@ -1,6 +1,7 @@
 /* Embedding a caller-supplied TrueType font as the PDF text font. */
 #include "document_backend.h"
 
+#include <quirewise/convert.h>
 #include <quirewise/pdf.h>
 
 #include <stdio.h>
@@ -89,6 +90,23 @@ int main(void)
     CHECK(contains(pdf, pdf_size, "/STSong-Light"));
     CHECK(!contains(pdf, pdf_size, "/FontFile2"));
     free(pdf);
+
+    /* A dedicated route (RTF) must embed the font as well. */
+    {
+        static const char *rtf = "{\\rtf1\\ansi Filee test 123\\par}";
+        QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *rtf_pdf = NULL;
+        size_t rtf_size = 0u;
+        options.pdf_font_path = QUIREWISE_FONT_TEST_PATH;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_doc_convert_memory_with_options(
+                  (const uint8_t *)rtf, strlen(rtf), "rtf", 0, &options,
+                  &rtf_pdf, &rtf_size, &report) == QW_STATUS_OK);
+        CHECK(rtf_pdf != NULL && rtf_size > 500u);
+        CHECK(contains(rtf_pdf, rtf_size, "/FontFile2"));
+        CHECK(contains(rtf_pdf, rtf_size, "/Identity-H"));
+        free(rtf_pdf);
+    }
 
     puts("PASS: PDF font embedding (CIDFontType2 + Identity-H + ToUnicode)");
     return 0;
