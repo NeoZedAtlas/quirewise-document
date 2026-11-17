@@ -94,6 +94,8 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
 typedef struct QwPdfLine {
     double x;
     double y;
+    double size;
+    char font[32];
     char *text;
 } QwPdfLine;
 

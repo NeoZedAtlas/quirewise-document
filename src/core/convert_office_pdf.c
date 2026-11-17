@@ -593,6 +593,28 @@ out_of_memory:
  * line and the package has no media parts. Layout is not reconstructed; the
  * text layer is what survives. */
 
+static int office_pdf_is_bold(const char *font)
+{
+    return font && (strstr(font, "Bold") || strstr(font, "bold"));
+}
+
+static int office_pdf_is_italic(const char *font)
+{
+    return font && (strstr(font, "Italic") || strstr(font, "italic") ||
+                    strstr(font, "Oblique") || strstr(font, "oblique"));
+}
+
+/* WordprocessingML run size is half-points; return "" when the size is unknown. */
+static const char *office_pdf_size_tag(double size)
+{
+    static char tag[48];
+    int half_points;
+    if (size < 1.0 || size > 200.0) return "";
+    half_points = (int)(size * 2.0 + 0.5);
+    snprintf(tag, sizeof(tag), "<w:sz w:val=\"%d\"/>", half_points);
+    return tag;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -665,8 +687,14 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             if (!pdf_buffer_printf(
                     &body,
                     "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>"
-                    "<w:r><w:t xml:space=\"preserve\">",
-                    indent) ||
+                    "<w:r><w:rPr>%s%s%s</w:rPr>"
+                    "<w:t xml:space=\"preserve\">",
+                    indent,
+                    office_pdf_is_bold(page_lines[line_index].font)
+                        ? "<w:b/>" : "",
+                    office_pdf_is_italic(page_lines[line_index].font)
+                        ? "<w:i/>" : "",
+                    office_pdf_size_tag(page_lines[line_index].size)) ||
                 !pdf_buffer_text(&body, page_lines[line_index].text) ||
                 !pdf_buffer_text(&body, "</w:t></w:r></w:p>")) {
                 qw_doc_pdf_lines_free(page_lines, line_count);
@@ -783,7 +811,12 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             double indent = (page_lines[line_index].x - base_x);
             if (indent < 0.0) indent = 0.0;
             if (!pdf_buffer_printf(&chapter,
-                                   "<p style=\"margin-left:%.1fpt\">", indent) ||
+                                   "<p style=\"margin-left:%.1fpt;%s%s\">",
+                                   indent,
+                                   office_pdf_is_bold(page_lines[line_index].font)
+                                       ? "font-weight:bold;" : "",
+                                   office_pdf_is_italic(page_lines[line_index].font)
+                                       ? "font-style:italic;" : "") ||
                 !pdf_buffer_text(&chapter, page_lines[line_index].text) ||
                 !pdf_buffer_text(&chapter, "</p>")) {
                 qw_doc_pdf_lines_free(page_lines, line_count);

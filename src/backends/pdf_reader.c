@@ -1999,6 +1999,7 @@ typedef struct QwPdfToUnicodeEntry {
 
 typedef struct QwPdfFontMap {
     char names[32][24];
+    char base_fonts[32][48];
     int type0[32];
     QwPdfToUnicodeEntry *entries[32];
     size_t entry_count[32];
@@ -2348,6 +2349,37 @@ static void pdf_collect_fonts(const QwPdfReader *reader, const char *dict,
             }
             memcpy(fonts->names[fonts->count], slash, name_length + 1u);
             fonts->names[fonts->count][name_length + 1u] = '\0';
+            fonts->base_fonts[fonts->count][0] = '\0';
+            {
+                const char *font_body = NULL;
+                size_t font_size = 0u;
+                if (pdf_object_body(reader, object, &font_body, &font_size)) {
+                    const char *base = pdf_memmem(font_body, font_size,
+                                                  "/BaseFont", 9u);
+                    if (base) {
+                        const char *scan_base = base + 9u;
+                        const char *limit = font_body + font_size;
+                        while (scan_base < limit &&
+                               isspace((unsigned char)*scan_base))
+                            ++scan_base;
+                        if (scan_base < limit && *scan_base == '/') {
+                            size_t length = 0u;
+                            ++scan_base;
+                            while (scan_base + length < limit &&
+                                   length + 1u < sizeof(fonts->base_fonts[0]) &&
+                                   (isalnum((unsigned char)scan_base[length]) ||
+                                    scan_base[length] == '-' ||
+                                    scan_base[length] == '_' ||
+                                    scan_base[length] == '+')) {
+                                ++length;
+                            }
+                            memcpy(fonts->base_fonts[fonts->count], scan_base,
+                                   length);
+                            fonts->base_fonts[fonts->count][length] = '\0';
+                        }
+                    }
+                }
+            }
             fonts->type0[fonts->count] = pdf_object_is_type0(reader, object);
             fonts->entries[fonts->count] = NULL;
             fonts->entry_count[fonts->count] = 0u;
@@ -2509,6 +2541,8 @@ static int pdf_emit_string(QwPdfBuffer *text, const QwPdfBuffer *raw, int type0,
 typedef struct QwPdfTextLine {
     double x;
     double y;
+    double size;
+    char font[32];
     QwPdfBuffer text;
 } QwPdfTextLine;
 
@@ -2519,7 +2553,8 @@ typedef struct QwPdfTextLines {
 } QwPdfTextLines;
 
 static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
-                            const QwPdfBuffer *chunk)
+                            const QwPdfBuffer *chunk, const char *font,
+                            double size)
 {
     QwPdfTextLine *line;
     if (!chunk->size) return 1;
@@ -2541,6 +2576,15 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
     line = &lines->items[lines->count];
     line->x = x;
     line->y = y;
+    line->size = size;
+    line->font[0] = '\0';
+    if (font) {
+        size_t length = strlen(font);
+        if (length && font[0] == '/') { ++font; --length; }
+        if (length >= sizeof(line->font)) length = sizeof(line->font) - 1u;
+        memcpy(line->font, font, length);
+        line->font[length] = '\0';
+    }
     memset(&line->text, 0, sizeof(line->text));
     lines->count += 1u;
     return pdf_buffer_append(&line->text, chunk->data, chunk->size);
@@ -2572,6 +2616,8 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
     double tlm[6] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
     double operands[8];
     int operand_count = 0;
+    double current_size = 0.0;
+    char current_font[48] = "F1";
     while (cursor < end) {
         const char *token;
         size_t token_length;
@@ -2587,7 +2633,8 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
             if (!pdf_emit_string(&chunk, &raw, type0, unicode_entries,
                                  unicode_count, code_bytes) ||
                 !pdf_buffer_append(text, chunk.data, chunk.size) ||
-                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk))) {
+                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk,
+                                            current_font, current_size))) {
                 free(raw.data);
                 free(chunk.data);
                 return 0;
@@ -2603,7 +2650,8 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
             if (!pdf_emit_string(&chunk, &raw, type0, unicode_entries,
                                  unicode_count, code_bytes) ||
                 !pdf_buffer_append(text, chunk.data, chunk.size) ||
-                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk))) {
+                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk,
+                                            current_font, current_size))) {
                 free(raw.data);
                 free(chunk.data);
                 return 0;
@@ -2654,7 +2702,22 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
             continue;
         }
         if ((token_length == 2u && memcmp(token, "Tf", 2u) == 0)) {
+            if (operand_count >= 1) current_size = operands[operand_count - 1];
             font_index = pdf_font_index(fonts, font_name);
+            if (font_index != SIZE_MAX && fonts->base_fonts[font_index][0]) {
+                size_t length = strlen(fonts->base_fonts[font_index]);
+                if (length >= sizeof(current_font))
+                    length = sizeof(current_font) - 1u;
+                memcpy(current_font, fonts->base_fonts[font_index], length);
+                current_font[length] = '\0';
+            } else {
+                size_t length = strlen(font_name);
+                if (length >= sizeof(current_font))
+                    length = sizeof(current_font) - 1u;
+                memcpy(current_font, font_name + (length ? 1u : 0u),
+                       length - (length ? 1u : 0u));
+                current_font[length - (length ? 1u : 0u)] = '\0';
+            }
             if (font_index != SIZE_MAX) {
                 type0 = fonts->type0[font_index];
                 unicode_entries = fonts->entries[font_index];
@@ -3209,6 +3272,9 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
         size_t size = lines.items[index].text.size;
         (*out_lines)[index].x = lines.items[index].x;
         (*out_lines)[index].y = lines.items[index].y;
+        (*out_lines)[index].size = lines.items[index].size;
+        memcpy((*out_lines)[index].font, lines.items[index].font,
+               sizeof((*out_lines)[index].font));
         (*out_lines)[index].text = (char *)malloc(size + 1u);
         if (!(*out_lines)[index].text) {
             qw_doc_pdf_lines_free(*out_lines, index);

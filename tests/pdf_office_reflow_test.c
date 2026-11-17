@@ -146,6 +146,51 @@ int main(void)
         free(indented_epub);
     }
 
+    /* Font name and size become DOCX run properties. */
+    {
+        FILE *file = fopen(QUIREWISE_STYLES_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *styled_docx = NULL;
+        size_t styled_docx_size = 0u;
+        uint8_t *styled_epub = NULL;
+        size_t styled_epub_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &styled_docx,
+                                          &styled_docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(styled_docx, styled_docx_size, "Plain"));
+        CHECK(contains(styled_docx, styled_docx_size, "Bold"));
+        CHECK(contains(styled_docx, styled_docx_size, "Italic"));
+        CHECK(contains(styled_docx, styled_docx_size, "<w:b/>"));
+        CHECK(contains(styled_docx, styled_docx_size, "<w:i/>"));
+        CHECK(contains(styled_docx, styled_docx_size, "w:sz w:val=\"36\""));
+        CHECK(contains(styled_docx, styled_docx_size, "w:sz w:val=\"24\""));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                          &opts, &styled_epub,
+                                          &styled_epub_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(styled_epub, styled_epub_size, "font-weight:bold"));
+        CHECK(contains(styled_epub, styled_epub_size, "font-style:italic"));
+        free(bytes);
+        free(styled_docx);
+        free(styled_epub);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }
