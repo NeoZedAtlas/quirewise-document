@@ -797,6 +797,40 @@ static void hwpx_load_border_fills(HwpxRenderContext *context)
     qw_xml_drop(root);
 }
 
+static int hwpx_safe_link(const char *value)
+{
+    size_t i;
+    if (!value) return 0;
+    if (strncmp(value, "http://", 7u) != 0 &&
+        strncmp(value, "https://", 8u) != 0 &&
+        strncmp(value, "mailto:", 7u) != 0)
+        return 0;
+    for (i = 0u; value[i]; ++i) {
+        if (value[i] == '"' || value[i] == '<' || value[i] == '>' ||
+            value[i] == ' ' || value[i] == '\n' || value[i] == '\r' ||
+            value[i] == '\t')
+            return 0;
+    }
+    return 1;
+}
+
+static const char *hwpx_field_url(QwXmlNode *node)
+{
+    size_t count = 0u;
+    QwXmlNode *param = hwpx_find_descendant(qw_xml_down(node), "stringParam",
+                                            0u, &count);
+    const char *name;
+    const char *value;
+    if (!param) return NULL;
+    name = qw_xml_att(param, "name");
+    value = qw_xml_att(param, "value");
+    if (!name || !value || !hwpx_safe_link(value)) return NULL;
+    if (strcmp(name, "Path") != 0 && strcmp(name, "URL") != 0 &&
+        strcmp(name, "Command") != 0 && strcmp(name, "Target") != 0)
+        return NULL;
+    return value;
+}
+
 static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
                              size_t *visited, size_t *omitted_objects,
                              HwpxRenderContext *context)
@@ -807,6 +841,7 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
     char cell_open[64];
     char run_open[192];
     char run_close[192];
+    char link_open[512];
     if (depth > HWPX_MAX_XML_DEPTH || !visited || !omitted_objects) return 0;
     for (; node; node = qw_xml_next(node)) {
         const char *text;
@@ -1067,6 +1102,13 @@ static int hwpx_render_nodes(HwpxHtml *html, QwXmlNode *node, size_t depth,
         } else if (strcmp(tag, "footer") == 0) {
             open = "<footer>";
             close = "</footer>\n";
+        } else if (strcmp(tag, "field") == 0) {
+            const char *url = hwpx_field_url(node);
+            if (url) {
+                snprintf(link_open, sizeof(link_open), "<a href=\"%s\">", url);
+                open = link_open;
+                close = "</a>";
+            }
         } else if (strcmp(tag, "tbl") == 0) {
             open = "<table>";
             close = "</table>\n";
