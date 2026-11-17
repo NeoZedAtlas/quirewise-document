@@ -1643,11 +1643,35 @@ static QwHwpxStatus hwpx_parse_archive(
                 goto cleanup;
             }
             section_root = qw_xml_root(section_xml);
-            if (!section_root || !hwpx_html_literal(&owner->html, "<section>") ||
-                !hwpx_render_nodes(&owner->html, qw_xml_down(section_root),
+            if (!section_root) {
+                rc = QW_HWPX_ERR_RESOURCE_LIMIT;
+                hwpx_set_error(error, error_capacity,
+                               "HWPX section has no root element");
+                goto cleanup;
+            }
+            {
+                size_t column_nodes = 0u;
+                QwXmlNode *column_node = hwpx_find_descendant(
+                    qw_xml_down(section_root), "colPr", 0u, &column_nodes);
+                const char *column_count =
+                    column_node ? qw_xml_att(column_node, "colCount") : NULL;
+                unsigned columns = column_count
+                    ? (unsigned)strtoul(column_count, NULL, 10) : 0u;
+                char section_open[64];
+                if (columns >= 2u && columns <= 4u)
+                    snprintf(section_open, sizeof(section_open),
+                             "<section style=\"column-count:%u\">", columns);
+                else
+                    snprintf(section_open, sizeof(section_open), "%s",
+                             "<section>");
+                if (!hwpx_html_literal(&owner->html, section_open))
+                    goto section_failed;
+            }
+            if (!hwpx_render_nodes(&owner->html, qw_xml_down(section_root),
                                    0u, &visited, &omitted_objects,
                                    &image_context) ||
                 !hwpx_html_literal(&owner->html, "</section>")) {
+section_failed:
                 rc = QW_HWPX_ERR_RESOURCE_LIMIT;
                 hwpx_set_error(error, error_capacity,
                                "HWPX section contains unsupported or excessive XML content");
