@@ -649,9 +649,21 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
                     odp_length_points(qw_xml_att(node, "svg:height"));
                 if (!odp_emit_picture(reader, image, node, width, height_points))
                     return 0;
-            } else if (!odp_render_blocks(reader, qw_xml_down(node),
-                                          depth + 1u)) {
-                return 0;
+            } else {
+                int rotation = odp_rotation_degrees(node, NULL);
+                if (rotation) {
+                    if (!odp_html_literal(reader,
+                                          "<div class=\"textbox\" style=\"transform:rotate(") ||
+                        !odp_html_number_literal(reader, rotation) ||
+                        !odp_html_literal(reader, "deg)\">") ||
+                        !odp_render_blocks(reader, qw_xml_down(node),
+                                           depth + 1u) ||
+                        !odp_html_literal(reader, "</div>"))
+                        return 0;
+                } else if (!odp_render_blocks(reader, qw_xml_down(node),
+                                               depth + 1u)) {
+                    return 0;
+                }
             }
         } else if (odp_is_tag(node, "image")) {
             if (!odp_emit_picture(reader, node, NULL, 0.0, 0.0)) return 0;
