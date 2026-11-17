@@ -652,6 +652,8 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     int zip_open = 0;
     size_t index;
     double previous_size = 0.0;
+    int page_w = 11900;
+    int page_h = 16840;
 
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
@@ -661,6 +663,18 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                              &page_count, report)
                  : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
+    {
+        double media[4];
+        double crop[4];
+        int rotation = 0;
+        if (page_count &&
+            qw_pdf_page_geometry(document, 0u, media, crop, &rotation) ==
+                QW_STATUS_OK &&
+            media[2] > media[0] && media[3] > media[1]) {
+            page_w = (int)((media[2] - media[0]) * 20.0 + 0.5);
+            page_h = (int)((media[3] - media[1]) * 20.0 + 0.5);
+        }
+    }
     memset(&body, 0, sizeof(body));
     if (!pdf_buffer_text(&body, document_prefix)) goto out_of_memory;
     for (index = 0u; index < page_count; ++index) {
@@ -740,7 +754,14 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     }
     qw_pdf_close(document);
     document = NULL;
-    if (!pdf_buffer_text(&body, "</w:body></w:document>"))
+    if (!pdf_buffer_printf(
+            &body,
+            "<w:sectPr><w:pgSz w:w=\"%d\" w:h=\"%d\"/>"
+            "<w:pgMar w:top=\"1134\" w:right=\"1134\" w:bottom=\"1134\" "
+            "w:left=\"1134\" w:header=\"0\" w:footer=\"0\" "
+            "w:gutter=\"0\"/></w:sectPr>",
+            page_w, page_h) ||
+        !pdf_buffer_text(&body, "</w:body></w:document>"))
         goto out_of_memory;
     if (!qw_zip_writer_init_heap(&writer, 0u, 0u)) goto out_of_memory;
     zip_open = 1;

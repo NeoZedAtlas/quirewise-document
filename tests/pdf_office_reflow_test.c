@@ -135,6 +135,8 @@ int main(void)
         CHECK(contains(indented_docx, indented_docx_size, "World"));
         CHECK(contains(indented_docx, indented_docx_size,
                        "w:left=\"960\""));
+        CHECK(contains(indented_docx, indented_docx_size,
+                       "w:pgSz w:w=\"11900\" w:h=\"16840\""));
         CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
                                           &opts, &indented_epub,
                                           &indented_epub_size, NULL) ==
