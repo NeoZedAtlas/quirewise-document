@@ -297,6 +297,11 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                                               : "</ul>"));
                     list_open = 0;
                 }
+                if (paragraph.horizontal_rule) {
+                    ok = epub_html_append(&html, &length, &capacity,
+                                          "<hr/>\n", strlen("<hr/>\n"));
+                    continue;
+                }
                 if (first_flags & QW_EPUB_STYLE_FIGURE) {
                     int caption_open = 0;
                     ok = epub_html_append(&html, &length, &capacity,

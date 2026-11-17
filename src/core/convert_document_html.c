@@ -884,6 +884,11 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                         goto out_of_memory;
                     list_open = 0;
                 }
+                if (paragraph.horizontal_rule) {
+                    if (!html_append_text(&buffer, "<hr/>\n"))
+                        goto out_of_memory;
+                    continue;
+                }
                 if (first_flags & QW_EPUB_STYLE_FIGURE) {
                     int caption_open = 0;
                     if (!html_append_text(&buffer, "<figure>"))
