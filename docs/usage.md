@@ -329,11 +329,13 @@ buffers.
   is no PDF/A writer or verifier. PDF/A files can still be read as PDFs.
 - **No OCR.** PDF-to-TXT extracts text operators already present; image inputs
   become image-only PDFs.
-- **No CJK ToUnicode synthesis or embedded-font rendering.** The PDF writer
-  embeds no font file and emits no `/ToUnicode`; non-ASCII uses the predefined
-  `STSong-Light` CID font by name. The rasteriser uses a built-in 3x5 ASCII
-  approximation font and does not load embedded programs, so CJK glyph shapes
-  are not reproduced. Extraction consumes an existing `/ToUnicode` CMap.
+- **Optional embedded font; the default pair is not embedded.** Setting
+  `QwConvertOptions.pdf_font_path` (CLI `--font-file`) embeds that TrueType font
+  as a CIDFontType2 with Identity-H encoding, a `/W` width array and a
+  `/ToUnicode` map, and uses its advances for line wrapping. Without the option
+  the writer keeps the predefined Helvetica (WinAnsi) and `STSong-Light`
+  (UniGB-UCS2-H) pair, which is not embedded and carries no `/ToUnicode`. The
+  rasteriser still uses a built-in 3x5 ASCII approximation font.
 - **PDF→DOCX/EPUB is image-based.** Those targets embed 120 dpi page JPEGs, not
   editable paragraphs, tables or fields. PDF→HTML/Markdown is text-layer-only.
   Structured data, subtitles and worksheets are routed to the owning package's
