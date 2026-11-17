@@ -36,6 +36,16 @@ static uint8_t *read_file(const char *path, size_t *out_size)
     return data;
 }
 
+static int contains_bytes(const uint8_t *data, size_t size, const char *needle)
+{
+    size_t needle_size = strlen(needle);
+    size_t index;
+    if (!needle_size || needle_size > size) return 0;
+    for (index = 0u; index + needle_size <= size; ++index) {
+        if (memcmp(data + index, needle, needle_size) == 0) return 1;
+    }
+    return 0;
+}
 int main(void)
 {
     uint8_t *hwpx;
@@ -63,7 +73,7 @@ int main(void)
         return 1;
     }
     free(hwpx);
-    if (!strstr((const char *)pdf, "/Title <FEFF7B2C4E007AE000205F158A00>")) {
+    if (!contains_bytes(pdf, pdf_size, "/Title <FEFF7B2C4E007AE000205F158A00>")) {
         free(pdf);
         fputs("FAIL: UTF-16BE bookmark title is missing\n", stderr);
         return 1;

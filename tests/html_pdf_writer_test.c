@@ -70,10 +70,22 @@ int main(void)
     CHECK(count_occurrences(pdf, size, "/Type /Font ") == 3u);
     CHECK(count_occurrences(pdf, size, "/Type /FontDescriptor") == 1u);
     CHECK(count_occurrences(pdf, size, "/BaseFont /STSong-Light") == 2u);
-    /* ASCII text is emitted as a hex string: "Quirewise" = 5175697265776973652E */
-    CHECK(contains_ascii(pdf, size, "517569726577697365"));
-    /* Chinese text is UTF-16BE: 4E2D 6587 6D4B 8BD5 = 中文测试 */
-    CHECK(contains_ascii(pdf, size, "4E2D65876D4B8BD5"));
+    /* Text lives in a Flate-compressed content stream: read it back through
+     * the PDF reader instead of searching the raw bytes. */
+    {
+        QwPdfDocument *document = NULL;
+        size_t pages = 0u;
+        uint8_t *text = NULL;
+        size_t text_size = 0u;
+        CHECK(qw_pdf_open(pdf, size, &document, &pages, NULL) == QW_STATUS_OK);
+        CHECK(pages == 1u);
+        CHECK(qw_pdf_extract_text(document, &text, &text_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains_ascii(text, text_size, "Quirewise"));
+        CHECK(contains_ascii(text, text_size, "\xe4\xb8\xad\xe6\x96\x87"));
+        qw_pdf_free(text);
+        qw_pdf_close(document);
+    }
     /* The style block must not leak into the output. */
     CHECK(!contains_ascii(pdf, size, "6D6F76696E672078")); /* "m" "x" guard */
     CHECK(!contains_ascii(pdf, size, "636F6C6F723A726564"));

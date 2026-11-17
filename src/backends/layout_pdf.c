@@ -7,13 +7,15 @@
  * - inline markup is flattened to text;
  * - UTF-8 text is emitted with Helvetica for ASCII and a predefined Adobe-GB1
  *   CID font (STSong-Light) for non-ASCII runs, so no font file is embedded;
- * - deterministic output: no timestamps, no object stream compression.
+ * - content streams and raw image streams are Flate-compressed when that is
+ *   smaller than the raw bytes; deterministic output: no timestamps.
  *
  * The boundary is declared in the private `document_backend.h`; no MuPDF code,
  * header or library is involved. */
 
 #include "document_backend.h"
 
+#include <quirewise/compression.h>
 #include <quirewise/image.h>
 
 #include <stdarg.h>
@@ -1408,6 +1410,22 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             {
                 size_t page_object = first_page_object + object * 2u;
                 size_t content_object = page_object + 1u;
+                size_t content_size = stream.bytes.size;
+                size_t compressed_size = 0u;
+                uint8_t *compressed = NULL;
+                int deflated = 0;
+                if (content_size) {
+                    size_t bound = qw_compression_zlib_bound(content_size);
+                    if (bound != SIZE_MAX)
+                        compressed = (uint8_t *)malloc(bound);
+                    if (compressed &&
+                        qw_compression_deflate_zlib(stream.bytes.data,
+                                                   content_size, compressed,
+                                                   bound, &compressed_size) &&
+                        compressed_size < content_size) {
+                        deflated = 1;
+                    }
+                }
                 if (!pdf_out_track(&out, out.bytes.size) ||
                     !pdf_out_printf(&out,
                         "%zu 0 obj\n<< /Type /Page /Parent %zu 0 R /MediaBox [0 0 %.2f %.2f] "
@@ -1418,13 +1436,21 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                         resources.data ? (const char *)resources.data : "",
                         content_object) ||
                     !pdf_out_track(&out, out.bytes.size) ||
-                    !pdf_out_printf(&out, "%zu 0 obj\n<< /Length %zu >>\nstream\n",
-                                    content_object, stream.bytes.size) ||
-                    (stream.bytes.size &&
-                     !pdf_out_append(&out, stream.bytes.data, stream.bytes.size)) ||
+                    !pdf_out_printf(&out,
+                        "%zu 0 obj\n<< /Length %zu%s >>\nstream\n",
+                        content_object,
+                        deflated ? compressed_size : content_size,
+                        deflated ? " /Filter /FlateDecode" : "") ||
+                    (deflated
+                         ? (compressed_size &&
+                            !pdf_out_append(&out, compressed, compressed_size))
+                         : (content_size &&
+                            !pdf_out_append(&out, stream.bytes.data,
+                                            content_size))) ||
                     !pdf_out_printf(&out, "\nendstream\nendobj\n")) {
                     ok = 0;
                 }
+                free(compressed);
             }
             free(stream.bytes.data);
             free(stream.offsets);
@@ -1432,19 +1458,37 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         for (object = 0u; ok && object < lines->image_count; ++object) {
             const QwPdfImage *image = &lines->images[object];
             size_t image_object = image_object_base + object;
+            size_t stream_size = image->stream_size;
+            size_t compressed_size = 0u;
+            uint8_t *compressed = NULL;
+            int deflated = 0;
+            if (!image->jpeg && stream_size) {
+                size_t bound = qw_compression_zlib_bound(stream_size);
+                if (bound != SIZE_MAX) compressed = (uint8_t *)malloc(bound);
+                if (compressed &&
+                    qw_compression_deflate_zlib(image->stream, stream_size,
+                                               compressed, bound,
+                                               &compressed_size) &&
+                    compressed_size < stream_size) {
+                    deflated = 1;
+                }
+            }
             if (!pdf_out_track(&out, out.bytes.size) ||
                 !pdf_out_printf(&out,
                     "%zu 0 obj\n<< /Type /XObject /Subtype /Image /Width %u "
                     "/Height %u /ColorSpace /DeviceRGB /BitsPerComponent 8%s "
                     "/Length %zu >>\nstream\n",
                     image_object, image->width, image->height,
-                    image->jpeg ? " /Filter /DCTDecode" : "",
-                    image->stream_size) ||
-                (image->stream_size &&
-                 !pdf_out_append(&out, image->stream, image->stream_size)) ||
+                    image->jpeg ? " /Filter /DCTDecode"
+                                : (deflated ? " /Filter /FlateDecode" : ""),
+                    deflated ? compressed_size : stream_size) ||
+                ((deflated ? compressed_size : stream_size) &&
+                 !pdf_out_append(&out, deflated ? compressed : image->stream,
+                                 deflated ? compressed_size : stream_size)) ||
                 !pdf_out_printf(&out, "\nendstream\nendobj\n")) {
                 ok = 0;
             }
+            free(compressed);
         }
         /* Build the heading tree: each item's parent is the nearest prior
          * heading with a lower level. */

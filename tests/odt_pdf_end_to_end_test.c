@@ -1,4 +1,5 @@
 #include "quirewise/convert.h"
+#include <quirewise/pdf.h>
 #include "format_registry.h"
 
 #include <stdio.h>
@@ -57,10 +58,23 @@ int main(void)
     CHECK(memcmp(pdf, "%PDF-1.4", 8u) == 0);
     CHECK(contains(pdf, pdf_size, "%%EOF"));
     CHECK(contains(pdf, pdf_size, "/Type /Page "));
-    /* Heading text is ASCII and must survive the layout pipeline. */
-    CHECK(contains(pdf, pdf_size, "517569726577697365"));
-    /* Chinese paragraph: 4E2D 6587 6BB5 843D 3002 = 中文段落。 */
-    CHECK(contains(pdf, pdf_size, "4E2D65876BB5843D3002"));
+    /* Content streams are Flate-compressed: read the text back through the
+     * PDF reader rather than searching the raw bytes. */
+    {
+        QwPdfDocument *document = NULL;
+        size_t pages = 0u;
+        uint8_t *text = NULL;
+        size_t text_size = 0u;
+        CHECK(qw_pdf_open(pdf, pdf_size, &document, &pages, NULL) ==
+              QW_STATUS_OK);
+        CHECK(pages == 1u);
+        CHECK(qw_pdf_extract_text(document, &text, &text_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(text, text_size, "Quirewise"));
+        CHECK(contains(text, text_size, "\xe4\xb8\xad\xe6\x96\x87"));
+        qw_pdf_free(text);
+        qw_pdf_close(document);
+    }
 
     /* Count pages through the page tree. */
     end_to_end_page_count = 0u;
