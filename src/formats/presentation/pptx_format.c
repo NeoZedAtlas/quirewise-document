@@ -529,6 +529,7 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
     size_t png_size = 0u;
     const char *alt = "image";
     long width = 0;
+    long rotation = 0;
     static const char omitted[] =
         "<p class=\"omitted\">[image omitted]</p>";
 
@@ -580,7 +581,14 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
             ? pptx_find_descendant(reader, qw_xml_down(xfrm), "ext", 0u)
             : NULL;
         const char *cx = extent ? qw_xml_att(extent, "cx") : NULL;
+        const char *rot = xfrm ? qw_xml_att(xfrm, "rot") : NULL;
         if (cx && cx[0]) width = strtol(cx, NULL, 10);
+        if (rot && rot[0]) {
+            long parsed = strtol(rot, NULL, 10);
+            rotation = parsed / 60000L;
+            rotation %= 360L;
+            if (rotation < 0) rotation += 360L;
+        }
     }
     if (width <= 0) width = 320 * 12700L; /* 320 pt fallback */
     width /= 12700L;
@@ -591,11 +599,21 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
     free(media);
     {
         char width_text[32];
+        char rotation_text[32];
+        int rotation_length = snprintf(rotation_text, sizeof(rotation_text),
+                                       "%ld", rotation);
         int width_length = snprintf(width_text, sizeof(width_text), "%ld",
                                     width);
         if (width_length <= 0 ||
             (size_t)width_length >= sizeof(width_text) ||
-            !pptx_html_literal(reader, "<p class=\"picture\"><img alt=\"") ||
+            (rotation && (rotation_length <= 0 ||
+                          (size_t)rotation_length >= sizeof(rotation_text))) ||
+            !pptx_html_literal(reader, "<p class=\"picture\"") ||
+            (rotation &&
+             (!pptx_html_literal(reader, " style=\"transform:rotate(") ||
+              !pptx_html_literal(reader, rotation_text) ||
+              !pptx_html_literal(reader, "deg)\""))) ||
+            !pptx_html_literal(reader, "><img alt=\"") ||
             !pptx_html_escape(reader, alt) ||
             !pptx_html_literal(reader, "\" width=\"") ||
             !pptx_html_literal(reader, width_text) ||
