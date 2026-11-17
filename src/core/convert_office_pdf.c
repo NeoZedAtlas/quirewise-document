@@ -971,71 +971,120 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             if (line_index == 0u || page_lines[line_index].x < base_x)
                 base_x = page_lines[line_index].x;
         }
-        for (line_index = 0u; line_index < line_count; ++line_index) {
+        line_index = 0u;
+        while (line_index < line_count) {
+            size_t block_end = line_index + 1u;
             double indent = (page_lines[line_index].x - base_x);
             if (indent < 0.0) indent = 0.0;
-            size_t run_index;
-            int spacing = 0;
-            if (line_index > 0) {
-                double gap = page_lines[line_index - 1u].y -
-                             page_lines[line_index].y;
-                double expected =
-                    (previous_size > 1.0 ? previous_size : 12.0) * 1.5;
-                if (gap > expected + 6.0) {
-                    spacing = (int)((gap - expected) * 20.0);
-                    if (spacing > 20000) spacing = 20000;
-                }
+            if (page_lines[line_index].run_count >= 2u) {
+                while (block_end < line_count &&
+                       office_pdf_same_columns(&page_lines[line_index],
+                                               &page_lines[block_end]))
+                    ++block_end;
             }
-            if (spacing > 0) {
-                if (!pdf_buffer_printf(
-                        &chapter,
-                        "<p style=\"margin-left:%.1fpt;margin-top:%.1fpt\">",
-                        indent, (double)spacing / 20.0)) {
+            if (block_end - line_index >= 2u) {
+                size_t row;
+                if (!pdf_buffer_text(&chapter, "<table>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
-            } else if (!pdf_buffer_printf(&chapter,
-                                          "<p style=\"margin-left:%.1fpt\">",
-                                          indent)) {
-                qw_doc_pdf_lines_free(page_lines, line_count);
-                goto out_of_memory;
-            }
-            for (run_index = 0u; run_index < page_lines[line_index].run_count;
-                 ++run_index) {
-                const QwPdfRun *run = &page_lines[line_index].runs[run_index];
-                const char *vertical_open = "";
-                const char *vertical_close = "";
-                double base_size = page_lines[line_index].runs[0].size;
-                if (base_size > 1.0 && run->size > 0.1) {
-                    double offset = run->y - page_lines[line_index].y;
-                    if (offset > base_size * 0.25) {
-                        vertical_open = "<sup>";
-                        vertical_close = "</sup>";
-                    } else if (-offset > base_size * 0.25) {
-                        vertical_open = "<sub>";
-                        vertical_close = "</sub>";
+                for (row = line_index; row < block_end; ++row) {
+                    size_t cell;
+                    if (!pdf_buffer_text(&chapter, "<tr>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                    for (cell = 0u; cell < page_lines[row].run_count; ++cell) {
+                        const QwPdfRun *run = &page_lines[row].runs[cell];
+                        if (!pdf_buffer_text(&chapter, "<td>") ||
+                            !pdf_buffer_text(&chapter, run->text) ||
+                            !pdf_buffer_text(&chapter, "</td>")) {
+                            qw_doc_pdf_lines_free(page_lines, line_count);
+                            goto out_of_memory;
+                        }
+                    }
+                    if (!pdf_buffer_text(&chapter, "</tr>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
                     }
                 }
-                if (!pdf_buffer_printf(&chapter, "<span style=\"%s%s\">",
-                                       office_pdf_is_bold(run->font)
-                                           ? "font-weight:bold;" : "",
-                                       office_pdf_is_italic(run->font)
-                                           ? "font-style:italic;" : "") ||
-                    !pdf_buffer_text(&chapter, vertical_open) ||
-                    !pdf_buffer_text(&chapter, run->text) ||
-                    !pdf_buffer_text(&chapter, vertical_close) ||
-                    !pdf_buffer_text(&chapter, "</span>")) {
+                if (!pdf_buffer_text(&chapter, "</table>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
+                previous_size = page_lines[block_end - 1u].run_count
+                                    ? page_lines[block_end - 1u].runs[0].size
+                                    : 0.0;
+                line_index = block_end;
+                continue;
             }
-            if (!pdf_buffer_text(&chapter, "</p>")) {
-                qw_doc_pdf_lines_free(page_lines, line_count);
-                goto out_of_memory;
+            {
+                size_t run_index;
+                int spacing = 0;
+                if (line_index > 0) {
+                    double gap = page_lines[line_index - 1u].y -
+                                 page_lines[line_index].y;
+                    double expected =
+                        (previous_size > 1.0 ? previous_size : 12.0) * 1.5;
+                    if (gap > expected + 6.0) {
+                        spacing = (int)((gap - expected) * 20.0);
+                        if (spacing > 20000) spacing = 20000;
+                    }
+                }
+                if (spacing > 0) {
+                    if (!pdf_buffer_printf(
+                            &chapter,
+                            "<p style=\"margin-left:%.1fpt;margin-top:%.1fpt\">",
+                            indent, (double)spacing / 20.0)) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                } else if (!pdf_buffer_printf(
+                               &chapter,
+                               "<p style=\"margin-left:%.1fpt\">", indent)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                for (run_index = 0u;
+                     run_index < page_lines[line_index].run_count;
+                     ++run_index) {
+                    const QwPdfRun *run =
+                        &page_lines[line_index].runs[run_index];
+                    const char *vertical_open = "";
+                    const char *vertical_close = "";
+                    double base_size = page_lines[line_index].runs[0].size;
+                    if (base_size > 1.0 && run->size > 0.1) {
+                        double offset = run->y - page_lines[line_index].y;
+                        if (offset > base_size * 0.25) {
+                            vertical_open = "<sup>";
+                            vertical_close = "</sup>";
+                        } else if (-offset > base_size * 0.25) {
+                            vertical_open = "<sub>";
+                            vertical_close = "</sub>";
+                        }
+                    }
+                    if (!pdf_buffer_printf(&chapter, "<span style=\"%s%s\">",
+                                           office_pdf_is_bold(run->font)
+                                               ? "font-weight:bold;" : "",
+                                           office_pdf_is_italic(run->font)
+                                               ? "font-style:italic;" : "") ||
+                        !pdf_buffer_text(&chapter, vertical_open) ||
+                        !pdf_buffer_text(&chapter, run->text) ||
+                        !pdf_buffer_text(&chapter, vertical_close) ||
+                        !pdf_buffer_text(&chapter, "</span>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                }
+                if (!pdf_buffer_text(&chapter, "</p>")) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                previous_size = page_lines[line_index].run_count
+                                    ? page_lines[line_index].runs[0].size
+                                    : 0.0;
             }
-            previous_size = page_lines[line_index].run_count
-                                ? page_lines[line_index].runs[0].size
-                                : 0.0;
+            ++line_index;
         }
         qw_doc_pdf_lines_free(page_lines, line_count);
         if (!pdf_buffer_text(&chapter, "</div>")) goto out_of_memory;

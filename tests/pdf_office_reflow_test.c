@@ -379,6 +379,19 @@ int main(void)
         CHECK(contains(table_docx, table_docx_size, "Qty"));
         CHECK(contains(table_docx, table_docx_size, "Apple"));
         CHECK(contains(table_docx, table_docx_size, "Pear"));
+        {
+            uint8_t *table_epub = NULL;
+            size_t table_epub_size = 0u;
+            CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                              &opts, &table_epub,
+                                              &table_epub_size, NULL) ==
+                  QW_STATUS_OK);
+            CHECK(contains(table_epub, table_epub_size, "<table>"));
+            CHECK(contains(table_epub, table_epub_size, "<tr>"));
+            CHECK(contains(table_epub, table_epub_size, "<td>"));
+            CHECK(contains(table_epub, table_epub_size, "Apple"));
+            free(table_epub);
+        }
         free(bytes);
         free(table_docx);
     }
