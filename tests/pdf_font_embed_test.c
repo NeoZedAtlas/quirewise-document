@@ -175,6 +175,35 @@ int main(void)
         free(otf_pdf);
     }
 
+    /* PDF/A-1b structure: XMP metadata, sRGB output intent, embedded font. */
+    {
+        QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *pdfa_pdf = NULL;
+        size_t pdfa_size = 0u;
+        options.pdf_font_path = QUIREWISE_FONT_TEST_PATH;
+        options.pdfa_level = QW_PDFA_1B;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdfa_pdf,
+                                       &pdfa_size, &report) == QW_STATUS_OK);
+        CHECK(contains(pdfa_pdf, pdfa_size, "/GTS_PDFA1"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "/OutputIntent"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "pdfaid:part"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "pdfaid:conformance"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "/DestOutputProfile"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "/FontFile2"));
+        free(pdfa_pdf);
+
+        /* Without an embedded font the writer refuses PDF/A. */
+        options.pdf_font_path = NULL;
+        pdfa_pdf = NULL;
+        pdfa_size = 0u;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdfa_pdf,
+                                       &pdfa_size, &report) != QW_STATUS_OK);
+        CHECK(pdfa_pdf == NULL);
+        CHECK(strstr(report.note, "PDF/A") != NULL);
+    }
+
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
     return 0;
 }

@@ -15,6 +15,7 @@
 
 #include "document_backend.h"
 #include "pdf_font.h"
+#include "pdfa_profile.h"
 
 #include <quirewise/compression.h>
 #include <quirewise/compression.h>
@@ -1345,7 +1346,7 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
 
 static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                              double page_height, const QwPdfFont *font,
-                             QwPdfText *output, size_t *out_pages)
+                             int pdfa, QwPdfText *output, size_t *out_pages)
 {
     const double margin = 56.0;
     const double line_gap = 1.22;
@@ -1373,6 +1374,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     size_t info_object_flag = 0u;
     size_t object_total_no_font = 0u;
     size_t font_object_base = 0u;
+    size_t pdfa_object_base = 0u;
     QwPdfFontSubset subset;
     QwPdfFontUse *font_uses = NULL;
     size_t font_use_count = 0u;
@@ -1590,6 +1592,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                                (outline_count ? outline_count + 1u : 0u) +
                                info_object_flag;
         font_object_base = object_total_no_font + 1u;
+        pdfa_object_base = font_object_base + (font ? 5u : 0u);
         char font_dict[128];
         QwPdfText resources;
         size_t object;
@@ -1603,15 +1606,21 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
 
         ok = pdf_out_printf(&out, "%%PDF-1.4\n%%\xE2\xE3\xCF\xD3\n");
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (outline_count) {
+        {
+            char outline_ref[96] = "";
+            char pdfa_ref[160] = "";
+            if (outline_count)
+                snprintf(outline_ref, sizeof(outline_ref),
+                         " /Outlines %zu 0 R /PageMode /UseOutlines",
+                         outline_root_object);
+            if (pdfa)
+                snprintf(pdfa_ref, sizeof(pdfa_ref),
+                         " /Metadata %zu 0 R /OutputIntents [%zu 0 R]",
+                         pdfa_object_base, pdfa_object_base + 2u);
             ok = pdf_out_printf(&out,
-                "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R /Outlines %zu 0 R "
-                "/PageMode /UseOutlines >>\nendobj\n",
-                pages_object, outline_root_object);
-        } else {
-            ok = pdf_out_printf(&out,
-                "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R >>\nendobj\n",
-                pages_object);
+                                "1 0 obj\n<< /Type /Catalog /Pages %zu 0 R%s%s "
+                                ">>\nendobj\n",
+                                pages_object, outline_ref, pdfa_ref);
         }
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
         if (ok) {
@@ -2175,10 +2184,80 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     }
     free(font_uses);
     qw_pdf_font_subset_free(&subset);
+    if (ok && pdfa) {
+        static const char xmp[] =
+            "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
+            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n"
+            " <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
+            "  <rdf:Description rdf:about=\"\"\n"
+            "   xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\"\n"
+            "   xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n"
+            "   xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "   <pdfaid:part>1</pdfaid:part>\n"
+            "   <pdfaid:conformance>B</pdfaid:conformance>\n"
+            "   <xmp:CreatorTool>Quirewise</xmp:CreatorTool>\n"
+            "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+            "Quirewise document</rdf:li></rdf:Alt></dc:title>\n"
+            "  </rdf:Description>\n"
+            " </rdf:RDF>\n"
+            "</x:xmpmeta>\n"
+            "<?xpacket end=\"w\"?>\n";
+        const uint8_t *icc;
+        size_t icc_size = 0u;
+        size_t icc_bound;
+        uint8_t *icc_compressed = NULL;
+        size_t icc_compressed_size = 0u;
+        icc = qw_pdfa_srgb_profile(&icc_size);
+        icc_bound = qw_compression_zlib_bound(icc_size);
+        if (icc_bound != SIZE_MAX)
+            icc_compressed = (uint8_t *)malloc(icc_bound);
+        if (icc_compressed &&
+            (!qw_compression_deflate_zlib(icc, icc_size, icc_compressed,
+                                          icc_bound, &icc_compressed_size) ||
+             icc_compressed_size >= icc_size)) {
+            free(icc_compressed);
+            icc_compressed = NULL;
+            icc_compressed_size = 0u;
+        }
+        if (ok) {
+            int t = pdf_out_track(&out, out.bytes.size);
+            int p = pdf_out_printf(&out,
+                                   "%zu 0 obj\n<< /Type /Metadata /Subtype /XML "
+                                   "/Length %zu >>\nstream\n",
+                                   pdfa_object_base, sizeof(xmp) - 1u);
+            int a = pdf_out_append(&out, xmp, sizeof(xmp) - 1u);
+            int e = pdf_out_printf(&out, "\nendstream\nendobj\n");
+            ok = t && p && a && e;
+        }
+        if (ok)
+            ok = pdf_out_track(&out, out.bytes.size) &&
+                 pdf_out_printf(&out,
+                                "%zu 0 obj\n<< /N 3 /Alternate /DeviceRGB "
+                                "/Length %zu%s >>\nstream\n",
+                                pdfa_object_base + 1u,
+                                icc_compressed ? icc_compressed_size : icc_size,
+                                icc_compressed ? " /Filter /FlateDecode" : "") &&
+                 !(icc_compressed
+                       ? (icc_compressed_size &&
+                          !pdf_out_append(&out, icc_compressed,
+                                          icc_compressed_size))
+                       : (icc_size && !pdf_out_append(&out, icc, icc_size))) &&
+                 pdf_out_printf(&out, "\nendstream\nendobj\n");
+        if (ok)
+            ok = pdf_out_track(&out, out.bytes.size) &&
+                 pdf_out_printf(&out,
+                                "%zu 0 obj\n<< /Type /OutputIntent "
+                                "/S /GTS_PDFA1 "
+                                "/OutputConditionIdentifier (sRGB) "
+                                "/Info (sRGB IEC61966-2.1) "
+                                "/DestOutputProfile %zu 0 R >>\nendobj\n",
+                                pdfa_object_base + 2u, pdfa_object_base + 1u);
+    }
     {
         size_t xref_offset = out.bytes.size;
         size_t entry;
-        size_t object_total = object_total_no_font + (font ? 5u : 0u);
+        size_t object_total = object_total_no_font + (font ? 5u : 0u) +
+                              (pdfa ? 3u : 0u);
         if (!pdf_out_printf(&out, "xref\n0 %zu\n", object_total + 1u) ||
             !pdf_out_printf(&out, "0000000000 65535 f \n")) {
             ok = 0;
@@ -2219,7 +2298,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
 
 static int pdf_render_html(const char *html, size_t html_size,
                            double page_width, double page_height,
-                           const char *font_path,
+                           const char *font_path, int pdfa,
                            QwPdfText *output, size_t *out_pages,
                            QwConvertReport *report)
 {
@@ -2231,6 +2310,12 @@ static int pdf_render_html(const char *html, size_t html_size,
     if (page_width < 72.0 || page_width > 5000.0 ||
         page_height < 72.0 || page_height > 5000.0) {
         return QW_STATUS_ERR_INVALID_ARGUMENT;
+    }
+    if (pdfa && !font_path) {
+        if (report)
+            snprintf(report->note, sizeof(report->note),
+                     "PDF/A needs an embedded font: pass pdf_font_path");
+        return QW_STATUS_ERR_UNSUPPORTED;
     }
     if (font_path) {
         font = qw_pdf_font_load(font_path);
@@ -2249,7 +2334,8 @@ static int pdf_render_html(const char *html, size_t html_size,
         qw_pdf_font_free(font);
         return QW_STATUS_ERR_OUT_OF_MEMORY;
     }
-    if (!pdf_emit_document(&lines, page_width, page_height, font, output, &pages)) {
+    if (!pdf_emit_document(&lines, page_width, page_height, font, pdfa,
+                           output, &pages)) {
         pdf_lines_free(&lines);
         qw_pdf_font_free(font);
         return QW_STATUS_ERR_OUT_OF_MEMORY;
@@ -2280,7 +2366,7 @@ int qw_doc_convert_html_with_page_size(const char *html, size_t html_size,
     rc = pdf_render_html(html, html_size,
                          page_width_points > 0.0f ? page_width_points : 595.0,
                          page_height_points > 0.0f ? page_height_points : 842.0,
-                         NULL, &output, NULL, report);
+                         NULL, 0, &output, NULL, report);
     if (rc != QW_STATUS_OK) return rc;
     *out_pdf = (uint8_t *)output.data;
     *out_size = output.size;
@@ -2303,7 +2389,30 @@ int qw_doc_convert_html_with_font(const char *html, size_t html_size,
     rc = pdf_render_html(html, html_size,
                          page_width_points > 0.0f ? page_width_points : 595.0,
                          page_height_points > 0.0f ? page_height_points : 842.0,
-                         font_path, &output, NULL, report);
+                         font_path, 0, &output, NULL, report);
+    if (rc != QW_STATUS_OK) return rc;
+    *out_pdf = (uint8_t *)output.data;
+    *out_size = output.size;
+    return QW_STATUS_OK;
+}
+
+int qw_doc_convert_html_pdfa(const char *html, size_t html_size,
+                                 float page_width_points,
+                                 float page_height_points,
+                                 const char *font_path,
+                                 uint8_t **out_pdf, size_t *out_size,
+                                 QwConvertReport *report)
+{
+    QwPdfText output;
+    int rc;
+    if (!out_pdf || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_pdf = NULL;
+    *out_size = 0u;
+    memset(&output, 0, sizeof(output));
+    rc = pdf_render_html(html, html_size,
+                         page_width_points > 0.0f ? page_width_points : 595.0,
+                         page_height_points > 0.0f ? page_height_points : 842.0,
+                         font_path, 1, &output, NULL, report);
     if (rc != QW_STATUS_OK) return rc;
     *out_pdf = (uint8_t *)output.data;
     *out_size = output.size;
@@ -2339,7 +2448,7 @@ int qw_doc_convert_html_with_page_size_to_stream(
     rc = pdf_render_html(html, html_size,
                          page_width_points > 0.0f ? page_width_points : 595.0,
                          page_height_points > 0.0f ? page_height_points : 842.0,
-                         NULL, &output, NULL, report);
+                         NULL, 0, &output, NULL, report);
     if (rc != QW_STATUS_OK) return rc;
     if (max_output_bytes && output.size > max_output_bytes) {
         pdf_text_free(&output);

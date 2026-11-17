@@ -1648,6 +1648,17 @@ static int dispatch_render_html(const uint8_t *html, size_t html_size,
                                 uint8_t **out_pdf, size_t *out_size,
                                 QwConvertReport *report)
 {
+    if (options && options->pdfa_level != QW_PDFA_NONE) {
+        if (options->pdfa_level != QW_PDFA_1B) {
+            if (report)
+                snprintf(report->note, sizeof(report->note),
+                         "only PDF/A-1b output is supported");
+            return QW_STATUS_ERR_UNSUPPORTED;
+        }
+        return qw_doc_convert_html_pdfa(
+            (const char *)html, html_size, page_width, page_height,
+            options->pdf_font_path, out_pdf, out_size, report);
+    }
     if (options && options->pdf_font_path && options->pdf_font_path[0]) {
         return qw_doc_convert_html_with_font(
             (const char *)html, html_size, page_width, page_height,
