@@ -577,7 +577,19 @@ static int epub_to_html_internal(const uint8_t *data, size_t size,
                                       strlen("<blockquote>"));
             }
             if (!ok) break;
-            if (def_term) {
+            if (paragraph.footnote) {
+                char footnote_tag[256];
+                if (paragraph.anchor_id && paragraph.anchor_id_size)
+                    snprintf(footnote_tag, sizeof(footnote_tag),
+                             "<p class=\"epub-footnote\" id=\"%.*s\">",
+                             (int)paragraph.anchor_id_size,
+                             paragraph.anchor_id);
+                else
+                    snprintf(footnote_tag, sizeof(footnote_tag), "%s",
+                             "<p class=\"epub-footnote\">");
+                ok = epub_html_append(&html, &length, &capacity, footnote_tag,
+                                      strlen(footnote_tag));
+            } else if (def_term) {
                 ok = epub_html_append(&html, &length, &capacity, "<dt>", 4u);
             } else if (def_detail) {
                 ok = epub_html_append(&html, &length, &capacity, "<dd>", 4u);

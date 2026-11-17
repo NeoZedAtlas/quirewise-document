@@ -67,7 +67,8 @@ int main(void)
     }
     free(epub);
     if (!contains(html, html_size, "<a href=\"#fn1\">1</a>") ||
-        !contains(html, html_size, "Footnote body.") ||
+        !contains(html, html_size,
+                  "<p class=\"epub-footnote\" id=\"fn1\">Footnote body.</p>") ||
         !contains(html, html_size, "Text with note")) {
         free(html);
         fputs("FAIL: EPUB footnote reference or body was lost\n", stderr);

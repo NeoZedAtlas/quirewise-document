@@ -857,7 +857,7 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
         for (paragraph_index = 0u;
              paragraph_index < section.paragraph_count; ++paragraph_index) {
             QwEpubParagraphView paragraph;
-            char open_tag[8];
+            char open_tag[256];
             char close_tag[8];
             size_t run_index;
             int heading;
@@ -1121,7 +1121,17 @@ static int html_from_epub(const uint8_t *data, size_t size, uint8_t **out,
                 heading = paragraph.heading_level >= 1u &&
                           paragraph.heading_level <= 6u
                               ? (int)paragraph.heading_level : 0;
-                if (is_dt) {
+                if (paragraph.footnote) {
+                    if (paragraph.anchor_id && paragraph.anchor_id_size)
+                        snprintf(open_tag, sizeof(open_tag),
+                                 "<p class=\"epub-footnote\" id=\"%.*s\">",
+                                 (int)paragraph.anchor_id_size,
+                                 paragraph.anchor_id);
+                    else
+                        snprintf(open_tag, sizeof(open_tag), "%s",
+                                 "<p class=\"epub-footnote\">");
+                    snprintf(close_tag, sizeof(close_tag), "%s", "</p>");
+                } else if (is_dt) {
                     snprintf(open_tag, sizeof(open_tag), "%s", "<dt>");
                     snprintf(close_tag, sizeof(close_tag), "%s", "</dt>");
                 } else if (is_dd) {
