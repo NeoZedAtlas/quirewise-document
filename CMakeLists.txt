@@ -131,7 +131,8 @@ if(BUILD_TESTING)
         QUIREWISE_INLINE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/inline.pdf"
         QUIREWISE_SPACING_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/spacing.pdf"
         QUIREWISE_SCRIPT_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/script.pdf"
-        QUIREWISE_IMAGE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/image.pdf")
+        QUIREWISE_IMAGE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/image.pdf"
+        QUIREWISE_TABLE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/table.pdf")
     target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
         quirewise_document)
     add_test(NAME quirewise_document_pdf_office_reflow

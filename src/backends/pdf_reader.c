@@ -2542,6 +2542,7 @@ typedef struct QwPdfTextRun {
     QwPdfBuffer text;
     char font[32];
     double size;
+    double x;
     double y;
 } QwPdfTextRun;
 
@@ -2560,13 +2561,15 @@ typedef struct QwPdfTextLines {
 } QwPdfTextLines;
 
 static int pdf_line_add_run(QwPdfTextLine *line, const QwPdfBuffer *chunk,
-                            const char *font, double size, double run_y)
+                            const char *font, double size, double run_x,
+                            double run_y)
 {
     QwPdfTextRun *run;
     if (!chunk->size) return 1;
     if (line->run_count) {
         QwPdfTextRun *last = &line->runs[line->run_count - 1u];
-        if (strcmp(last->font, font ? font : "") == 0 && last->size == size)
+        if (strcmp(last->font, font ? font : "") == 0 && last->size == size &&
+            run_x - last->x <= 50.0)
             return pdf_buffer_append(&last->text, chunk->data, chunk->size);
     }
     if (line->run_count >= line->run_capacity) {
@@ -2580,6 +2583,7 @@ static int pdf_line_add_run(QwPdfTextLine *line, const QwPdfBuffer *chunk,
     run = &line->runs[line->run_count];
     memset(run, 0, sizeof(*run));
     run->size = size;
+    run->x = run_x;
     run->y = run_y;
     run->font[0] = '\0';
     if (font) {
@@ -2608,7 +2612,8 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
             if (base * 0.6 > tolerance) tolerance = base * 0.6;
         }
         if (dy < 0.0) dy = -dy;
-        if (dy <= tolerance) return pdf_line_add_run(last, chunk, font, size, y);
+        if (dy <= tolerance)
+            return pdf_line_add_run(last, chunk, font, size, x, y);
     }
     if (lines->count >= lines->capacity) {
         size_t grown = lines->capacity ? lines->capacity * 2u : 16u;
@@ -2623,7 +2628,7 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
     line->x = x;
     line->y = y;
     lines->count += 1u;
-    return pdf_line_add_run(line, chunk, font, size, y);
+    return pdf_line_add_run(line, chunk, font, size, x, y);
 }
 
 static void pdf_lines_free(QwPdfTextLines *lines)
@@ -3332,6 +3337,7 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
             const QwPdfTextRun *source = &lines.items[index].runs[run_index];
             QwPdfRun *run = &line->runs[run_index];
             run->size = source->size;
+            run->x = source->x;
             run->y = source->y;
             memcpy(run->font, source->font, sizeof(run->font));
             run->text = (char *)malloc(source->text.size + 1u);

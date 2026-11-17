@@ -348,6 +348,41 @@ int main(void)
         free(image_docx);
     }
 
+    /* Column-aligned rows become a DOCX table. */
+    {
+        FILE *file = fopen(QUIREWISE_TABLE_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *table_docx = NULL;
+        size_t table_docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &table_docx,
+                                          &table_docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(table_docx, table_docx_size, "<w:tbl>"));
+        CHECK(contains(table_docx, table_docx_size, "<w:tr>"));
+        CHECK(contains(table_docx, table_docx_size, "Name"));
+        CHECK(contains(table_docx, table_docx_size, "Qty"));
+        CHECK(contains(table_docx, table_docx_size, "Apple"));
+        CHECK(contains(table_docx, table_docx_size, "Pear"));
+        free(bytes);
+        free(table_docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

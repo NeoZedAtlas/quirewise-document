@@ -631,6 +631,19 @@ static size_t office_pdf_image_count(const uint8_t *data, size_t size)
     return count;
 }
 
+/* Two lines share a table layout when their runs start at the same x. */
+static int office_pdf_same_columns(const QwPdfLine *a, const QwPdfLine *b)
+{
+    size_t index;
+    if (a->run_count != b->run_count || a->run_count < 2u) return 0;
+    for (index = 0u; index < a->run_count; ++index) {
+        double dx = a->runs[index].x - b->runs[index].x;
+        if (dx < 0.0) dx = -dx;
+        if (dx > 2.0) return 0;
+    }
+    return 1;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -713,11 +726,65 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             if (line_index == 0u || page_lines[line_index].x < base_x)
                 base_x = page_lines[line_index].x;
         }
-        for (line_index = 0u; line_index < line_count; ++line_index) {
+        line_index = 0u;
+        while (line_index < line_count) {
+            size_t block_end = line_index + 1u;
             int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
             int spacing = 0;
             if (indent < 0) indent = 0;
             if (indent > 20000) indent = 20000;
+            if (page_lines[line_index].run_count >= 2u) {
+                while (block_end < line_count &&
+                       office_pdf_same_columns(&page_lines[line_index],
+                                               &page_lines[block_end]))
+                    ++block_end;
+            }
+            if (block_end - line_index >= 2u) {
+                size_t row;
+                if (!pdf_buffer_text(
+                        &body,
+                        "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>"
+                        "</w:tblPr>")) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                for (row = line_index; row < block_end; ++row) {
+                    size_t cell;
+                    if (!pdf_buffer_text(&body, "<w:tr>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                    for (cell = 0u; cell < page_lines[row].run_count; ++cell) {
+                        const QwPdfRun *run = &page_lines[row].runs[cell];
+                        if (!pdf_buffer_text(&body,
+                                             "<w:tc><w:p><w:r><w:rPr>") ||
+                            !pdf_buffer_text(
+                                &body,
+                                office_pdf_is_bold(run->font) ? "<w:b/>" : "") ||
+                            !pdf_buffer_text(&body,
+                                             "</w:rPr><w:t xml:space=\"preserve\">") ||
+                            !pdf_buffer_text(&body, run->text) ||
+                            !pdf_buffer_text(
+                                &body, "</w:t></w:r></w:p></w:tc>")) {
+                            qw_doc_pdf_lines_free(page_lines, line_count);
+                            goto out_of_memory;
+                        }
+                    }
+                    if (!pdf_buffer_text(&body, "</w:tr>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                }
+                if (!pdf_buffer_text(&body, "</w:tbl>")) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                previous_size = page_lines[block_end - 1u].run_count
+                                    ? page_lines[block_end - 1u].runs[0].size
+                                    : 0.0;
+                line_index = block_end;
+                continue;
+            }
             if (line_index > 0) {
                 double gap = page_lines[line_index - 1u].y -
                              page_lines[line_index].y;
@@ -728,54 +795,59 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                     if (spacing > 20000) spacing = 20000;
                 }
             }
-            size_t run_index;
-            if (spacing > 0) {
-                if (!pdf_buffer_printf(
-                        &body,
-                        "<w:p><w:pPr><w:spacing w:before=\"%d\"/>"
-                        "<w:ind w:left=\"%d\"/></w:pPr>",
-                        spacing, indent)) {
+            {
+                size_t run_index;
+                if (spacing > 0) {
+                    if (!pdf_buffer_printf(
+                            &body,
+                            "<w:p><w:pPr><w:spacing w:before=\"%d\"/>"
+                            "<w:ind w:left=\"%d\"/></w:pPr>",
+                            spacing, indent)) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                } else if (!pdf_buffer_printf(
+                               &body,
+                               "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>",
+                               indent)) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
-            } else if (!pdf_buffer_printf(
-                           &body,
-                           "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>",
-                           indent)) {
-                qw_doc_pdf_lines_free(page_lines, line_count);
-                goto out_of_memory;
-            }
-            for (run_index = 0u; run_index < page_lines[line_index].run_count;
-                 ++run_index) {
-                const QwPdfRun *run = &page_lines[line_index].runs[run_index];
-                const char *vertical = "";
-                double base_size = page_lines[line_index].runs[0].size;
-                if (base_size > 1.0 && run->size > 0.1) {
-                    double offset = run->y - page_lines[line_index].y;
-                    if (offset > base_size * 0.25)
-                        vertical = "<w:vertAlign w:val=\"superscript\"/>";
-                    else if (-offset > base_size * 0.25)
-                        vertical = "<w:vertAlign w:val=\"subscript\"/>";
+                for (run_index = 0u;
+                     run_index < page_lines[line_index].run_count;
+                     ++run_index) {
+                    const QwPdfRun *run =
+                        &page_lines[line_index].runs[run_index];
+                    const char *vertical = "";
+                    double base_size = page_lines[line_index].runs[0].size;
+                    if (base_size > 1.0 && run->size > 0.1) {
+                        double offset = run->y - page_lines[line_index].y;
+                        if (offset > base_size * 0.25)
+                            vertical = "<w:vertAlign w:val=\"superscript\"/>";
+                        else if (-offset > base_size * 0.25)
+                            vertical = "<w:vertAlign w:val=\"subscript\"/>";
+                    }
+                    if (!pdf_buffer_printf(
+                            &body, "<w:r><w:rPr>%s%s%s%s</w:rPr>"
+                                   "<w:t xml:space=\"preserve\">",
+                            office_pdf_is_bold(run->font) ? "<w:b/>" : "",
+                            office_pdf_is_italic(run->font) ? "<w:i/>" : "",
+                            office_pdf_size_tag(run->size), vertical) ||
+                        !pdf_buffer_text(&body, run->text) ||
+                        !pdf_buffer_text(&body, "</w:t></w:r>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
                 }
-                if (!pdf_buffer_printf(
-                        &body, "<w:r><w:rPr>%s%s%s%s</w:rPr>"
-                               "<w:t xml:space=\"preserve\">",
-                        office_pdf_is_bold(run->font) ? "<w:b/>" : "",
-                        office_pdf_is_italic(run->font) ? "<w:i/>" : "",
-                        office_pdf_size_tag(run->size), vertical) ||
-                    !pdf_buffer_text(&body, run->text) ||
-                    !pdf_buffer_text(&body, "</w:t></w:r>")) {
+                if (!pdf_buffer_text(&body, "</w:p>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
+                previous_size = page_lines[line_index].run_count
+                                    ? page_lines[line_index].runs[0].size
+                                    : 0.0;
             }
-            if (!pdf_buffer_text(&body, "</w:p>")) {
-                qw_doc_pdf_lines_free(page_lines, line_count);
-                goto out_of_memory;
-            }
-            previous_size = page_lines[line_index].run_count
-                                ? page_lines[line_index].runs[0].size
-                                : 0.0;
+            ++line_index;
         }
         qw_doc_pdf_lines_free(page_lines, line_count);
     }

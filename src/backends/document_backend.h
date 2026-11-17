@@ -95,6 +95,7 @@ typedef struct QwPdfRun {
     char *text;
     char font[32];
     double size;
+    double x;
     double y;
 } QwPdfRun;
 
