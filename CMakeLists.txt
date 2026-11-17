@@ -1210,6 +1210,16 @@ target_link_libraries(quirewise_document_odp_image_test PRIVATE
 add_test(NAME quirewise_document_odp_image
     COMMAND quirewise_document_odp_image_test)
 
+add_executable(quirewise_document_odp_position_test
+    tests/odp_position_test.c)
+target_compile_features(quirewise_document_odp_position_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_odp_position_test PRIVATE
+    QUIREWISE_ODP_POSITION_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/position-slide.odp")
+target_link_libraries(quirewise_document_odp_position_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_odp_position
+    COMMAND quirewise_document_odp_position_test)
+
 add_executable(quirewise_document_pptx_position_test
     tests/pptx_position_test.c)
 target_compile_features(quirewise_document_pptx_position_test PRIVATE c_std_11)

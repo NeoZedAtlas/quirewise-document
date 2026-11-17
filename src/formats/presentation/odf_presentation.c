@@ -500,6 +500,16 @@ static int odp_rotation_degrees(QwXmlNode *frame, QwXmlNode *node)
     }
 }
 
+static void odp_frame_position(QwXmlNode *frame, int *out_x, int *out_y)
+{
+    const char *x = frame ? qw_xml_att(frame, "svg:x") : NULL;
+    const char *y = frame ? qw_xml_att(frame, "svg:y") : NULL;
+    double px = x ? odp_length_points(x) : 0.0;
+    double py = y ? odp_length_points(y) : 0.0;
+    *out_x = px > 0.0 ? (int)(px + 0.5) : 0;
+    *out_y = py > 0.0 ? (int)(py + 0.5) : 0;
+}
+
 static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
                             QwXmlNode *frame, double display_width,
                             double display_height)
@@ -517,6 +527,8 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
     unsigned width;
     unsigned height;
     int rotation = odp_rotation_degrees(frame, node);
+    int offset_x = 0, offset_y = 0;
+    odp_frame_position(frame, &offset_x, &offset_y);
 
     if (reader->image_count >= ODP_MAX_IMAGES)
         return odp_html_literal(reader, omitted);
@@ -590,10 +602,17 @@ static int odp_emit_picture(OdpReader *reader, QwXmlNode *node,
         }
         if (length <= 0 || (size_t)length >= sizeof(width_text) ||
             !odp_html_literal(reader, "<p class=\"picture\"") ||
-            (rotation &&
-             (!odp_html_literal(reader, " style=\"transform:rotate(") ||
-              !odp_html_number_literal(reader, rotation) ||
-              !odp_html_literal(reader, "deg)\""))) ||
+            ((rotation || offset_x || offset_y) &&
+             (!odp_html_literal(reader, " style=\"margin-left:") ||
+              !odp_html_number_literal(reader, offset_x) ||
+              !odp_html_literal(reader, "px;margin-top:") ||
+              !odp_html_number_literal(reader, offset_y) ||
+              !odp_html_literal(reader, "px;") ||
+              (rotation &&
+               (!odp_html_literal(reader, "transform:rotate(") ||
+                !odp_html_number_literal(reader, rotation) ||
+                !odp_html_literal(reader, "deg);"))) ||
+              !odp_html_literal(reader, "\""))) ||
             !odp_html_literal(reader, "><img alt=\"image\" width=\"") ||
             !odp_html_literal(reader, width_text) ||
             (height != 0u &&
@@ -651,11 +670,20 @@ static int odp_render_blocks(OdpReader *reader, QwXmlNode *node, size_t depth)
                     return 0;
             } else {
                 int rotation = odp_rotation_degrees(node, NULL);
-                if (rotation) {
+                int offset_x = 0, offset_y = 0;
+                odp_frame_position(node, &offset_x, &offset_y);
+                if (rotation || offset_x || offset_y) {
                     if (!odp_html_literal(reader,
-                                          "<div class=\"textbox\" style=\"transform:rotate(") ||
-                        !odp_html_number_literal(reader, rotation) ||
-                        !odp_html_literal(reader, "deg)\">") ||
+                                          "<div class=\"textbox\" style=\"margin-left:") ||
+                        !odp_html_number_literal(reader, offset_x) ||
+                        !odp_html_literal(reader, "px;margin-top:") ||
+                        !odp_html_number_literal(reader, offset_y) ||
+                        !odp_html_literal(reader, "px;") ||
+                        (rotation &&
+                         (!odp_html_literal(reader, "transform:rotate(") ||
+                          !odp_html_number_literal(reader, rotation) ||
+                          !odp_html_literal(reader, "deg);"))) ||
+                        !odp_html_literal(reader, "\">") ||
                         !odp_render_blocks(reader, qw_xml_down(node),
                                            depth + 1u) ||
                         !odp_html_literal(reader, "</div>"))

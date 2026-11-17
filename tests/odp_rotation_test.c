@@ -65,8 +65,7 @@ int main(void)
         return 1;
     }
     free(odp);
-    if (!contains(html, html_size,
-                  "style=\"transform:rotate(90deg)\"") ||
+    if (!contains(html, html_size, "transform:rotate(90deg)") ||
         !contains(html, html_size, "data:image/png;base64,")) {
         free(html);
         fputs("FAIL: ODP picture rotation was not preserved\n", stderr);
