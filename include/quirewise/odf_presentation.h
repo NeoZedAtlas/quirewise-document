@@ -26,12 +26,15 @@ typedef enum QwOdpFormat {
 
 typedef struct QwOdpDocument QwOdpDocument;
 
+/*! Parse an ODP/FODP presentation into a document. */
 QwOdpStatus qw_odp_parse(QwOdpFormat format, const void *data, size_t size,
                          QwOdpDocument **out_document);
 /* HTML bytes are borrowed and remain valid until the document is freed. */
 const uint8_t *qw_odp_document_html(const QwOdpDocument *document,
                                    size_t *out_size);
+/*! Return the number of slides. */
 size_t qw_odp_document_slide_count(const QwOdpDocument *document);
+/*! Release a document returned by the parser; NULL is accepted. */
 void qw_odp_document_free(QwOdpDocument *document);
 
 #ifdef __cplusplus

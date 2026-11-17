@@ -53,13 +53,17 @@ QW_EMAIL_API int qw_email_probe(const void *data, size_t size);
  */
 QW_EMAIL_API QwEmailStatus qw_email_parse(const void *data, size_t size,
                                          QwEmailDocument **out_document);
+/*! Return the rendered HTML body and its size; borrowed until free. */
 QW_EMAIL_API const uint8_t *qw_email_document_html(
     const QwEmailDocument *document, size_t *out_size);
+/*! Return the number of attachments. */
 QW_EMAIL_API size_t qw_email_document_attachment_count(
     const QwEmailDocument *document);
+/*! Fill one attachment's metadata by index. */
 QW_EMAIL_API QwEmailStatus qw_email_document_get_attachment(
     const QwEmailDocument *document, size_t index,
     QwEmailAttachment *out_attachment);
+/*! Release a document returned by the parser; NULL is accepted. */
 QW_EMAIL_API void qw_email_document_free(QwEmailDocument *document);
 
 #ifdef __cplusplus

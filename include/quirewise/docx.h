@@ -45,9 +45,11 @@ QwDocxStatus qw_docx_parse(const void *data, size_t size,
 const uint8_t *qw_docx_document_html(const QwDocxDocument *document,
                                     size_t *out_size);
 
+/*! Return the page size and margins declared by the document. */
 QwDocxStatus qw_docx_document_get_page_layout(
     const QwDocxDocument *document, QwDocxPageLayout *out_layout);
 
+/*! Release a document returned by the parser; NULL is accepted. */
 void qw_docx_document_free(QwDocxDocument *document);
 
 #ifdef __cplusplus

@@ -60,15 +60,19 @@ QW_API int qw_pdf_open_with_password(const uint8_t *data, size_t size,
 /* Outline (bookmark) entries in document order, with their zero-based page
  * index and nesting depth. Encrypted documents report zero entries. */
 QW_API size_t qw_pdf_bookmark_count(QwPdfDocument *document);
+/*! Return one outline entry's title, target page and depth. */
 QW_API int qw_pdf_bookmark_at(QwPdfDocument *document, size_t index,
                               char *buffer, size_t capacity,
                               size_t *out_page_index, int *out_depth);
 
+/*! Copy the document title into buffer and return its length. */
 QW_API int qw_pdf_document_title(QwPdfDocument *document, char *buffer,
                                  size_t capacity);
+/*! Copy the document author into buffer and return its length. */
 QW_API int qw_pdf_document_author(QwPdfDocument *document, char *buffer,
                                   size_t capacity);
 
+/*! Open a PDF and also report the page count and structure. */
 QW_API int qw_pdf_open_structure(const uint8_t *data, size_t size,
                                  QwPdfDocument **out_document,
                                  size_t *out_page_count,

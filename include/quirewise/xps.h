@@ -28,6 +28,7 @@ typedef struct QwXpsPageInfo {
 /* The input bytes are borrowed and must remain valid until document close. */
 QwXpsStatus qw_xps_document_open(const void *data, size_t size,
                                  QwXpsDocument **out_document);
+/*! Return the number of fixed pages. */
 size_t qw_xps_document_page_count(const QwXpsDocument *document);
 /* Page XML is allocated by the library and released with qw_xps_data_free.
  * Width and height use XPS FixedPage units (1/96 inch). */
@@ -36,7 +37,9 @@ QwXpsStatus qw_xps_document_read_page(QwXpsDocument *document,
                                       uint8_t **out_xml,
                                       size_t *out_size,
                                       QwXpsPageInfo *out_info);
+/*! Release page data returned by the reader; NULL is accepted. */
 void qw_xps_data_free(uint8_t *data);
+/*! Close an XPS document; NULL is accepted. */
 void qw_xps_document_close(QwXpsDocument *document);
 
 #ifdef __cplusplus

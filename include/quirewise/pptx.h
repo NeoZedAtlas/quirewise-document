@@ -29,11 +29,13 @@ typedef enum QwPptxFormat {
 
 typedef struct QwPptxDocument QwPptxDocument;
 
+/*! Parse a PPTX/PPSX presentation into a document. */
 QwPptxStatus qw_pptx_parse(QwPptxFormat format, const void *data, size_t size,
                            QwPptxDocument **out_document);
 /* HTML bytes are borrowed from the document and remain valid until freed. */
 const uint8_t *qw_pptx_document_html(const QwPptxDocument *document,
                                     size_t *out_size);
+/*! Release a document returned by the parser; NULL is accepted. */
 void qw_pptx_document_free(QwPptxDocument *document);
 
 #ifdef __cplusplus

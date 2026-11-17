@@ -26,11 +26,13 @@ typedef enum QwOdtFormat {
 
 typedef struct QwOdtDocument QwOdtDocument;
 
+/*! Parse an ODT/FODT document. */
 QwOdtStatus qw_odt_parse(QwOdtFormat format, const void *data, size_t size,
                          QwOdtDocument **out_document);
 /* HTML bytes are borrowed from the document and remain valid until freed. */
 const uint8_t *qw_odt_document_html(const QwOdtDocument *document,
                                    size_t *out_size);
+/*! Release a document returned by the parser; NULL is accepted. */
 void qw_odt_document_free(QwOdtDocument *document);
 
 #ifdef __cplusplus

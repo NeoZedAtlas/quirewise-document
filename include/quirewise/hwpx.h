@@ -26,8 +26,11 @@ QwHwpxStatus qw_hwpx_parse(const void *data, size_t size,
 /* HTML bytes are borrowed and remain valid until the document is freed. */
 const uint8_t *qw_hwpx_document_html(const QwHwpxDocument *document,
                                      size_t *out_size);
+/*! Return the number of sections. */
 size_t qw_hwpx_document_section_count(const QwHwpxDocument *document);
+/*! Return the number of unsupported objects skipped by the reader. */
 size_t qw_hwpx_document_omitted_object_count(const QwHwpxDocument *document);
+/*! Release a document returned by the parser; NULL is accepted. */
 void qw_hwpx_document_free(QwHwpxDocument *document);
 
 /* Build a minimal HWPX package from an HTML fragment. Paragraphs become OWPML
@@ -35,6 +38,7 @@ void qw_hwpx_document_free(QwHwpxDocument *document);
  * with qw_hwpx_buffer_free(). */
 QwHwpxStatus qw_hwpx_create(const void *html, size_t html_size,
                             uint8_t **out_package, size_t *out_size);
+/*! Release a buffer returned by qw_hwpx_create(); NULL is accepted. */
 void qw_hwpx_buffer_free(void *buffer);
 
 #ifdef __cplusplus
