@@ -160,6 +160,17 @@ int qw_doc_convert_html(const char *html,
                           uint8_t **out_pdf,
                           size_t *out_size,
                           QwConvertReport *report);
+/* Same renderer with a caller-supplied TrueType font embedded as /F3
+ * (CIDFontType2 + Identity-H + ToUnicode). NULL font_path keeps the built-in
+ * Helvetica/STSong-Light pair. */
+int qw_doc_convert_html_with_font(const char *html,
+                                  size_t html_size,
+                                  float page_width_points,
+                                  float page_height_points,
+                                  const char *font_path,
+                                  uint8_t **out_pdf,
+                                  size_t *out_size,
+                                  QwConvertReport *report);
 int qw_doc_convert_html_to_stream(const char *html,
                                    size_t html_size,
                                    FILE *stream,

@@ -1624,6 +1624,27 @@ static int convert_rtf_to_pdf(const uint8_t *data, size_t size,
     }
     return rc;
 }
+
+static int dispatch_render_html(const uint8_t *html, size_t html_size,
+                                float page_width, float page_height,
+                                const QwConvertOptions *options,
+                                uint8_t **out_pdf, size_t *out_size,
+                                QwConvertReport *report)
+{
+    if (options && options->pdf_font_path && options->pdf_font_path[0]) {
+        return qw_doc_convert_html_with_font(
+            (const char *)html, html_size, page_width, page_height,
+            options->pdf_font_path, out_pdf, out_size, report);
+    }
+    if (page_width > 0.0f && page_height > 0.0f) {
+        return qw_doc_convert_html_with_page_size(
+            (const char *)html, html_size, page_width, page_height, out_pdf,
+            out_size, report);
+    }
+    return qw_doc_convert_html((const char *)html, html_size, out_pdf, out_size,
+                               report);
+}
+
 int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
                                         const char *input_extension,
                                         int reflow_epub,
@@ -1659,8 +1680,7 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
         int epub_status = epub_to_html_internal(data, size, &epub_html,
                                                 &epub_html_size, report);
         if (epub_status != QW_STATUS_OK) return epub_status;
-        epub_status = qw_doc_convert_html(epub_html, epub_html_size, out_pdf,
-                                            out_size, report);
+        epub_status = dispatch_render_html((const uint8_t *)epub_html, epub_html_size, 0.0f, 0.0f, options, out_pdf, out_size, report);
         free(epub_html);
         if (epub_status == QW_STATUS_OK && report) {
             snprintf(report->note, sizeof(report->note),
@@ -1738,8 +1758,7 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
                 epub_to_html_internal(data, size, &epub_html, &epub_html_size,
                                       report);
             if (epub_status != QW_STATUS_OK) return epub_status;
-            epub_status = qw_doc_convert_html(epub_html, epub_html_size, out_pdf,
-                                              out_size, report);
+            epub_status = dispatch_render_html((const uint8_t *)epub_html, epub_html_size, 0.0f, 0.0f, options, out_pdf, out_size, report);
             free(epub_html);
             if (epub_status == QW_STATUS_OK && report) {
                 snprintf(report->note, sizeof(report->note),
@@ -1930,12 +1949,11 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
     if (layout.width_twips > 0u && layout.height_twips > 0u) {
         float width = (float)layout.width_twips / 20.0f;
         float height = (float)layout.height_twips / 20.0f;
-        rc = qw_doc_convert_html_with_page_size((const char *)html, html_size,
-                                                  width, height, out_pdf, out_size,
-                                                  report);
+        rc = dispatch_render_html(html, html_size, width, height, options,
+                                  out_pdf, out_size, report);
     } else {
-        rc = qw_doc_convert_html((const char *)html, html_size, out_pdf,
-                                   out_size, report);
+        rc = dispatch_render_html(html, html_size, 0.0f, 0.0f, options,
+                                  out_pdf, out_size, report);
     }
     free(html);
     return rc;

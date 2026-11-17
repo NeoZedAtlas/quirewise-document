@@ -109,6 +109,17 @@ if(BUILD_TESTING)
     target_link_libraries(quirewise_document_html_pdf_test PRIVATE quirewise_document)
     add_test(NAME quirewise_document_html_pdf
         COMMAND quirewise_document_html_pdf_test)
+    add_executable(quirewise_document_pdf_font_embed_test
+        tests/pdf_font_embed_test.c)
+    target_compile_features(quirewise_document_pdf_font_embed_test PRIVATE c_std_11)
+    target_compile_definitions(quirewise_document_pdf_font_embed_test PRIVATE
+        QUIREWISE_FONT_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/FileeTest-TrueType.ttf")
+    target_include_directories(quirewise_document_pdf_font_embed_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+    target_link_libraries(quirewise_document_pdf_font_embed_test PRIVATE
+        quirewise_document)
+    add_test(NAME quirewise_document_pdf_font_embed
+        COMMAND quirewise_document_pdf_font_embed_test)
 
     add_executable(quirewise_document_odt_pdf_test tests/odt_pdf_end_to_end_test.c)
     target_compile_features(quirewise_document_odt_pdf_test PRIVATE c_std_11)
