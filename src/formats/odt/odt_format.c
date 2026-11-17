@@ -923,13 +923,17 @@ static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
             !odt_html_literal(context->html, "]</sup>"))
             return 0;
         if (body) {
-            if (!odt_html_literal(context->html,
-                                  "<span class=\"odt-footnote\">") ||
+            const char *note_class = qw_xml_att(node, "text:note-class");
+            const char *span_class =
+                note_class && strcmp(note_class, "endnote") == 0
+                    ? "odt-endnote" : "odt-footnote";
+            if (!odt_html_literal(context->html, "<span class=\"") ||
+                !odt_html_literal(context->html, span_class) ||
+                !odt_html_literal(context->html, "\">") ||
                 !odt_collect_note_text(context->html, body) ||
                 !odt_html_literal(context->html, "</span>"))
                 return 0;
         }
-        (void)qw_xml_att(node, "text:note-class");
         return 1;
     } else if (strcmp(tag, "a") == 0) {
         const char *href = qw_xml_att(node, "xlink:href");
