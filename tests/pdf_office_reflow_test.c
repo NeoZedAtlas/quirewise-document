@@ -191,6 +191,47 @@ int main(void)
         free(styled_epub);
     }
 
+    /* One line with two fonts becomes two runs in one paragraph. */
+    {
+        FILE *file = fopen(QUIREWISE_INLINE_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *inline_docx = NULL;
+        size_t inline_docx_size = 0u;
+        uint8_t *inline_epub = NULL;
+        size_t inline_epub_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &inline_docx,
+                                          &inline_docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(inline_docx, inline_docx_size, "plain "));
+        CHECK(contains(inline_docx, inline_docx_size, "bold"));
+        CHECK(contains(inline_docx, inline_docx_size, "<w:b/>"));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                          &opts, &inline_epub,
+                                          &inline_epub_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(inline_epub, inline_epub_size, "font-weight:bold"));
+        CHECK(contains(inline_epub, inline_epub_size, "plain "));
+        free(bytes);
+        free(inline_docx);
+        free(inline_epub);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

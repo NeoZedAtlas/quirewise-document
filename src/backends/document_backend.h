@@ -90,13 +90,19 @@ int qw_doc_convert_epub_memory(const uint8_t *data, size_t size,
 /* Container/text writers: HTMLZ (index.html), TXTZ (index.txt) and a minimal
  * HWPX package, all built from the HTML intermediate. */
 /* Layout-preserving PDF -> DOCX/EPUB: rasterize pages and embed them. */
+/* One styled text run inside an extracted line. */
+typedef struct QwPdfRun {
+    char *text;
+    char font[32];
+    double size;
+} QwPdfRun;
+
 /* One extracted text line with its text-space origin (points). */
 typedef struct QwPdfLine {
     double x;
     double y;
-    double size;
-    char font[32];
-    char *text;
+    size_t run_count;
+    QwPdfRun *runs;
 } QwPdfLine;
 
 int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,

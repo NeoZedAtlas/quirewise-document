@@ -684,19 +684,29 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
             if (indent < 0) indent = 0;
             if (indent > 20000) indent = 20000;
+            size_t run_index;
             if (!pdf_buffer_printf(
-                    &body,
-                    "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>"
-                    "<w:r><w:rPr>%s%s%s</w:rPr>"
-                    "<w:t xml:space=\"preserve\">",
-                    indent,
-                    office_pdf_is_bold(page_lines[line_index].font)
-                        ? "<w:b/>" : "",
-                    office_pdf_is_italic(page_lines[line_index].font)
-                        ? "<w:i/>" : "",
-                    office_pdf_size_tag(page_lines[line_index].size)) ||
-                !pdf_buffer_text(&body, page_lines[line_index].text) ||
-                !pdf_buffer_text(&body, "</w:t></w:r></w:p>")) {
+                    &body, "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>",
+                    indent)) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
+            }
+            for (run_index = 0u; run_index < page_lines[line_index].run_count;
+                 ++run_index) {
+                const QwPdfRun *run = &page_lines[line_index].runs[run_index];
+                if (!pdf_buffer_printf(
+                        &body, "<w:r><w:rPr>%s%s%s</w:rPr>"
+                               "<w:t xml:space=\"preserve\">",
+                        office_pdf_is_bold(run->font) ? "<w:b/>" : "",
+                        office_pdf_is_italic(run->font) ? "<w:i/>" : "",
+                        office_pdf_size_tag(run->size)) ||
+                    !pdf_buffer_text(&body, run->text) ||
+                    !pdf_buffer_text(&body, "</w:t></w:r>")) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+            }
+            if (!pdf_buffer_text(&body, "</w:p>")) {
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }
@@ -810,15 +820,27 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
         for (line_index = 0u; line_index < line_count; ++line_index) {
             double indent = (page_lines[line_index].x - base_x);
             if (indent < 0.0) indent = 0.0;
+            size_t run_index;
             if (!pdf_buffer_printf(&chapter,
-                                   "<p style=\"margin-left:%.1fpt;%s%s\">",
-                                   indent,
-                                   office_pdf_is_bold(page_lines[line_index].font)
-                                       ? "font-weight:bold;" : "",
-                                   office_pdf_is_italic(page_lines[line_index].font)
-                                       ? "font-style:italic;" : "") ||
-                !pdf_buffer_text(&chapter, page_lines[line_index].text) ||
-                !pdf_buffer_text(&chapter, "</p>")) {
+                                   "<p style=\"margin-left:%.1fpt\">", indent)) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
+            }
+            for (run_index = 0u; run_index < page_lines[line_index].run_count;
+                 ++run_index) {
+                const QwPdfRun *run = &page_lines[line_index].runs[run_index];
+                if (!pdf_buffer_printf(&chapter, "<span style=\"%s%s\">",
+                                       office_pdf_is_bold(run->font)
+                                           ? "font-weight:bold;" : "",
+                                       office_pdf_is_italic(run->font)
+                                           ? "font-style:italic;" : "") ||
+                    !pdf_buffer_text(&chapter, run->text) ||
+                    !pdf_buffer_text(&chapter, "</span>")) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+            }
+            if (!pdf_buffer_text(&chapter, "</p>")) {
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }

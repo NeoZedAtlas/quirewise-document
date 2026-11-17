@@ -2538,12 +2538,18 @@ static int pdf_emit_string(QwPdfBuffer *text, const QwPdfBuffer *raw, int type0,
     return 1;
 }
 
+typedef struct QwPdfTextRun {
+    QwPdfBuffer text;
+    char font[32];
+    double size;
+} QwPdfTextRun;
+
 typedef struct QwPdfTextLine {
     double x;
     double y;
-    double size;
-    char font[32];
-    QwPdfBuffer text;
+    QwPdfTextRun *runs;
+    size_t run_count;
+    size_t run_capacity;
 } QwPdfTextLine;
 
 typedef struct QwPdfTextLines {
@@ -2551,6 +2557,39 @@ typedef struct QwPdfTextLines {
     size_t count;
     size_t capacity;
 } QwPdfTextLines;
+
+static int pdf_line_add_run(QwPdfTextLine *line, const QwPdfBuffer *chunk,
+                            const char *font, double size)
+{
+    QwPdfTextRun *run;
+    if (!chunk->size) return 1;
+    if (line->run_count) {
+        QwPdfTextRun *last = &line->runs[line->run_count - 1u];
+        if (strcmp(last->font, font ? font : "") == 0 && last->size == size)
+            return pdf_buffer_append(&last->text, chunk->data, chunk->size);
+    }
+    if (line->run_count >= line->run_capacity) {
+        size_t grown = line->run_capacity ? line->run_capacity * 2u : 4u;
+        QwPdfTextRun *resized = (QwPdfTextRun *)realloc(
+            line->runs, grown * sizeof(*resized));
+        if (!resized) return 0;
+        line->runs = resized;
+        line->run_capacity = grown;
+    }
+    run = &line->runs[line->run_count];
+    memset(run, 0, sizeof(*run));
+    run->size = size;
+    run->font[0] = '\0';
+    if (font) {
+        size_t length = strlen(font);
+        if (length && font[0] == '/') { ++font; --length; }
+        if (length >= sizeof(run->font)) length = sizeof(run->font) - 1u;
+        memcpy(run->font, font, length);
+        run->font[length] = '\0';
+    }
+    line->run_count += 1u;
+    return pdf_buffer_append(&run->text, chunk->data, chunk->size);
+}
 
 static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
                             const QwPdfBuffer *chunk, const char *font,
@@ -2562,8 +2601,7 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
         QwPdfTextLine *last = &lines->items[lines->count - 1u];
         double dy = last->y - y;
         if (dy < 0.0) dy = -dy;
-        if (dy <= 2.0)
-            return pdf_buffer_append(&last->text, chunk->data, chunk->size);
+        if (dy <= 2.0) return pdf_line_add_run(last, chunk, font, size);
     }
     if (lines->count >= lines->capacity) {
         size_t grown = lines->capacity ? lines->capacity * 2u : 16u;
@@ -2574,28 +2612,24 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
         lines->capacity = grown;
     }
     line = &lines->items[lines->count];
+    memset(line, 0, sizeof(*line));
     line->x = x;
     line->y = y;
-    line->size = size;
-    line->font[0] = '\0';
-    if (font) {
-        size_t length = strlen(font);
-        if (length && font[0] == '/') { ++font; --length; }
-        if (length >= sizeof(line->font)) length = sizeof(line->font) - 1u;
-        memcpy(line->font, font, length);
-        line->font[length] = '\0';
-    }
-    memset(&line->text, 0, sizeof(line->text));
     lines->count += 1u;
-    return pdf_buffer_append(&line->text, chunk->data, chunk->size);
+    return pdf_line_add_run(line, chunk, font, size);
 }
 
 static void pdf_lines_free(QwPdfTextLines *lines)
 {
     size_t index;
     if (!lines) return;
-    for (index = 0u; index < lines->count; ++index)
-        free(lines->items[index].text.data);
+    for (index = 0u; index < lines->count; ++index) {
+        size_t run_index;
+        for (run_index = 0u; run_index < lines->items[index].run_count;
+             ++run_index)
+            free(lines->items[index].runs[run_index].text.data);
+        free(lines->items[index].runs);
+    }
     free(lines->items);
     memset(lines, 0, sizeof(*lines));
 }
@@ -3236,7 +3270,12 @@ void qw_doc_pdf_lines_free(QwPdfLine *lines, size_t count)
 {
     size_t index;
     if (!lines) return;
-    for (index = 0u; index < count; ++index) free(lines[index].text);
+    for (index = 0u; index < count; ++index) {
+        size_t run_index;
+        for (run_index = 0u; run_index < lines[index].run_count; ++run_index)
+            free(lines[index].runs[run_index].text);
+        free(lines[index].runs);
+    }
     free(lines);
 }
 
@@ -3263,28 +3302,41 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
     }
     free(text.data);
     *out_lines = (QwPdfLine *)calloc(lines.count ? lines.count : 1u,
-                                   sizeof(QwPdfLine));
+                                     sizeof(QwPdfLine));
     if (!*out_lines) {
         pdf_lines_free(&lines);
         return QW_STATUS_ERR_OUT_OF_MEMORY;
     }
     for (index = 0u; index < lines.count; ++index) {
-        size_t size = lines.items[index].text.size;
-        (*out_lines)[index].x = lines.items[index].x;
-        (*out_lines)[index].y = lines.items[index].y;
-        (*out_lines)[index].size = lines.items[index].size;
-        memcpy((*out_lines)[index].font, lines.items[index].font,
-               sizeof((*out_lines)[index].font));
-        (*out_lines)[index].text = (char *)malloc(size + 1u);
-        if (!(*out_lines)[index].text) {
+        size_t run_index;
+        QwPdfLine *line = &(*out_lines)[index];
+        line->x = lines.items[index].x;
+        line->y = lines.items[index].y;
+        line->run_count = lines.items[index].run_count;
+        line->runs = (QwPdfRun *)calloc(line->run_count ? line->run_count : 1u,
+                                        sizeof(QwPdfRun));
+        if (!line->runs) {
             qw_doc_pdf_lines_free(*out_lines, index);
             *out_lines = NULL;
             pdf_lines_free(&lines);
             return QW_STATUS_ERR_OUT_OF_MEMORY;
         }
-        if (size) memcpy((*out_lines)[index].text, lines.items[index].text.data,
-                         size);
-        (*out_lines)[index].text[size] = '\0';
+        for (run_index = 0u; run_index < line->run_count; ++run_index) {
+            const QwPdfTextRun *source = &lines.items[index].runs[run_index];
+            QwPdfRun *run = &line->runs[run_index];
+            run->size = source->size;
+            memcpy(run->font, source->font, sizeof(run->font));
+            run->text = (char *)malloc(source->text.size + 1u);
+            if (!run->text) {
+                qw_doc_pdf_lines_free(*out_lines, index + 1u);
+                *out_lines = NULL;
+                pdf_lines_free(&lines);
+                return QW_STATUS_ERR_OUT_OF_MEMORY;
+            }
+            if (source->text.size)
+                memcpy(run->text, source->text.data, source->text.size);
+            run->text[source->text.size] = '\0';
+        }
     }
     *out_count = lines.count;
     pdf_lines_free(&lines);
