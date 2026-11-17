@@ -65,8 +65,8 @@ int main(void)
         return 1;
     }
     free(pptx);
-    if (!contains(html, html_size,
-                  "<div class=\"textbox\" style=\"transform:rotate(90deg)\">") ||
+    if (!contains(html, html_size, "class=\"textbox\"") ||
+        !contains(html, html_size, "transform:rotate(90deg)") ||
         !contains(html, html_size, "Text after image")) {
         free(html);
         fputs("FAIL: PPTX text shape rotation was not preserved\n", stderr);

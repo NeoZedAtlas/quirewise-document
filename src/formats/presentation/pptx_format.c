@@ -767,16 +767,27 @@ static int pptx_render_inline(PptxReader *reader, QwXmlNode *node,
     return 1;
 }
 
-static int pptx_shape_rotation(PptxReader *reader, QwXmlNode *shape)
+static void pptx_shape_geometry(PptxReader *reader, QwXmlNode *shape,
+                                int *out_rotation, long *out_x,
+                                long *out_y)
 {
     QwXmlNode *xfrm = pptx_find_descendant(reader, qw_xml_down(shape), "xfrm", 0u);
+    QwXmlNode *offset = xfrm
+        ? pptx_find_descendant(reader, qw_xml_down(xfrm), "off", 0u) : NULL;
     const char *rot = xfrm ? qw_xml_att(xfrm, "rot") : NULL;
-    long rotation;
-    if (!rot || !rot[0]) return 0;
-    rotation = strtol(rot, NULL, 10) / 60000L;
-    rotation %= 360L;
-    if (rotation < 0) rotation += 360L;
-    return (int)rotation;
+    const char *x = offset ? qw_xml_att(offset, "x") : NULL;
+    const char *y = offset ? qw_xml_att(offset, "y") : NULL;
+    long rotation = 0;
+    if (rot && rot[0]) {
+        rotation = strtol(rot, NULL, 10) / 60000L;
+        rotation %= 360L;
+        if (rotation < 0) rotation += 360L;
+    }
+    *out_rotation = (int)rotation;
+    *out_x = (x && x[0]) ? strtol(x, NULL, 10) / 9525L : 0;
+    *out_y = (y && y[0]) ? strtol(y, NULL, 10) / 9525L : 0;
+    if (*out_x < 0) *out_x = 0;
+    if (*out_y < 0) *out_y = 0;
 }
 
 static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
@@ -791,14 +802,22 @@ static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
         } else if (pptx_is_tag(node, "pic")) {
             if (!pptx_emit_picture(reader, node, depth + 1u)) return 0;
         } else if (pptx_is_tag(node, "sp")) {
-            int rotation = pptx_shape_rotation(reader, node);
-            if (rotation) {
-                char style[64];
-                int length = snprintf(style, sizeof(style),
-                                      "<div class=\"textbox\" style=\"transform:rotate(%ddeg)\">",
-                                      rotation);
-                if (length <= 0 || (size_t)length >= sizeof(style) ||
-                    !pptx_html_literal(reader, style) ||
+            int rotation = 0;
+            long x = 0, y = 0;
+            pptx_shape_geometry(reader, node, &rotation, &x, &y);
+            if (rotation || x || y) {
+                char tag[192];
+                int length = snprintf(tag, sizeof(tag),
+                                      "<div class=\"%s\" style=\"margin-left:%ldpx;margin-top:%ldpx;%s\">",
+                                      rotation ? "textbox" : "shape", x, y,
+                                      rotation ? "" : "");
+                if (rotation) {
+                    length = snprintf(tag, sizeof(tag),
+                                      "<div class=\"textbox\" style=\"margin-left:%ldpx;margin-top:%ldpx;transform:rotate(%ddeg)\">",
+                                      x, y, rotation);
+                }
+                if (length <= 0 || (size_t)length >= sizeof(tag) ||
+                    !pptx_html_literal(reader, tag) ||
                     !pptx_render_nodes(reader, qw_xml_down(node),
                                        depth + 1u) ||
                     !pptx_html_literal(reader, "</div>"))
