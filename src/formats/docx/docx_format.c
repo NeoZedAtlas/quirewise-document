@@ -2145,12 +2145,153 @@ static void docx_table_merge_dispose(DocxTableMergeInfo *table)
     memset(table, 0, sizeof(*table));
 }
 
+typedef struct QwDocxFootnote {
+    uint32_t id;
+    char *text;
+    size_t text_size;
+} QwDocxFootnote;
+
+typedef struct QwDocxFootnotes {
+    QwDocxFootnote *items;
+    size_t count;
+    size_t capacity;
+} QwDocxFootnotes;
+
+static void docx_footnotes_dispose(QwDocxFootnotes *footnotes)
+{
+    size_t index;
+    if (!footnotes) return;
+    for (index = 0u; index < footnotes->count; ++index)
+        free(footnotes->items[index].text);
+    free(footnotes->items);
+    memset(footnotes, 0, sizeof(*footnotes));
+}
+
+static const QwDocxFootnote *docx_footnote_find(
+    const QwDocxFootnotes *footnotes, uint32_t id)
+{
+    size_t index;
+    if (!footnotes) return NULL;
+    for (index = 0u; index < footnotes->count; ++index) {
+        if (footnotes->items[index].id == id) return &footnotes->items[index];
+    }
+    return NULL;
+}
+
+static int docx_parse_footnotes(const uint8_t *xml, size_t xml_size,
+                                QwDocxFootnotes *out_footnotes)
+{
+    size_t i = 0u;
+    long current = -1;
+    int in_text = 0;
+    size_t total_text = 0u;
+    if (!xml || !xml_size || !out_footnotes) return 0;
+    memset(out_footnotes, 0, sizeof(*out_footnotes));
+    while (i < xml_size) {
+        size_t name_start, name_end, tag_end;
+        int closing;
+        if (xml[i] != '<') {
+            size_t start = i;
+            while (i < xml_size && xml[i] != '<') ++i;
+            if (in_text && current >= 0) {
+                QwDocxFootnote *item = &out_footnotes->items[current];
+                size_t segment = i - start;
+                if (total_text + segment > 4u * 1024u * 1024u) {
+                    docx_footnotes_dispose(out_footnotes);
+                    return 0;
+                }
+                {
+                    char *grown = (char *)realloc(item->text,
+                                                  item->text_size + segment + 1u);
+                    if (!grown) {
+                        docx_footnotes_dispose(out_footnotes);
+                        return 0;
+                    }
+                    item->text = grown;
+                    memcpy(item->text + item->text_size, xml + start, segment);
+                    item->text_size += segment;
+                    item->text[item->text_size] = '\0';
+                }
+                total_text += segment;
+            }
+            continue;
+        }
+        if (i + 3u < xml_size && memcmp(xml + i, "<!--", 4u) == 0) {
+            while (i + 2u < xml_size &&
+                   memcmp(xml + i, "-->", 3u) != 0)
+                ++i;
+            i = i + 2u < xml_size ? i + 3u : xml_size;
+            continue;
+        }
+        if (i + 1u < xml_size && xml[i + 1u] == '/') {
+            closing = 1;
+            name_start = i + 2u;
+        } else {
+            closing = 0;
+            name_start = i + 1u;
+        }
+        name_end = name_start;
+        while (name_end < xml_size && xml[name_end] != '>' &&
+               xml[name_end] != '/' && xml[name_end] != ' ' &&
+               xml[name_end] != '\t' && xml[name_end] != '\r' &&
+               xml[name_end] != '\n')
+            ++name_end;
+        tag_end = name_end;
+        while (tag_end < xml_size && xml[tag_end] != '>') ++tag_end;
+        if (tag_end >= xml_size) break;
+        ++tag_end;
+        if (xml_local_name_is(xml + name_start, name_end - name_start,
+                              "footnote")) {
+            if (closing) {
+                current = -1;
+                in_text = 0;
+            } else {
+                uint32_t id = 0u;
+                QwDocxXmlTag tag = { name_start, name_end - name_start,
+                                     tag_end, 0 };
+                if (docx_get_attribute_u32(xml, &tag, "id", &id) &&
+                    id >= 2u && out_footnotes->count < 1024u) {
+                    QwDocxFootnote *grown;
+                    if (out_footnotes->count == out_footnotes->capacity) {
+                        size_t capacity = out_footnotes->capacity
+                            ? out_footnotes->capacity * 2u : 8u;
+                        grown = (QwDocxFootnote *)realloc(
+                            out_footnotes->items,
+                            capacity * sizeof(QwDocxFootnote));
+                        if (!grown) {
+                            docx_footnotes_dispose(out_footnotes);
+                            return 0;
+                        }
+                        out_footnotes->items = grown;
+                        out_footnotes->capacity = capacity;
+                    }
+                    out_footnotes->items[out_footnotes->count].id = id;
+                    out_footnotes->items[out_footnotes->count].text = NULL;
+                    out_footnotes->items[out_footnotes->count].text_size = 0u;
+                    current = (long)out_footnotes->count;
+                    ++out_footnotes->count;
+                } else {
+                    current = -1;
+                }
+                in_text = 0;
+            }
+        } else if (xml_local_name_is(xml + name_start,
+                                      name_end - name_start, "t") &&
+                   current >= 0) {
+            in_text = !closing;
+        }
+        i = tag_end;
+    }
+    return 1;
+}
+
 static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                                      QwZipArchive *archive,
                                      const uint8_t *relationships,
                                      size_t relationships_size,
                                      const QwDocxNumbering *numbering,
                                      const QwDocxStyles *styles,
+                                     const QwDocxFootnotes *footnotes,
                                      const QwDocxPageLayout *page_layout,
                                      const char *header_html,
                                      size_t header_size,
@@ -2555,6 +2696,32 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                 }
             } else if (!closing &&
                        xml_local_name_is(xml + name_start,
+                                         name_end - name_start,
+                                         "footnoteReference")) {
+                uint32_t footnote_id = 0u;
+                QwDocxXmlTag tag = { name_start, name_end - name_start,
+                                     tag_end, 0 };
+                const QwDocxFootnote *footnote = NULL;
+                if (docx_get_attribute_u32(xml, &tag, "id", &footnote_id))
+                    footnote = docx_footnote_find(footnotes, footnote_id);
+                if (footnote) {
+                    char marker[48];
+                    int marker_size;
+                    if (in_paragraph && !paragraph_rendered &&
+                        !paragraph_is_list &&
+                        !docx_ensure_plain_paragraph(
+                            html, &list, paragraph_tag, paragraph_alignment,
+                            paragraph_indent, &paragraph_rendered))
+                        return 0;
+                    marker_size = snprintf(marker, sizeof(marker),
+                                           "<sup>[%u]</sup>", footnote->id);
+                    if (marker_size <= 0 ||
+                        (size_t)marker_size >= sizeof(marker) ||
+                        !html_literal(html, marker))
+                        return 0;
+                }
+            } else if (!closing &&
+                       xml_local_name_is(xml + name_start,
                                          name_end - name_start, "extent")) {
                 const uint8_t *width_value;
                 size_t width_size;
@@ -2833,8 +3000,27 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
         if (!paragraph_is_list && paragraph_rendered &&
                    !html_close_paragraph(html, paragraph_tag)) return 0;
     }
-    return docx_close_list(html, &list) &&
-           (!footer_html || !footer_size ||
+    if (!docx_close_list(html, &list)) return 0;
+    if (footnotes && footnotes->count) {
+        size_t index;
+        if (!html_literal(html, "<div class=\"docx-footnotes\">")) return 0;
+        for (index = 0u; index < footnotes->count; ++index) {
+            char number[32];
+            int number_size = snprintf(number, sizeof(number), "[%u] ",
+                                       footnotes->items[index].id);
+            if (number_size <= 0 ||
+                (size_t)number_size >= sizeof(number) ||
+                !html_literal(html, "<p>") ||
+                !html_literal(html, number) ||
+                !append_word_text(html,
+                                  (const uint8_t *)footnotes->items[index].text,
+                                  footnotes->items[index].text_size) ||
+                !html_literal(html, "</p>"))
+                return 0;
+        }
+        if (!html_literal(html, "</div>")) return 0;
+    }
+    return (!footer_html || !footer_size ||
             html_append(html, footer_html, footer_size)) &&
            html_append(html, suffix, sizeof(suffix) - 1u);
 }
@@ -2858,6 +3044,9 @@ static int docx_build_layout_html(const void *data, size_t size,
     void *xml = NULL;
     void *relationships = NULL;
     void *numbering_xml = NULL;
+    void *footnotes_xml = NULL;
+    size_t footnotes_size = 0u;
+    QwDocxFootnotes footnotes;
     QwDocxHtml html = {0};
     QwDocxHtml header_snippet = {0};
     QwDocxHtml footer_snippet = {0};
@@ -2950,6 +3139,33 @@ static int docx_build_layout_html(const void *data, size_t size,
                               numbering_size, &numbering)) {
         memset(&numbering, 0, sizeof(numbering));
     }
+    memset(&footnotes, 0, sizeof(footnotes));
+    {
+        int footnotes_index = qw_zip_reader_locate_file(
+            &archive, "word/footnotes.xml", NULL, QW_ZIP_CASE_SENSITIVE);
+        if (footnotes_index >= 0 &&
+            qw_zip_reader_is_file_supported(&archive,
+                                            (size_t)footnotes_index)) {
+            QwZipEntryInfo footnotes_stat;
+            if (qw_zip_reader_file_stat(&archive, (size_t)footnotes_index,
+                                        &footnotes_stat) &&
+                footnotes_stat.uncompressed_size <= 16u * 1024u * 1024u &&
+                footnotes_stat.uncompressed_size <= SIZE_MAX) {
+                footnotes_xml = qw_zip_reader_extract_to_heap(
+                    &archive, (size_t)footnotes_index, &footnotes_size, 0);
+                if (footnotes_size != footnotes_stat.uncompressed_size) {
+                    free(footnotes_xml);
+                    footnotes_xml = NULL;
+                    footnotes_size = 0u;
+                }
+                if (footnotes_xml &&
+                    !docx_parse_footnotes((const uint8_t *)footnotes_xml,
+                                          footnotes_size, &footnotes)) {
+                    docx_footnotes_dispose(&footnotes);
+                }
+            }
+        }
+    }
     docx_load_styles(&archive, &styles);
     xml = qw_zip_reader_extract_to_heap(&archive, document_index, &xml_size, 0);
     if (!xml) {
@@ -2976,6 +3192,7 @@ static int docx_build_layout_html(const void *data, size_t size,
                                     relationships_size,
                                     &numbering,
                                     &styles,
+                                    &footnotes,
                                     &page_layout,
                                     header_snippet.data, header_snippet.size,
                                     footer_snippet.data, footer_snippet.size,
@@ -2991,6 +3208,8 @@ cleanup:
     free(xml);
     free(relationships);
     free(numbering_xml);
+    free(footnotes_xml);
+    docx_footnotes_dispose(&footnotes);
     free(header_snippet.data);
     free(footer_snippet.data);
     if (archive_open) qw_zip_reader_end(&archive);
