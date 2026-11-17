@@ -128,7 +128,8 @@ if(BUILD_TESTING)
     target_compile_definitions(quirewise_document_pdf_office_reflow_test PRIVATE
         QUIREWISE_INDENTED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/indented.pdf"
         QUIREWISE_STYLES_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/styles.pdf"
-        QUIREWISE_INLINE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/inline.pdf")
+        QUIREWISE_INLINE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/inline.pdf"
+        QUIREWISE_SPACING_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/spacing.pdf")
     target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
         quirewise_document)
     add_test(NAME quirewise_document_pdf_office_reflow

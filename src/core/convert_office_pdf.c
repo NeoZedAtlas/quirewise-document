@@ -651,6 +651,7 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     int status;
     int zip_open = 0;
     size_t index;
+    double previous_size = 0.0;
 
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
@@ -682,12 +683,33 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
         }
         for (line_index = 0u; line_index < line_count; ++line_index) {
             int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
+            int spacing = 0;
             if (indent < 0) indent = 0;
             if (indent > 20000) indent = 20000;
+            if (line_index > 0) {
+                double gap = page_lines[line_index - 1u].y -
+                             page_lines[line_index].y;
+                double expected =
+                    (previous_size > 1.0 ? previous_size : 12.0) * 1.5;
+                if (gap > expected + 6.0) {
+                    spacing = (int)((gap - expected) * 20.0);
+                    if (spacing > 20000) spacing = 20000;
+                }
+            }
             size_t run_index;
-            if (!pdf_buffer_printf(
-                    &body, "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>",
-                    indent)) {
+            if (spacing > 0) {
+                if (!pdf_buffer_printf(
+                        &body,
+                        "<w:p><w:pPr><w:spacing w:before=\"%d\"/>"
+                        "<w:ind w:left=\"%d\"/></w:pPr>",
+                        spacing, indent)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+            } else if (!pdf_buffer_printf(
+                           &body,
+                           "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>",
+                           indent)) {
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }
@@ -710,6 +732,9 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }
+            previous_size = page_lines[line_index].run_count
+                                ? page_lines[line_index].runs[0].size
+                                : 0.0;
         }
         qw_doc_pdf_lines_free(page_lines, line_count);
     }
@@ -790,6 +815,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     int status;
     int zip_open = 0;
     size_t index;
+    double previous_size = 0.0;
 
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
@@ -821,8 +847,28 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             double indent = (page_lines[line_index].x - base_x);
             if (indent < 0.0) indent = 0.0;
             size_t run_index;
-            if (!pdf_buffer_printf(&chapter,
-                                   "<p style=\"margin-left:%.1fpt\">", indent)) {
+            int spacing = 0;
+            if (line_index > 0) {
+                double gap = page_lines[line_index - 1u].y -
+                             page_lines[line_index].y;
+                double expected =
+                    (previous_size > 1.0 ? previous_size : 12.0) * 1.5;
+                if (gap > expected + 6.0) {
+                    spacing = (int)((gap - expected) * 20.0);
+                    if (spacing > 20000) spacing = 20000;
+                }
+            }
+            if (spacing > 0) {
+                if (!pdf_buffer_printf(
+                        &chapter,
+                        "<p style=\"margin-left:%.1fpt;margin-top:%.1fpt\">",
+                        indent, (double)spacing / 20.0)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+            } else if (!pdf_buffer_printf(&chapter,
+                                          "<p style=\"margin-left:%.1fpt\">",
+                                          indent)) {
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }
@@ -844,6 +890,9 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                 qw_doc_pdf_lines_free(page_lines, line_count);
                 goto out_of_memory;
             }
+            previous_size = page_lines[line_index].run_count
+                                ? page_lines[line_index].runs[0].size
+                                : 0.0;
         }
         qw_doc_pdf_lines_free(page_lines, line_count);
         if (!pdf_buffer_text(&chapter, "</div>")) goto out_of_memory;
