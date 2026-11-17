@@ -1722,25 +1722,30 @@ static QwHwpxStatus hwpx_parse_archive(
                     ? strtoul(bottom_attr, NULL, 10) : 0u;
                 unsigned long left = left_attr
                     ? strtoul(left_attr, NULL, 10) : 0u;
-                char section_open[192];
-                char padding[96];
-                int padding_size = 0;
+                char section_open[256];
+                char style[224];
+                size_t style_used = 0u;
+                if (sections > 0u)
+                    style_used += (size_t)snprintf(style + style_used,
+                                                   sizeof(style) - style_used,
+                                                   "page-break-before:always;");
                 if (top || right || bottom || left) {
                     unsigned long top_px = top * 96ul / 7200ul;
                     unsigned long right_px = right * 96ul / 7200ul;
                     unsigned long bottom_px = bottom * 96ul / 7200ul;
                     unsigned long left_px = left * 96ul / 7200ul;
-                    padding_size = snprintf(padding, sizeof(padding),
+                    style_used += (size_t)snprintf(style + style_used,
+                        sizeof(style) - style_used,
                         "padding:%lupx %lupx %lupx %lupx;", top_px, right_px,
                         bottom_px, left_px);
                 }
                 if (columns >= 2u && columns <= 4u)
+                    (void)snprintf(style + style_used,
+                                   sizeof(style) - style_used,
+                                   "column-count:%u;", columns);
+                if (style[0])
                     snprintf(section_open, sizeof(section_open),
-                             "<section style=\"%scolumn-count:%u\">",
-                             padding_size > 0 ? padding : "", columns);
-                else if (padding_size > 0)
-                    snprintf(section_open, sizeof(section_open),
-                             "<section style=\"%s\">", padding);
+                             "<section style=\"%s\">", style);
                 else
                     snprintf(section_open, sizeof(section_open), "%s",
                              "<section>");

@@ -64,7 +64,7 @@ int main(void)
     html = qw_hwpx_document_html(document, &html_size);
     if (!html || !html_size ||
         !contains((const char *)html, html_size,
-                  "<section style=\"column-count:2\">") ||
+                  "<section style=\"column-count:2;\">") ||
         !contains((const char *)html, html_size, "Two columns")) {
         qw_hwpx_document_free(document);
         free(hwpx);
