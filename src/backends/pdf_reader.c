@@ -2506,9 +2506,59 @@ static int pdf_emit_string(QwPdfBuffer *text, const QwPdfBuffer *raw, int type0,
     return 1;
 }
 
+typedef struct QwPdfTextLine {
+    double x;
+    double y;
+    QwPdfBuffer text;
+} QwPdfTextLine;
+
+typedef struct QwPdfTextLines {
+    QwPdfTextLine *items;
+    size_t count;
+    size_t capacity;
+} QwPdfTextLines;
+
+static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
+                            const QwPdfBuffer *chunk)
+{
+    QwPdfTextLine *line;
+    if (!chunk->size) return 1;
+    if (lines->count) {
+        QwPdfTextLine *last = &lines->items[lines->count - 1u];
+        double dy = last->y - y;
+        if (dy < 0.0) dy = -dy;
+        if (dy <= 2.0)
+            return pdf_buffer_append(&last->text, chunk->data, chunk->size);
+    }
+    if (lines->count >= lines->capacity) {
+        size_t grown = lines->capacity ? lines->capacity * 2u : 16u;
+        QwPdfTextLine *resized = (QwPdfTextLine *)realloc(
+            lines->items, grown * sizeof(*resized));
+        if (!resized) return 0;
+        lines->items = resized;
+        lines->capacity = grown;
+    }
+    line = &lines->items[lines->count];
+    line->x = x;
+    line->y = y;
+    memset(&line->text, 0, sizeof(line->text));
+    lines->count += 1u;
+    return pdf_buffer_append(&line->text, chunk->data, chunk->size);
+}
+
+static void pdf_lines_free(QwPdfTextLines *lines)
+{
+    size_t index;
+    if (!lines) return;
+    for (index = 0u; index < lines->count; ++index)
+        free(lines->items[index].text.data);
+    free(lines->items);
+    memset(lines, 0, sizeof(*lines));
+}
+
 static int pdf_extract_content_text(const QwPdfReader *reader, const char *content,
                                     size_t content_size, const QwPdfFontMap *fonts,
-                                    QwPdfBuffer *text)
+                                    QwPdfBuffer *text, QwPdfTextLines *lines)
 {
     const char *cursor = content;
     const char *end = content + content_size;
@@ -2518,6 +2568,10 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
     const QwPdfToUnicodeEntry *unicode_entries = NULL;
     size_t unicode_count = 0u;
     size_t code_bytes = 0u;
+    double tm[6] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    double tlm[6] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    double operands[8];
+    int operand_count = 0;
     while (cursor < end) {
         const char *token;
         size_t token_length;
@@ -2528,24 +2582,34 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
         if (cursor >= end) break;
         if (*cursor == '(') {
             QwPdfBuffer raw = {NULL, 0u, 0u};
+            QwPdfBuffer chunk = {NULL, 0u, 0u};
             cursor = pdf_read_literal(cursor + 1, end, &raw);
-            if (!pdf_emit_string(text, &raw, type0, unicode_entries,
-                                 unicode_count, code_bytes)) {
+            if (!pdf_emit_string(&chunk, &raw, type0, unicode_entries,
+                                 unicode_count, code_bytes) ||
+                !pdf_buffer_append(text, chunk.data, chunk.size) ||
+                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk))) {
                 free(raw.data);
+                free(chunk.data);
                 return 0;
             }
             free(raw.data);
+            free(chunk.data);
             continue;
         }
         if (*cursor == '<' && cursor + 1 < end && cursor[1] != '<') {
             QwPdfBuffer raw = {NULL, 0u, 0u};
+            QwPdfBuffer chunk = {NULL, 0u, 0u};
             cursor = pdf_read_hex_string(cursor + 1, end, &raw);
-            if (!pdf_emit_string(text, &raw, type0, unicode_entries,
-                                 unicode_count, code_bytes)) {
+            if (!pdf_emit_string(&chunk, &raw, type0, unicode_entries,
+                                 unicode_count, code_bytes) ||
+                !pdf_buffer_append(text, chunk.data, chunk.size) ||
+                (lines && !pdf_lines_append(lines, tm[4], tm[5], &chunk))) {
                 free(raw.data);
+                free(chunk.data);
                 return 0;
             }
             free(raw.data);
+            free(chunk.data);
             continue;
         }
         if (*cursor == '[' || *cursor == ']' || *cursor == '<' || *cursor == '>') {
@@ -2577,6 +2641,18 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
             ++token_length;
         }
         cursor += token_length ? token_length : 1u;
+        if (token_length &&
+            (isdigit((unsigned char)token[0]) || token[0] == '-' ||
+             token[0] == '+' || token[0] == '.')) {
+            char number[32];
+            if (token_length < sizeof(number)) {
+                memcpy(number, token, token_length);
+                number[token_length] = '\0';
+                if (operand_count < 8)
+                    operands[operand_count++] = atof(number);
+            }
+            continue;
+        }
         if ((token_length == 2u && memcmp(token, "Tf", 2u) == 0)) {
             font_index = pdf_font_index(fonts, font_name);
             if (font_index != SIZE_MAX) {
@@ -2594,23 +2670,40 @@ static int pdf_extract_content_text(const QwPdfReader *reader, const char *conte
             /* handled above; nothing to do */
         } else if (token_length == 2u && memcmp(token, "TJ", 2u) == 0) {
             /* array strings were already emitted */
+        } else if (token_length == 2u && memcmp(token, "BT", 2u) == 0) {
+            tm[0] = 1.0; tm[1] = 0.0; tm[2] = 0.0;
+            tm[3] = 1.0; tm[4] = 0.0; tm[5] = 0.0;
+            memcpy(tlm, tm, sizeof(tlm));
         } else if (token_length == 2u &&
                    (memcmp(token, "Td", 2u) == 0 || memcmp(token, "TD", 2u) == 0)) {
+            if (operand_count >= 2) {
+                double tx = operands[operand_count - 2];
+                double ty = operands[operand_count - 1];
+                tlm[4] += tx * tlm[0] + ty * tlm[2];
+                tlm[5] += tx * tlm[1] + ty * tlm[3];
+                memcpy(tm, tlm, sizeof(tm));
+            }
             if (!pdf_buffer_append(text, "\n", 1u)) return 0;
         } else if (token_length == 2u && memcmp(token, "T*", 2u) == 0) {
+            memcpy(tm, tlm, sizeof(tm));
             if (!pdf_buffer_append(text, "\n", 1u)) return 0;
         } else if (token_length == 2u && memcmp(token, "Tm", 2u) == 0) {
+            if (operand_count >= 6) {
+                memcpy(tlm, operands + operand_count - 6, sizeof(tlm));
+                memcpy(tm, tlm, sizeof(tm));
+            }
             if (!pdf_buffer_append(text, "\n", 1u)) return 0;
         } else if (token_length == 1u && (token[0] == '\'' || token[0] == '"')) {
             if (!pdf_buffer_append(text, "\n", 1u)) return 0;
         }
+        operand_count = 0;
     }
     (void)reader;
     return 1;
 }
 
 static int pdf_extract_page_text(const QwPdfReader *reader, size_t page_object,
-                                 QwPdfBuffer *text)
+                                 QwPdfBuffer *text, QwPdfTextLines *lines)
 {
     const char *body;
     size_t dict_size;
@@ -2640,7 +2733,7 @@ static int pdf_extract_page_text(const QwPdfReader *reader, size_t page_object,
         return 0;
     }
     ok = pdf_extract_content_text(reader, (const char *)stream, stream_size,
-                                  &fonts, text);
+                                  &fonts, text, lines);
     free(stream);
     pdf_free_font_maps(&fonts);
     return ok;
@@ -3076,6 +3169,62 @@ int qw_pdf_reader_outline(QwPdfReader *reader, QwPdfOutlineEntry *entries,
 }
 
 
+void qw_doc_pdf_lines_free(QwPdfLine *lines, size_t count)
+{
+    size_t index;
+    if (!lines) return;
+    for (index = 0u; index < count; ++index) free(lines[index].text);
+    free(lines);
+}
+
+int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
+                                  QwPdfLine **out_lines, size_t *out_count)
+{
+    QwPdfBuffer text;
+    QwPdfTextLines lines;
+    size_t index;
+    if (!reader || !out_lines || !out_count)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_lines = NULL;
+    *out_count = 0u;
+    if (page_index >= reader->page_count)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (reader->encryption_unsupported) return QW_STATUS_ERR_UNSUPPORTED;
+    memset(&text, 0, sizeof(text));
+    memset(&lines, 0, sizeof(lines));
+    if (!pdf_extract_page_text(reader, reader->page_objects[page_index], &text,
+                               &lines)) {
+        free(text.data);
+        pdf_lines_free(&lines);
+        return QW_STATUS_ERR_DECODE;
+    }
+    free(text.data);
+    *out_lines = (QwPdfLine *)calloc(lines.count ? lines.count : 1u,
+                                   sizeof(QwPdfLine));
+    if (!*out_lines) {
+        pdf_lines_free(&lines);
+        return QW_STATUS_ERR_OUT_OF_MEMORY;
+    }
+    for (index = 0u; index < lines.count; ++index) {
+        size_t size = lines.items[index].text.size;
+        (*out_lines)[index].x = lines.items[index].x;
+        (*out_lines)[index].y = lines.items[index].y;
+        (*out_lines)[index].text = (char *)malloc(size + 1u);
+        if (!(*out_lines)[index].text) {
+            qw_doc_pdf_lines_free(*out_lines, index);
+            *out_lines = NULL;
+            pdf_lines_free(&lines);
+            return QW_STATUS_ERR_OUT_OF_MEMORY;
+        }
+        if (size) memcpy((*out_lines)[index].text, lines.items[index].text.data,
+                         size);
+        (*out_lines)[index].text[size] = '\0';
+    }
+    *out_count = lines.count;
+    pdf_lines_free(&lines);
+    return QW_STATUS_OK;
+}
+
 int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
                                      size_t *out_size, QwConvertReport *report)
 {
@@ -3095,7 +3244,8 @@ int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
         memset(&text, 0, sizeof(text));
         for (index = 0u; index < reader->page_count; ++index) {
             if (index) pdf_buffer_append(&text, "\n", 1u);
-            if (!pdf_extract_page_text(reader, reader->page_objects[index], &text)) {
+            if (!pdf_extract_page_text(reader, reader->page_objects[index], &text,
+                                      NULL)) {
                 free(text.data);
                 return QW_STATUS_ERR_DECODE;
             }
@@ -3138,7 +3288,8 @@ int qw_doc_pdf_extract_page_text(QwPdfReader *reader, size_t page_index,
         return QW_STATUS_ERR_INVALID_ARGUMENT;
     if (reader->encryption_unsupported) return QW_STATUS_ERR_UNSUPPORTED;
     memset(&text, 0, sizeof(text));
-    if (!pdf_extract_page_text(reader, reader->page_objects[page_index], &text)) {
+    if (!pdf_extract_page_text(reader, reader->page_objects[page_index], &text,
+                                      NULL)) {
         free(text.data);
         return QW_STATUS_ERR_DECODE;
     }

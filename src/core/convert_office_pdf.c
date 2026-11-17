@@ -641,35 +641,39 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     memset(&body, 0, sizeof(body));
     if (!pdf_buffer_text(&body, document_prefix)) goto out_of_memory;
     for (index = 0u; index < page_count; ++index) {
-        uint8_t *page_text = NULL;
-        size_t page_size = 0u;
-        size_t start = 0u;
-        size_t cursor;
-        status = qw_doc_pdf_extract_page_text(document, index, &page_text,
-                                              &page_size);
+        QwPdfLine *page_lines = NULL;
+        size_t line_count = 0u;
+        size_t line_index;
+        double base_x = 0.0;
+        status = qw_doc_pdf_extract_page_lines(document, index, &page_lines,
+                                               &line_count);
         if (status != QW_STATUS_OK) goto out_of_memory;
         if (index &&
             !pdf_buffer_text(&body,
                              "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")) {
-            qw_pdf_free(page_text);
+            qw_doc_pdf_lines_free(page_lines, line_count);
             goto out_of_memory;
         }
-        for (cursor = 0u; cursor <= page_size; ++cursor) {
-            if (cursor == page_size || page_text[cursor] == '\n') {
-                size_t line = cursor - start;
-                if (line && page_text[start + line - 1u] == '\r') line -= 1u;
-                if (!pdf_buffer_text(
-                        &body,
-                        "<w:p><w:r><w:t xml:space=\"preserve\">") ||
-                    !pdf_buffer_escape(&body, page_text + start, line) ||
-                    !pdf_buffer_text(&body, "</w:t></w:r></w:p>")) {
-                    qw_pdf_free(page_text);
-                    goto out_of_memory;
-                }
-                start = cursor + 1u;
+        for (line_index = 0u; line_index < line_count; ++line_index) {
+            if (line_index == 0u || page_lines[line_index].x < base_x)
+                base_x = page_lines[line_index].x;
+        }
+        for (line_index = 0u; line_index < line_count; ++line_index) {
+            int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
+            if (indent < 0) indent = 0;
+            if (indent > 20000) indent = 20000;
+            if (!pdf_buffer_printf(
+                    &body,
+                    "<w:p><w:pPr><w:ind w:left=\"%d\"/></w:pPr>"
+                    "<w:r><w:t xml:space=\"preserve\">",
+                    indent) ||
+                !pdf_buffer_text(&body, page_lines[line_index].text) ||
+                !pdf_buffer_text(&body, "</w:t></w:r></w:p>")) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
             }
         }
-        qw_pdf_free(page_text);
+        qw_doc_pdf_lines_free(page_lines, line_count);
     }
     qw_pdf_close(document);
     document = NULL;
@@ -760,31 +764,33 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     memset(&chapter, 0, sizeof(chapter));
     if (!pdf_buffer_text(&chapter, chapter_prefix)) goto out_of_memory;
     for (index = 0u; index < page_count; ++index) {
-        uint8_t *page_text = NULL;
-        size_t page_size = 0u;
-        size_t start = 0u;
-        size_t cursor;
-        status = qw_doc_pdf_extract_page_text(document, index, &page_text,
-                                              &page_size);
+        QwPdfLine *page_lines = NULL;
+        size_t line_count = 0u;
+        size_t line_index;
+        double base_x = 0.0;
+        status = qw_doc_pdf_extract_page_lines(document, index, &page_lines,
+                                               &line_count);
         if (status != QW_STATUS_OK) goto out_of_memory;
         if (!pdf_buffer_text(&chapter, "<div class=\"page\">")) {
-            qw_pdf_free(page_text);
+            qw_doc_pdf_lines_free(page_lines, line_count);
             goto out_of_memory;
         }
-        for (cursor = 0u; cursor <= page_size; ++cursor) {
-            if (cursor == page_size || page_text[cursor] == '\n') {
-                size_t line = cursor - start;
-                if (line && page_text[start + line - 1u] == '\r') line -= 1u;
-                if (!pdf_buffer_text(&chapter, "<p>") ||
-                    !pdf_buffer_escape(&chapter, page_text + start, line) ||
-                    !pdf_buffer_text(&chapter, "</p>")) {
-                    qw_pdf_free(page_text);
-                    goto out_of_memory;
-                }
-                start = cursor + 1u;
+        for (line_index = 0u; line_index < line_count; ++line_index) {
+            if (line_index == 0u || page_lines[line_index].x < base_x)
+                base_x = page_lines[line_index].x;
+        }
+        for (line_index = 0u; line_index < line_count; ++line_index) {
+            double indent = (page_lines[line_index].x - base_x);
+            if (indent < 0.0) indent = 0.0;
+            if (!pdf_buffer_printf(&chapter,
+                                   "<p style=\"margin-left:%.1fpt\">", indent) ||
+                !pdf_buffer_text(&chapter, page_lines[line_index].text) ||
+                !pdf_buffer_text(&chapter, "</p>")) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
             }
         }
-        qw_pdf_free(page_text);
+        qw_doc_pdf_lines_free(page_lines, line_count);
         if (!pdf_buffer_text(&chapter, "</div>")) goto out_of_memory;
     }
     qw_pdf_close(document);

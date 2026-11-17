@@ -125,6 +125,8 @@ if(BUILD_TESTING)
     add_executable(quirewise_document_pdf_office_reflow_test
         tests/pdf_office_reflow_test.c)
     target_compile_features(quirewise_document_pdf_office_reflow_test PRIVATE c_std_11)
+    target_compile_definitions(quirewise_document_pdf_office_reflow_test PRIVATE
+        QUIREWISE_INDENTED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/indented.pdf")
     target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
         quirewise_document)
     add_test(NAME quirewise_document_pdf_office_reflow
