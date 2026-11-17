@@ -813,6 +813,20 @@ static int odt_url_is_safe(const char *href)
     return 0;
 }
 
+static int odt_collect_note_text(OdtHtml *html, QwXmlNode *node)
+{
+    QwXmlNode *child;
+    const char *text;
+    if (!html || !node) return 1;
+    text = qw_xml_text(node);
+    if (text && text[0] &&
+        !odt_html_append(html, text, strlen(text))) return 0;
+    for (child = qw_xml_down(node); child; child = qw_xml_next(child)) {
+        if (!odt_collect_note_text(html, child)) return 0;
+    }
+    return 1;
+}
+
 static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
                               size_t depth)
 {
@@ -891,6 +905,32 @@ static int odt_render_element(OdtRenderContext *context, QwXmlNode *node,
         context->pending_image_width_px = saved_width;
         context->pending_image_height_px = saved_height;
         return ok;
+    } else if (strcmp(tag, "note") == 0) {
+        QwXmlNode *child;
+        const char *citation = NULL;
+        QwXmlNode *body = NULL;
+        for (child = qw_xml_down(node); child; child = qw_xml_next(child)) {
+            if (odt_is_tag(child, "note-citation")) {
+                QwXmlNode *text_node = qw_xml_down(child);
+                if (text_node && !qw_xml_tag(text_node))
+                    citation = qw_xml_text(text_node);
+            } else if (odt_is_tag(child, "note-body")) {
+                body = child;
+            }
+        }
+        if (!odt_html_literal(context->html, "<sup>[") ||
+            (citation && !odt_html_escape(context->html, citation)) ||
+            !odt_html_literal(context->html, "]</sup>"))
+            return 0;
+        if (body) {
+            if (!odt_html_literal(context->html,
+                                  "<span class=\"odt-footnote\">") ||
+                !odt_collect_note_text(context->html, body) ||
+                !odt_html_literal(context->html, "</span>"))
+                return 0;
+        }
+        (void)qw_xml_att(node, "text:note-class");
+        return 1;
     } else if (strcmp(tag, "a") == 0) {
         const char *href = qw_xml_att(node, "xlink:href");
         if (href && odt_url_is_safe(href)) {

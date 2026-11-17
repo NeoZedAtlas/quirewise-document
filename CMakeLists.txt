@@ -1096,6 +1096,18 @@ target_link_libraries(quirewise_document_pptx_notes_test PRIVATE
 add_test(NAME quirewise_document_pptx_notes
     COMMAND quirewise_document_pptx_notes_test)
 
+add_executable(quirewise_document_odt_footnote_test
+    tests/odt_footnote_test.c)
+target_compile_features(quirewise_document_odt_footnote_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_odt_footnote_test PRIVATE
+    QUIREWISE_ODT_FOOTNOTE="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/footnote.odt")
+target_include_directories(quirewise_document_odt_footnote_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_odt_footnote_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_odt_footnote
+    COMMAND quirewise_document_odt_footnote_test)
+
 add_executable(quirewise_document_docx_footnotes_test
     tests/docx_footnotes_test.c)
 target_compile_features(quirewise_document_docx_footnotes_test PRIVATE c_std_11)
