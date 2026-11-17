@@ -2305,6 +2305,7 @@ static int pdf_render_html(const char *html, size_t html_size,
     QwPdfLines lines;
     QwPdfFont *font = NULL;
     size_t pages = 0u;
+    size_t missing = 0u;
     if (!html || !output) return QW_STATUS_ERR_INVALID_ARGUMENT;
     if (html_size > QW_PDF_MAX_TEXT_BYTES) return QW_STATUS_ERR_RESOURCE_LIMIT;
     if (page_width < 72.0 || page_width > 5000.0 ||
@@ -2334,6 +2335,22 @@ static int pdf_render_html(const char *html, size_t html_size,
         qw_pdf_font_free(font);
         return QW_STATUS_ERR_OUT_OF_MEMORY;
     }
+    if (font) {
+        size_t item_index;
+        for (item_index = 0u; item_index < lines.count; ++item_index) {
+            const QwPdfText *text = &lines.items[item_index];
+            size_t position = 0u;
+            while (position < text->size) {
+                unsigned int code = 0u;
+                size_t length = pdf_decode_utf8(
+                    (const unsigned char *)text->data + position,
+                    text->size - position, &code);
+                if (!length) break;
+                if (qw_pdf_font_gid(font, code) == 0u) missing += 1u;
+                position += length;
+            }
+        }
+    }
     if (!pdf_emit_document(&lines, page_width, page_height, font, pdfa,
                            output, &pages)) {
         pdf_lines_free(&lines);
@@ -2342,9 +2359,17 @@ static int pdf_render_html(const char *html, size_t html_size,
     }
     qw_pdf_font_free(font);
     if (report) {
-        snprintf(report->note, sizeof(report->note),
-                 "Rendered %zu layout line(s) into %zu PDF page(s) with the internal Quirewise HTML/PDF writer",
-                 lines.count, pages);
+        if (missing) {
+            snprintf(report->note, sizeof(report->note),
+                     "Rendered %zu layout line(s) into %zu PDF page(s); %zu "
+                     "character(s) are not covered by the embedded font and "
+                     "use .notdef",
+                     lines.count, pages, missing);
+        } else {
+            snprintf(report->note, sizeof(report->note),
+                     "Rendered %zu layout line(s) into %zu PDF page(s) with the internal Quirewise HTML/PDF writer",
+                     lines.count, pages);
+        }
     }
     pdf_lines_free(&lines);
     if (out_pages) *out_pages = pages;

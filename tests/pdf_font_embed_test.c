@@ -204,6 +204,20 @@ int main(void)
         CHECK(strstr(report.note, "PDF/A") != NULL);
     }
 
+    /* Characters outside the font are reported, not silently dropped. */
+    {
+        static const char *gap_html = "<html><body><p>z</p></body></html>";
+        uint8_t *gap_pdf = NULL;
+        size_t gap_size = 0u;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_doc_convert_html_with_font(
+                  gap_html, strlen(gap_html), 595.0f, 842.0f,
+                  QUIREWISE_FONT_TEST_PATH, &gap_pdf, &gap_size,
+                  &report) == QW_STATUS_OK);
+        CHECK(strstr(report.note, "not covered") != NULL);
+        free(gap_pdf);
+    }
+
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
     return 0;
 }
