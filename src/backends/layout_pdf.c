@@ -1051,7 +1051,7 @@ static int pdf_append_hex_utf16(QwPdfOut *out, const char *data, size_t size)
 static int pdf_write_text_line(QwPdfOut *out, const QwPdfGlyphRun *runs,
                                size_t run_count, const char *text, size_t size,
                                double font_size, double x, double y,
-                               const QwPdfFont *font)
+                               const QwPdfFont *font, const uint16_t *gid_map)
 {
     size_t run_index;
     double cursor = x;
@@ -1073,6 +1073,10 @@ static int pdf_write_text_line(QwPdfOut *out, const QwPdfGlyphRun *runs,
                 uint16_t gid;
                 if (!length) break;
                 gid = qw_pdf_font_gid(font, code);
+                if (gid_map) {
+                    gid = gid_map[gid];
+                    if (gid == 0xFFFFu) gid = 0u;
+                }
                 if (!pdf_out_printf(out, "%04X", (unsigned)gid)) return 0;
                 chunk_index += length;
             }
@@ -1170,10 +1174,10 @@ static int pdf_font_collect_uses(const QwPdfFont *font, const QwPdfLines *lines,
 }
 
 static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
-                                   const QwPdfLines *lines, size_t base)
+                                   const QwPdfFontSubset *subset,
+                                   const QwPdfFontUse *uses, size_t use_count,
+                                   size_t base)
 {
-    QwPdfFontUse *uses = NULL;
-    size_t use_count = 0u;
     size_t type0 = base;
     size_t cid = base + 1u;
     size_t descriptor = base + 2u;
@@ -1200,11 +1204,11 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
     size_t index;
     int ok = 1;
 
-    if (!pdf_font_collect_uses(font, lines, &uses, &use_count)) return 0;
+    if (!font || !subset || !subset->data || !subset->size) return 0;
     qw_pdf_font_metrics(font, &ascent, &descent, &cap_height);
     qw_pdf_font_bbox(font, &x_min, &y_min, &x_max, &y_max);
-    font_data = qw_pdf_font_data(font, &font_size);
-    if (!font_data || !font_size) { free(uses); return 0; }
+    font_data = subset->data;
+    font_size = subset->size;
 
     widths_capacity = use_count * 32u + 16u;
     cmap_capacity = use_count * 32u + 512u;
@@ -1213,10 +1217,13 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
     if (!widths || !cmap) ok = 0;
 
     for (index = 0u; ok && index < use_count; ++index) {
-        int written = snprintf(widths + widths_size,
-                               widths_capacity - widths_size, " %u [%u]",
-                               (unsigned)uses[index].gid,
-                               (unsigned)qw_pdf_font_advance(font, uses[index].gid));
+        unsigned int old_gid = uses[index].gid;
+        unsigned int new_gid = subset->map[old_gid];
+        int written;
+        if (new_gid == 0xFFFFu) continue;
+        written = snprintf(widths + widths_size, widths_capacity - widths_size,
+                           " %u [%u]", new_gid,
+                           (unsigned)qw_pdf_font_advance(font, (uint16_t)old_gid));
         if (written < 0 || (size_t)written >= widths_capacity - widths_size) {
             ok = 0;
             break;
@@ -1240,16 +1247,17 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
     }
     for (index = 0u; ok && index < use_count; ++index) {
         unsigned int code = uses[index].codepoint;
+        unsigned int new_gid = subset->map[uses[index].gid];
         int written;
+        if (new_gid == 0xFFFFu) continue;
         if (code <= 0xFFFFu) {
             written = snprintf(cmap + cmap_size, cmap_capacity - cmap_size,
-                               "<%04X> <%04X>\n", (unsigned)uses[index].gid, code);
+                               "<%04X> <%04X>\n", new_gid, code);
         } else {
             unsigned int high = 0xD800u + ((code - 0x10000u) >> 10);
             unsigned int low = 0xDC00u + ((code - 0x10000u) & 0x3FFu);
             written = snprintf(cmap + cmap_size, cmap_capacity - cmap_size,
-                               "<%04X> <%04X%04X>\n", (unsigned)uses[index].gid,
-                               high, low);
+                               "<%04X> <%04X%04X>\n", new_gid, high, low);
         }
         if (written < 0 || (size_t)written >= cmap_capacity - cmap_size) {
             ok = 0;
@@ -1326,7 +1334,6 @@ static int pdf_write_embedded_font(QwPdfOut *out, const QwPdfFont *font,
     free(compressed);
     free(widths);
     free(cmap);
-    free(uses);
     return ok;
 }
 
@@ -1360,9 +1367,13 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     size_t info_object_flag = 0u;
     size_t object_total_no_font = 0u;
     size_t font_object_base = 0u;
+    QwPdfFontSubset subset;
+    QwPdfFontUse *font_uses = NULL;
+    size_t font_use_count = 0u;
     int ok = 1;
 
     memset(&out, 0, sizeof(out));
+    memset(&subset, 0, sizeof(subset));
     page_line_capacity = (size_t)((page_height - 2.0 * margin) / (12.0 * line_gap));
     if (page_line_capacity < 8u) page_line_capacity = 8u;
 
@@ -1438,6 +1449,33 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             if (segment_start > item->size) segment_start = item->size;
         }
         free(breaks);
+    }
+
+    if (font) {
+        uint16_t *gids = NULL;
+        unsigned int *codepoints = NULL;
+        if (!pdf_font_collect_uses(font, lines, &font_uses, &font_use_count)) {
+            ok = 0;
+        } else {
+            size_t use_index;
+            gids = (uint16_t *)malloc(font_use_count * sizeof(uint16_t));
+            codepoints = (unsigned int *)malloc(font_use_count *
+                                                sizeof(unsigned int));
+            if (!gids || !codepoints) {
+                ok = 0;
+            } else {
+                for (use_index = 0u; use_index < font_use_count; ++use_index) {
+                    gids[use_index] = font_uses[use_index].gid;
+                    codepoints[use_index] = font_uses[use_index].codepoint;
+                }
+                if (!qw_pdf_font_subset(font, gids, codepoints, font_use_count,
+                                        &subset)) {
+                    ok = 0;
+                }
+            }
+        }
+        free(gids);
+        free(codepoints);
     }
 
     /* Pass 2: pack segments into pages by their vertical space. */
@@ -1655,7 +1693,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 size_t run_count = 0u;
                 if (!pdf_collect_runs(text, size, &runs, &run_count)) { ok = 0; break; }
                 if (!pdf_write_text_line(&stream, runs, run_count, text, size,
-                                         segment->font_size, margin, y, font)) {
+                                         segment->font_size, margin, y, font,
+                                         font ? subset.map : NULL)) {
                     free(runs);
                     ok = 0;
                     break;
@@ -2125,8 +2164,11 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
         return 0;
     }
     if (ok && font) {
-        ok = pdf_write_embedded_font(&out, font, lines, font_object_base);
+        ok = pdf_write_embedded_font(&out, font, &subset, font_uses,
+                                     font_use_count, font_object_base);
     }
+    free(font_uses);
+    qw_pdf_font_subset_free(&subset);
     {
         size_t xref_offset = out.bytes.size;
         size_t entry;

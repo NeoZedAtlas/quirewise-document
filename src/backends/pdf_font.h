@@ -33,6 +33,21 @@ const uint8_t *qw_pdf_font_data(const QwPdfFont *font, size_t *size);
 int qw_pdf_font_metrics(const QwPdfFont *font, int *ascent, int *descent,
                         int *cap_height);
 
+typedef struct QwPdfFontSubset {
+    uint8_t *data;      /* Rebuilt TrueType program */
+    size_t size;
+    uint16_t *map;      /* Original glyph id -> subset glyph id (0xFFFF absent) */
+    unsigned num_glyphs;
+} QwPdfFontSubset;
+
+/* Build a subset containing .notdef, the given glyphs and their composite
+ * components. The returned program is a complete sfnt with rebuilt
+ * cmap/loca/hmtx/glyf tables. */
+int qw_pdf_font_subset(const QwPdfFont *font, const uint16_t *gids,
+                       const unsigned int *codepoints, size_t count,
+                       QwPdfFontSubset *out);
+
+void qw_pdf_font_subset_free(QwPdfFontSubset *subset);
 /* Font bounding box in 1000/em units. Returns 0 for a NULL font. */
 int qw_pdf_font_bbox(const QwPdfFont *font, int *x_min, int *y_min,
                      int *x_max, int *y_max);

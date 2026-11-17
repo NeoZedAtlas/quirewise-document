@@ -1,5 +1,6 @@
 /* Embedding a caller-supplied TrueType font as the PDF text font. */
 #include "document_backend.h"
+#include "pdf_font.h"
 
 #include <quirewise/convert.h>
 #include <quirewise/pdf.h>
@@ -90,6 +91,36 @@ int main(void)
     CHECK(contains(pdf, pdf_size, "/STSong-Light"));
     CHECK(!contains(pdf, pdf_size, "/FontFile2"));
     free(pdf);
+
+    /* The subset itself must be a structurally valid sfnt. */
+    {
+        QwPdfFont *original = qw_pdf_font_load(QUIREWISE_FONT_TEST_PATH);
+        QwPdfFont *reloaded = NULL;
+        QwPdfFontSubset subset;
+        uint16_t gid;
+        unsigned int codepoint = 'F';
+        FILE *file;
+        const char *subset_path = "quirewise_subset_font.ttf";
+        CHECK(original != NULL);
+        gid = qw_pdf_font_gid(original, 'F');
+        CHECK(gid != 0u);
+        memset(&subset, 0, sizeof(subset));
+        CHECK(qw_pdf_font_subset(original, &gid, &codepoint, 1u, &subset) == 1);
+        CHECK(subset.data != NULL && subset.size > 0u);
+        CHECK(subset.size < 13052u);
+        CHECK(subset.map[gid] != 0xFFFFu);
+        file = fopen(subset_path, "wb");
+        CHECK(file != NULL);
+        CHECK(fwrite(subset.data, 1u, subset.size, file) == subset.size);
+        fclose(file);
+        reloaded = qw_pdf_font_load(subset_path);
+        CHECK(reloaded != NULL);
+        CHECK(qw_pdf_font_gid(reloaded, 'F') == subset.map[gid]);
+        qw_pdf_font_free(reloaded);
+        remove(subset_path);
+        qw_pdf_font_subset_free(&subset);
+        qw_pdf_font_free(original);
+    }
 
     /* A dedicated route (RTF) must embed the font as well. */
     {

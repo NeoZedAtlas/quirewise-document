@@ -330,9 +330,10 @@ buffers.
 - **No OCR.** PDF-to-TXT extracts text operators already present; image inputs
   become image-only PDFs.
 - **Optional embedded font; the default pair is not embedded.** Setting
-  `QwConvertOptions.pdf_font_path` (CLI `--font-file`) embeds that TrueType font
-  as a CIDFontType2 with Identity-H encoding, a `/W` width array and a
-  `/ToUnicode` map, and uses its advances for line wrapping. Without the option
+  `QwConvertOptions.pdf_font_path` (CLI `--font-file`) embeds a subset of that
+  TrueType font (used glyphs plus composite components) as a CIDFontType2 with
+  Identity-H encoding, a `/W` width array and a `/ToUnicode` map, and uses its
+  advances for line wrapping. Without the option
   the writer keeps the predefined Helvetica (WinAnsi) and `STSong-Light`
   (UniGB-UCS2-H) pair, which is not embedded and carries no `/ToUnicode`. The
   rasteriser still uses a built-in 3x5 ASCII approximation font.
