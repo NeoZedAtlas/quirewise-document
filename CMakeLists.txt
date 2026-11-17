@@ -558,6 +558,16 @@ target_link_libraries(quirewise_document_hwpx_header_footer_test PRIVATE
 add_test(NAME quirewise_document_hwpx_header_footer
     COMMAND quirewise_document_hwpx_header_footer_test)
 
+add_executable(quirewise_document_hwpx_margins_test
+    tests/hwpx_margins_test.c)
+target_compile_features(quirewise_document_hwpx_margins_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_hwpx_margins_test PRIVATE
+    QUIREWISE_HWPX_MARGINS="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/page-margins.hwpx")
+target_link_libraries(quirewise_document_hwpx_margins_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_hwpx_margins
+    COMMAND quirewise_document_hwpx_margins_test)
+
 add_executable(quirewise_document_hwpx_columns_test
     tests/hwpx_columns_test.c)
 target_compile_features(quirewise_document_hwpx_columns_test PRIVATE c_std_11)
