@@ -1096,6 +1096,18 @@ target_link_libraries(quirewise_document_pptx_notes_test PRIVATE
 add_test(NAME quirewise_document_pptx_notes
     COMMAND quirewise_document_pptx_notes_test)
 
+add_executable(quirewise_document_docx_indent_test
+    tests/docx_indent_test.c)
+target_compile_features(quirewise_document_docx_indent_test PRIVATE c_std_11)
+target_compile_definitions(quirewise_document_docx_indent_test PRIVATE
+    QUIREWISE_DOCX_INDENT="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/indent.docx")
+target_include_directories(quirewise_document_docx_indent_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
+target_link_libraries(quirewise_document_docx_indent_test PRIVATE
+    quirewise_document)
+add_test(NAME quirewise_document_docx_indent
+    COMMAND quirewise_document_docx_indent_test)
+
 add_executable(quirewise_document_docx_header_footer_test
     tests/docx_header_footer_test.c)
 target_compile_features(quirewise_document_docx_header_footer_test PRIVATE c_std_11)

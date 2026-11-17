@@ -268,12 +268,18 @@ static const char *docx_alignment(const uint8_t *value, size_t size)
 }
 
 static int html_open_paragraph(QwDocxHtml *html, const char *tag,
-                               const char *alignment)
+                               const char *alignment, const char *indent)
 {
     if (!html_literal(html, "<") || !html_literal(html, tag)) return 0;
-    if (alignment && (!html_literal(html, " style=\"text-align:") ||
-                      !html_literal(html, alignment) ||
-                      !html_literal(html, "\""))) return 0;
+    if ((alignment && *alignment) || (indent && *indent)) {
+        if (!html_literal(html, " style=\"")) return 0;
+        if (alignment && *alignment &&
+            (!html_literal(html, "text-align:") ||
+             !html_literal(html, alignment) ||
+             !html_literal(html, ";"))) return 0;
+        if (indent && *indent && !html_literal(html, indent)) return 0;
+        if (!html_literal(html, "\"")) return 0;
+    }
     return html_literal(html, ">");
 }
 
@@ -1248,6 +1254,27 @@ static uint8_t docx_numbering_format(const uint8_t *value, size_t size)
     return DOCX_LIST_FORMAT_NONE;
 }
 
+static int docx_attribute_long(const uint8_t *xml, size_t attributes_start,
+                               size_t attributes_end, const char *attribute,
+                               long *out_value)
+{
+    const uint8_t *text;
+    size_t text_size;
+    char buffer[32];
+    char *end;
+    long value;
+    if (!out_value ||
+        !xml_attribute_value(xml, attributes_start, attributes_end,
+                             attribute, &text, &text_size) ||
+        !text_size || text_size >= sizeof(buffer)) return 0;
+    memcpy(buffer, text, text_size);
+    buffer[text_size] = '\0';
+    value = strtol(buffer, &end, 10);
+    if (end == buffer) return 0;
+    *out_value = value;
+    return 1;
+}
+
 static int docx_get_attribute_u32(const uint8_t *xml,
                                   const QwDocxXmlTag *tag,
                                   const char *attribute,
@@ -1951,11 +1978,12 @@ static int docx_ensure_plain_paragraph(QwDocxHtml *html,
                                        QwDocxListState *list,
                                        const char *tag,
                                        const char *alignment,
+                                       const char *indent,
                                        int *rendered)
 {
     if (*rendered) return 1;
     if (!docx_close_list(html, list) ||
-        !html_open_paragraph(html, tag, alignment)) return 0;
+        !html_open_paragraph(html, tag, alignment, indent)) return 0;
     *rendered = 1;
     return 1;
 }
@@ -2163,6 +2191,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
     uint32_t paragraph_style_num_level = 0;
     const char *paragraph_tag = "p";
     const char *paragraph_alignment = NULL;
+    char paragraph_indent[64] = "";
     uint32_t image_width_px = 0;
     size_t embedded_image_size = 0;
     DocxTableMergeInfo table_merges[16];
@@ -2260,7 +2289,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                         if (!paragraph_rendered && !paragraph_is_list &&
                             !docx_ensure_plain_paragraph(html, &list,
                                                          paragraph_tag,
-                                                         paragraph_alignment,
+                                                         paragraph_alignment, paragraph_indent,
                                                          &paragraph_rendered)) return 0;
                         if (!paragraph_is_list && paragraph_rendered &&
                                    !html_close_paragraph(html, paragraph_tag)) {
@@ -2280,12 +2309,13 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                     paragraph_page_break_before = 0;
                     paragraph_tag = "p";
                     paragraph_alignment = NULL;
+                    paragraph_indent[0] = '\0';
                 } else {
                     if (in_paragraph) {
                         if (!paragraph_rendered && !paragraph_is_list &&
                             !docx_ensure_plain_paragraph(html, &list,
                                                          paragraph_tag,
-                                                         paragraph_alignment,
+                                                         paragraph_alignment, paragraph_indent,
                                                          &paragraph_rendered)) return 0;
                         if (!paragraph_is_list && paragraph_rendered &&
                                    !html_close_paragraph(html, paragraph_tag)) {
@@ -2305,6 +2335,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                     paragraph_page_break_before = 0;
                     paragraph_tag = "p";
                     paragraph_alignment = NULL;
+                    paragraph_indent[0] = '\0';
                 }
             } else if (xml_local_name_is(xml + name_start,
                                          name_end - name_start, "hyperlink")) {
@@ -2348,7 +2379,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                     if (!paragraph_rendered && !paragraph_is_list &&
                         !docx_ensure_plain_paragraph(html, &list,
                                                      paragraph_tag,
-                                                     paragraph_alignment,
+                                                     paragraph_alignment, paragraph_indent,
                                                      &paragraph_rendered)) return 0;
                     bookmark_rc = docx_append_bookmark_target(
                         html, bookmark_name, bookmark_name_size);
@@ -2419,7 +2450,8 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                         if (paragraph_rendered &&
                             (!html_close_paragraph(html, paragraph_tag) ||
                              !html_open_paragraph(html, heading_tag,
-                                                  paragraph_alignment))) return 0;
+                                                  paragraph_alignment,
+                                                  paragraph_indent))) return 0;
                         paragraph_tag = heading_tag;
                     }
                 }
@@ -2429,6 +2461,37 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                                          "pageBreakBefore")) {
                 paragraph_page_break_before =
                     !xml_tag_has_false_value(xml, name_end, tag_end - 1u);
+            } else if (!closing && in_paragraph &&
+                       xml_local_name_is(xml + name_start,
+                                         name_end - name_start, "ind")) {
+                long left = 0, first_line = 0, hanging = 0;
+                int has_left = docx_attribute_long(
+                    xml, name_end, tag_end - 1u, "left", &left) ||
+                    docx_attribute_long(xml, name_end, tag_end - 1u, "start",
+                                        &left);
+                int has_first = docx_attribute_long(
+                    xml, name_end, tag_end - 1u, "firstLine", &first_line);
+                int has_hanging = docx_attribute_long(
+                    xml, name_end, tag_end - 1u, "hanging", &hanging);
+                long left_px = has_left ? left * 96 / 1440 : 0;
+                long indent_px = 0;
+                if (has_first) indent_px = first_line * 96 / 1440;
+                else if (has_hanging) indent_px = -(hanging * 96 / 1440);
+                if (left_px || indent_px) {
+                    if (left_px && indent_px)
+                        (void)snprintf(paragraph_indent,
+                                       sizeof(paragraph_indent),
+                                       "margin-left:%ldpx;text-indent:%ldpx;",
+                                       left_px, indent_px);
+                    else if (left_px)
+                        (void)snprintf(paragraph_indent,
+                                       sizeof(paragraph_indent),
+                                       "margin-left:%ldpx;", left_px);
+                    else
+                        (void)snprintf(paragraph_indent,
+                                       sizeof(paragraph_indent),
+                                       "text-indent:%ldpx;", indent_px);
+                }
             } else if (closing && in_paragraph &&
                        xml_local_name_is(xml + name_start,
                                          name_end - name_start, "pPr")) {
@@ -2483,7 +2546,8 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                             if (list_rc == 0) return 0;
                         } else if (paragraph_rendered &&
                                    (!html_close_paragraph(html, paragraph_tag) ||
-                                    !html_open_paragraph(html, paragraph_tag, alignment))) {
+                                    !html_open_paragraph(html, paragraph_tag, alignment,
+                                         paragraph_indent))) {
                             return 0;
                         }
                         paragraph_alignment = alignment;
@@ -2589,7 +2653,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                     if (in_paragraph && !paragraph_rendered && !paragraph_is_list &&
                         !docx_ensure_plain_paragraph(html, &list,
                                                      paragraph_tag,
-                                                     paragraph_alignment,
+                                                     paragraph_alignment, paragraph_indent,
                                                      &paragraph_rendered)) return 0;
                     bold = italic = underline = strike = 0;
                 }
@@ -2701,7 +2765,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                 if (in_paragraph && !paragraph_rendered && !paragraph_is_list &&
                     !docx_ensure_plain_paragraph(html, &list,
                                                  paragraph_tag,
-                                                 paragraph_alignment,
+                                                 paragraph_alignment, paragraph_indent,
                                                  &paragraph_rendered)) return 0;
                 if (!html_literal(html, "&nbsp;&nbsp;&nbsp;&nbsp;")) return 0;
             } else if (!closing &&
@@ -2710,7 +2774,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
                 if (in_paragraph && !paragraph_rendered && !paragraph_is_list &&
                     !docx_ensure_plain_paragraph(html, &list,
                                                  paragraph_tag,
-                                                 paragraph_alignment,
+                                                 paragraph_alignment, paragraph_indent,
                                                  &paragraph_rendered)) return 0;
                 if (xml_local_name_is(xml + name_start,
                                       name_end - name_start, "br")) {
@@ -2750,7 +2814,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
             if (in_paragraph && !paragraph_rendered && !paragraph_is_list &&
                 !docx_ensure_plain_paragraph(html, &list,
                                              paragraph_tag,
-                                             paragraph_alignment,
+                                             paragraph_alignment, paragraph_indent,
                                              &paragraph_rendered)) return 0;
             size_t start = i;
             while (i < xml_size && xml[i] != '<') ++i;
@@ -2764,7 +2828,7 @@ static int docx_document_xml_to_html(const uint8_t *xml, size_t xml_size,
         if (!paragraph_rendered && !paragraph_is_list &&
             !docx_ensure_plain_paragraph(html, &list,
                                          paragraph_tag,
-                                         paragraph_alignment,
+                                         paragraph_alignment, paragraph_indent,
                                          &paragraph_rendered)) return 0;
         if (!paragraph_is_list && paragraph_rendered &&
                    !html_close_paragraph(html, paragraph_tag)) return 0;
