@@ -2542,6 +2542,7 @@ typedef struct QwPdfTextRun {
     QwPdfBuffer text;
     char font[32];
     double size;
+    double y;
 } QwPdfTextRun;
 
 typedef struct QwPdfTextLine {
@@ -2559,7 +2560,7 @@ typedef struct QwPdfTextLines {
 } QwPdfTextLines;
 
 static int pdf_line_add_run(QwPdfTextLine *line, const QwPdfBuffer *chunk,
-                            const char *font, double size)
+                            const char *font, double size, double run_y)
 {
     QwPdfTextRun *run;
     if (!chunk->size) return 1;
@@ -2579,6 +2580,7 @@ static int pdf_line_add_run(QwPdfTextLine *line, const QwPdfBuffer *chunk,
     run = &line->runs[line->run_count];
     memset(run, 0, sizeof(*run));
     run->size = size;
+    run->y = run_y;
     run->font[0] = '\0';
     if (font) {
         size_t length = strlen(font);
@@ -2600,8 +2602,13 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
     if (lines->count) {
         QwPdfTextLine *last = &lines->items[lines->count - 1u];
         double dy = last->y - y;
+        double tolerance = 2.0;
+        if (last->run_count) {
+            double base = last->runs[0].size;
+            if (base * 0.6 > tolerance) tolerance = base * 0.6;
+        }
         if (dy < 0.0) dy = -dy;
-        if (dy <= 2.0) return pdf_line_add_run(last, chunk, font, size);
+        if (dy <= tolerance) return pdf_line_add_run(last, chunk, font, size, y);
     }
     if (lines->count >= lines->capacity) {
         size_t grown = lines->capacity ? lines->capacity * 2u : 16u;
@@ -2616,7 +2623,7 @@ static int pdf_lines_append(QwPdfTextLines *lines, double x, double y,
     line->x = x;
     line->y = y;
     lines->count += 1u;
-    return pdf_line_add_run(line, chunk, font, size);
+    return pdf_line_add_run(line, chunk, font, size, y);
 }
 
 static void pdf_lines_free(QwPdfTextLines *lines)
@@ -3325,6 +3332,7 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
             const QwPdfTextRun *source = &lines.items[index].runs[run_index];
             QwPdfRun *run = &line->runs[run_index];
             run->size = source->size;
+            run->y = source->y;
             memcpy(run->font, source->font, sizeof(run->font));
             run->text = (char *)malloc(source->text.size + 1u);
             if (!run->text) {

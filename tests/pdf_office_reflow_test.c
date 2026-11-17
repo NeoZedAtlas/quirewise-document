@@ -275,6 +275,47 @@ int main(void)
         free(spaced_epub);
     }
 
+    /* A smaller, raised run becomes superscript. */
+    {
+        FILE *file = fopen(QUIREWISE_SCRIPT_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *script_docx = NULL;
+        size_t script_docx_size = 0u;
+        uint8_t *script_epub = NULL;
+        size_t script_epub_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &script_docx,
+                                          &script_docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(script_docx, script_docx_size, "x"));
+        CHECK(contains(script_docx, script_docx_size, "2"));
+        CHECK(contains(script_docx, script_docx_size,
+                       "w:vertAlign w:val=\"superscript\""));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                          &opts, &script_epub,
+                                          &script_epub_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(script_epub, script_epub_size, "<sup>"));
+        free(bytes);
+        free(script_docx);
+        free(script_epub);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

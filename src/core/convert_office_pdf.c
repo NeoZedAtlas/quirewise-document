@@ -730,12 +730,21 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             for (run_index = 0u; run_index < page_lines[line_index].run_count;
                  ++run_index) {
                 const QwPdfRun *run = &page_lines[line_index].runs[run_index];
+                const char *vertical = "";
+                double base_size = page_lines[line_index].runs[0].size;
+                if (base_size > 1.0 && run->size > 0.1) {
+                    double offset = run->y - page_lines[line_index].y;
+                    if (offset > base_size * 0.25)
+                        vertical = "<w:vertAlign w:val=\"superscript\"/>";
+                    else if (-offset > base_size * 0.25)
+                        vertical = "<w:vertAlign w:val=\"subscript\"/>";
+                }
                 if (!pdf_buffer_printf(
-                        &body, "<w:r><w:rPr>%s%s%s</w:rPr>"
+                        &body, "<w:r><w:rPr>%s%s%s%s</w:rPr>"
                                "<w:t xml:space=\"preserve\">",
                         office_pdf_is_bold(run->font) ? "<w:b/>" : "",
                         office_pdf_is_italic(run->font) ? "<w:i/>" : "",
-                        office_pdf_size_tag(run->size)) ||
+                        office_pdf_size_tag(run->size), vertical) ||
                     !pdf_buffer_text(&body, run->text) ||
                     !pdf_buffer_text(&body, "</w:t></w:r>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
@@ -896,12 +905,27 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             for (run_index = 0u; run_index < page_lines[line_index].run_count;
                  ++run_index) {
                 const QwPdfRun *run = &page_lines[line_index].runs[run_index];
+                const char *vertical_open = "";
+                const char *vertical_close = "";
+                double base_size = page_lines[line_index].runs[0].size;
+                if (base_size > 1.0 && run->size > 0.1) {
+                    double offset = run->y - page_lines[line_index].y;
+                    if (offset > base_size * 0.25) {
+                        vertical_open = "<sup>";
+                        vertical_close = "</sup>";
+                    } else if (-offset > base_size * 0.25) {
+                        vertical_open = "<sub>";
+                        vertical_close = "</sub>";
+                    }
+                }
                 if (!pdf_buffer_printf(&chapter, "<span style=\"%s%s\">",
                                        office_pdf_is_bold(run->font)
                                            ? "font-weight:bold;" : "",
                                        office_pdf_is_italic(run->font)
                                            ? "font-style:italic;" : "") ||
+                    !pdf_buffer_text(&chapter, vertical_open) ||
                     !pdf_buffer_text(&chapter, run->text) ||
+                    !pdf_buffer_text(&chapter, vertical_close) ||
                     !pdf_buffer_text(&chapter, "</span>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;

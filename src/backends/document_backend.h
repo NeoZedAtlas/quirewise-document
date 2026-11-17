@@ -95,6 +95,7 @@ typedef struct QwPdfRun {
     char *text;
     char font[32];
     double size;
+    double y;
 } QwPdfRun;
 
 /* One extracted text line with its text-space origin (points). */
