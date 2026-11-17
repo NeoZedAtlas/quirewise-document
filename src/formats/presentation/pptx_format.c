@@ -767,6 +767,18 @@ static int pptx_render_inline(PptxReader *reader, QwXmlNode *node,
     return 1;
 }
 
+static int pptx_shape_rotation(PptxReader *reader, QwXmlNode *shape)
+{
+    QwXmlNode *xfrm = pptx_find_descendant(reader, qw_xml_down(shape), "xfrm", 0u);
+    const char *rot = xfrm ? qw_xml_att(xfrm, "rot") : NULL;
+    long rotation;
+    if (!rot || !rot[0]) return 0;
+    rotation = strtol(rot, NULL, 10) / 60000L;
+    rotation %= 360L;
+    if (rotation < 0) rotation += 360L;
+    return (int)rotation;
+}
+
 static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
 {
     if (depth > PPTX_MAX_XML_DEPTH) return 0;
@@ -778,6 +790,23 @@ static int pptx_render_nodes(PptxReader *reader, QwXmlNode *node, size_t depth)
                 !pptx_html_literal(reader, "</p>")) return 0;
         } else if (pptx_is_tag(node, "pic")) {
             if (!pptx_emit_picture(reader, node, depth + 1u)) return 0;
+        } else if (pptx_is_tag(node, "sp")) {
+            int rotation = pptx_shape_rotation(reader, node);
+            if (rotation) {
+                char style[64];
+                int length = snprintf(style, sizeof(style),
+                                      "<div class=\"textbox\" style=\"transform:rotate(%ddeg)\">",
+                                      rotation);
+                if (length <= 0 || (size_t)length >= sizeof(style) ||
+                    !pptx_html_literal(reader, style) ||
+                    !pptx_render_nodes(reader, qw_xml_down(node),
+                                       depth + 1u) ||
+                    !pptx_html_literal(reader, "</div>"))
+                    return 0;
+            } else if (!pptx_render_nodes(reader, qw_xml_down(node),
+                                          depth + 1u)) {
+                return 0;
+            }
         } else if (pptx_is_tag(node, "oleObj")) {
             if (!pptx_html_literal(reader,
                 "<p class=\"omitted\">[embedded object omitted]</p>")) return 0;
