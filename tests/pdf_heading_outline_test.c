@@ -64,6 +64,7 @@ int main(void)
     }
     free(hwpx);
     if (!strstr((const char *)pdf, "/Outlines") ||
+        !strstr((const char *)pdf, "/XYZ") ||
         !strstr((const char *)pdf, "/Title (Heading one)") ||
         !strstr((const char *)pdf, "/Title (Heading two)")) {
         free(pdf);

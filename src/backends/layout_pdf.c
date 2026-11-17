@@ -58,6 +58,7 @@ typedef struct QwPdfOutlineLine {
     size_t line_index;
     size_t page_index;
     unsigned char level;
+    double y;
 } QwPdfOutlineLine;
 
 typedef struct QwPdfCursor {
@@ -1266,6 +1267,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                             line_page[index];
                         outline_entries[outline_count].level =
                             lines->heading[index];
+                        outline_entries[outline_count].y =
+                            page_height - margin - 12.0;
                         outline_count += 1u;
                     }
                 }
@@ -1374,6 +1377,18 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                     }
                     y -= 6.0;
                     continue;
+                }
+                {
+                    size_t outline_index;
+                    for (outline_index = 0u; outline_index < outline_count;
+                         ++outline_index) {
+                        if (outline_entries[outline_index].line_index ==
+                            segment->line_index) {
+                            outline_entries[outline_index].y =
+                                y + segment->font_size;
+                            break;
+                        }
+                    }
                 }
                 size_t size = segment->end > segment->start
                     ? segment->end - segment->start : 0u;
@@ -1638,8 +1653,10 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                     ok = 0;
                     break;
                 }
-                if (!pdf_out_printf(&out, " /Dest [%zu 0 R /Fit] >>\nendobj\n",
-                                    page_object)) {
+                if (!pdf_out_printf(&out,
+                            " /Dest [%zu 0 R /XYZ %.2f %.2f null] >>\nendobj\n",
+                                    page_object, margin,
+                                    outline_entries[item].y)) {
                     ok = 0;
                     break;
                 }
