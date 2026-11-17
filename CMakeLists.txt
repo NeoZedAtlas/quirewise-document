@@ -283,7 +283,7 @@ if(BUILD_TESTING)
         tests/pdf_office_image_test.c)
     target_compile_features(quirewise_document_pdf_office_image_test PRIVATE c_std_11)
     target_link_libraries(quirewise_document_pdf_office_image_test PRIVATE
-        quirewise_document)
+        quirewise_document Quirewise::Ebook)
     add_test(NAME quirewise_document_pdf_office_image
         COMMAND quirewise_document_pdf_office_image_test)
 
@@ -347,7 +347,7 @@ target_compile_features(quirewise_document_image_edit_test PRIVATE c_std_11)
 target_compile_definitions(quirewise_document_image_edit_test PRIVATE
     QUIREWISE_IMAGE_EDIT_SRC="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/vml-red.png")
 target_link_libraries(quirewise_document_image_edit_test PRIVATE
-    quirewise_document)
+    quirewise_document Quirewise::Image)
 add_test(NAME quirewise_document_image_edit
     COMMAND quirewise_document_image_edit_test)
 
