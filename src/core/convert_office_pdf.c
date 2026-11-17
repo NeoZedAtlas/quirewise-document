@@ -615,6 +615,22 @@ static const char *office_pdf_size_tag(double size)
     return tag;
 }
 
+/* Count image XObjects so the text-only note can say they were skipped. */
+static size_t office_pdf_image_count(const uint8_t *data, size_t size)
+{
+    static const char needle[] = "/Subtype /Image";
+    size_t count = 0u;
+    size_t position;
+    if (!data || size < sizeof(needle) - 1u) return 0u;
+    for (position = 0u; position + sizeof(needle) - 1u <= size; ++position) {
+        if (memcmp(data + position, needle, sizeof(needle) - 1u) == 0) {
+            ++count;
+            position += sizeof(needle) - 2u;
+        }
+    }
+    return count;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -654,6 +670,7 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     double previous_size = 0.0;
     int page_w = 11900;
     int page_h = 16840;
+    size_t image_count;
 
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
@@ -663,6 +680,7 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                              &page_count, report)
                  : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
+    image_count = office_pdf_image_count(data, size);
     {
         double media[4];
         double crop[4];
@@ -793,6 +811,12 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                  "editable-text DOCX: %zu page(s) extracted into paragraphs "
                  "with page breaks (text layer only, layout not reconstructed)",
                  page_count);
+        if (image_count) {
+            size_t used = strlen(report->note);
+            snprintf(report->note + used, sizeof(report->note) - used,
+                     "; %zu image(s) are not included (image mode keeps page "
+                     "pictures)", image_count);
+        }
     }
     return QW_STATUS_OK;
 
@@ -846,6 +870,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     int zip_open = 0;
     size_t index;
     double previous_size = 0.0;
+    size_t image_count;
 
     if (!out_data || !out_size) return QW_STATUS_ERR_INVALID_ARGUMENT;
     *out_data = NULL;
@@ -855,6 +880,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                                              &page_count, report)
                  : qw_pdf_open(data, size, &document, &page_count, report);
     if (status != QW_STATUS_OK) return status;
+    image_count = office_pdf_image_count(data, size);
     memset(&chapter, 0, sizeof(chapter));
     if (!pdf_buffer_text(&chapter, chapter_prefix)) goto out_of_memory;
     for (index = 0u; index < page_count; ++index) {
@@ -967,6 +993,12 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                  "editable-text EPUB: %zu page(s) extracted into page sections "
                  "(text layer only, layout not reconstructed)",
                  page_count);
+        if (image_count) {
+            size_t used = strlen(report->note);
+            snprintf(report->note + used, sizeof(report->note) - used,
+                     "; %zu image(s) are not included (image mode keeps page "
+                     "pictures)", image_count);
+        }
     }
     return QW_STATUS_OK;
 

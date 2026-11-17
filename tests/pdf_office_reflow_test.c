@@ -316,6 +316,38 @@ int main(void)
         free(script_epub);
     }
 
+    /* Images are reported as skipped in the text-only output. */
+    {
+        FILE *file = fopen(QUIREWISE_IMAGE_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        QwConvertReport report;
+        uint8_t *image_docx = NULL;
+        size_t image_docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &image_docx,
+                                          &image_docx_size, &report) ==
+              QW_STATUS_OK);
+        CHECK(strstr(report.note, "image(s) are not included") != NULL);
+        free(bytes);
+        free(image_docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }
