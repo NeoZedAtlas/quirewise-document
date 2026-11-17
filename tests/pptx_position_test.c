@@ -67,7 +67,9 @@ int main(void)
     free(pptx);
     if (!contains(html, html_size, "class=\"shape\"") ||
         !contains(html, html_size,
-                  "margin-left:96px;margin-top:384px;")) {
+                  "margin-left:96px;margin-top:384px;") ||
+        !contains(html, html_size,
+                  "class=\"picture\" style=\"margin-left:96px;margin-top:144px;\"")) {
         free(html);
         fputs("FAIL: PPTX shape offsets were not preserved\n", stderr);
         return 1;

@@ -530,6 +530,8 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
     const char *alt = "image";
     long width = 0;
     long rotation = 0;
+    long offset_x = 0;
+    long offset_y = 0;
     static const char omitted[] =
         "<p class=\"omitted\">[image omitted]</p>";
 
@@ -580,9 +582,17 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
         QwXmlNode *extent = xfrm
             ? pptx_find_descendant(reader, qw_xml_down(xfrm), "ext", 0u)
             : NULL;
+        QwXmlNode *offset = xfrm
+            ? pptx_find_descendant(reader, qw_xml_down(xfrm), "off", 0u) : NULL;
         const char *cx = extent ? qw_xml_att(extent, "cx") : NULL;
         const char *rot = xfrm ? qw_xml_att(xfrm, "rot") : NULL;
+        const char *ox = offset ? qw_xml_att(offset, "x") : NULL;
+        const char *oy = offset ? qw_xml_att(offset, "y") : NULL;
         if (cx && cx[0]) width = strtol(cx, NULL, 10);
+        if (ox && ox[0]) offset_x = strtol(ox, NULL, 10) / 9525L;
+        if (oy && oy[0]) offset_y = strtol(oy, NULL, 10) / 9525L;
+        if (offset_x < 0) offset_x = 0;
+        if (offset_y < 0) offset_y = 0;
         if (rot && rot[0]) {
             long parsed = strtol(rot, NULL, 10);
             rotation = parsed / 60000L;
@@ -599,20 +609,26 @@ static int pptx_emit_picture(PptxReader *reader, QwXmlNode *picture,
     free(media);
     {
         char width_text[32];
-        char rotation_text[32];
-        int rotation_length = snprintf(rotation_text, sizeof(rotation_text),
-                                       "%ld", rotation);
+        char style[160];
+        int style_length = 0;
         int width_length = snprintf(width_text, sizeof(width_text), "%ld",
                                     width);
+        if (rotation && (offset_x || offset_y))
+            style_length = snprintf(style, sizeof(style),
+                " style=\"margin-left:%ldpx;margin-top:%ldpx;transform:rotate(%lddeg)\"",
+                offset_x, offset_y, rotation);
+        else if (rotation)
+            style_length = snprintf(style, sizeof(style),
+                " style=\"transform:rotate(%lddeg)\"", rotation);
+        else if (offset_x || offset_y)
+            style_length = snprintf(style, sizeof(style),
+                " style=\"margin-left:%ldpx;margin-top:%ldpx;\"",
+                offset_x, offset_y);
         if (width_length <= 0 ||
             (size_t)width_length >= sizeof(width_text) ||
-            (rotation && (rotation_length <= 0 ||
-                          (size_t)rotation_length >= sizeof(rotation_text))) ||
+            (style_length > 0 && (size_t)style_length >= sizeof(style)) ||
             !pptx_html_literal(reader, "<p class=\"picture\"") ||
-            (rotation &&
-             (!pptx_html_literal(reader, " style=\"transform:rotate(") ||
-              !pptx_html_literal(reader, rotation_text) ||
-              !pptx_html_literal(reader, "deg)\""))) ||
+            (style_length > 0 && !pptx_html_literal(reader, style)) ||
             !pptx_html_literal(reader, "><img alt=\"") ||
             !pptx_html_escape(reader, alt) ||
             !pptx_html_literal(reader, "\" width=\"") ||
