@@ -1180,17 +1180,26 @@ static int convert_map_pml_status(int status)
     }
 }
 
+static int dispatch_render_html(const uint8_t *html, size_t html_size,
+                                float page_width, float page_height,
+                                const QwConvertOptions *options,
+                                uint8_t **out_pdf, size_t *out_size,
+                                QwConvertReport *report);
+
 static int convert_html_to_pdf(const uint8_t *html, size_t size,
+                               const QwConvertOptions *options,
                                uint8_t **out_pdf, size_t *out_size,
                                QwConvertReport *report)
 {
     if (!html || !size) return QW_STATUS_ERR_FORMAT;
-    return qw_doc_convert_html((const char *)html, size, out_pdf, out_size,
-                               report);
+    return dispatch_render_html(html, size, 0.0f, 0.0f, options, out_pdf,
+                                out_size, report);
 }
 
 static int convert_pptx_to_pdf(const uint8_t *data, size_t size,
-                               const char *extension, uint8_t **out_pdf,
+                               const char *extension,
+                               const QwConvertOptions *options,
+                               uint8_t **out_pdf,
                                size_t *out_size, QwConvertReport *report)
 {
     QwPptxFormat format = QW_PPTX_FORMAT_PPTX;
@@ -1219,7 +1228,7 @@ static int convert_pptx_to_pdf(const uint8_t *data, size_t size,
         return convert_map_compact_status((int)status);
     }
     html = qw_pptx_document_html(document, &html_size);
-    rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+    rc = convert_html_to_pdf(html, html_size, options, out_pdf, out_size, report);
     qw_pptx_document_free(document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
@@ -1230,7 +1239,9 @@ static int convert_pptx_to_pdf(const uint8_t *data, size_t size,
 }
 
 static int convert_odp_to_pdf(const uint8_t *data, size_t size,
-                              const char *extension, uint8_t **out_pdf,
+                              const char *extension,
+                              const QwConvertOptions *options,
+                              uint8_t **out_pdf,
                               size_t *out_size, QwConvertReport *report)
 {
     QwOdpFormat format = QW_ODP_FORMAT_ODP;
@@ -1253,7 +1264,7 @@ static int convert_odp_to_pdf(const uint8_t *data, size_t size,
         return convert_map_compact_status((int)status);
     }
     html = qw_odp_document_html(document, &html_size);
-    rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+    rc = convert_html_to_pdf(html, html_size, options, out_pdf, out_size, report);
     qw_odp_document_free(document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
@@ -1264,6 +1275,7 @@ static int convert_odp_to_pdf(const uint8_t *data, size_t size,
 }
 
 static int convert_hwpx_to_pdf(const uint8_t *data, size_t size,
+                               const QwConvertOptions *options,
                                uint8_t **out_pdf, size_t *out_size,
                                QwConvertReport *report)
 {
@@ -1280,7 +1292,7 @@ static int convert_hwpx_to_pdf(const uint8_t *data, size_t size,
         return convert_map_compact_status((int)status);
     }
     html = qw_hwpx_document_html(document, &html_size);
-    rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+    rc = convert_html_to_pdf(html, html_size, options, out_pdf, out_size, report);
     qw_hwpx_document_free(document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
@@ -1291,6 +1303,7 @@ static int convert_hwpx_to_pdf(const uint8_t *data, size_t size,
 }
 
 static int convert_xps_to_pdf(const uint8_t *data, size_t size,
+                              const QwConvertOptions *options,
                               uint8_t **out_pdf, size_t *out_size,
                               QwConvertReport *report)
 {
@@ -1302,7 +1315,7 @@ static int convert_xps_to_pdf(const uint8_t *data, size_t size,
                                    &document, report);
     if (rc == QW_STATUS_OK) {
         rc = convert_html_to_pdf(document.html_utf8, document.html_size,
-                                 out_pdf, out_size, report);
+                                 options, out_pdf, out_size, report);
         if (rc == QW_STATUS_OK && report) {
             snprintf(report->note, sizeof(report->note),
                      "XPS layout: page text rendered; images, vector paths "
@@ -1313,6 +1326,7 @@ static int convert_xps_to_pdf(const uint8_t *data, size_t size,
     return rc;
 }
 static int convert_email_to_pdf(const uint8_t *data, size_t size,
+                                const QwConvertOptions *options,
                                 uint8_t **out_pdf, size_t *out_size,
                                 QwConvertReport *report)
 {
@@ -1329,7 +1343,7 @@ static int convert_email_to_pdf(const uint8_t *data, size_t size,
         return convert_map_standard_status((int)status);
     }
     html = qw_email_document_html(document, &html_size);
-    rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+    rc = convert_html_to_pdf(html, html_size, options, out_pdf, out_size, report);
     qw_email_document_free(document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
@@ -1340,6 +1354,7 @@ static int convert_email_to_pdf(const uint8_t *data, size_t size,
 }
 
 static int convert_msg_to_pdf(const uint8_t *data, size_t size,
+                             const QwConvertOptions *options,
                              uint8_t **out_pdf, size_t *out_size,
                              QwConvertReport *report)
 {
@@ -1347,13 +1362,14 @@ static int convert_msg_to_pdf(const uint8_t *data, size_t size,
     size_t html_size = 0u;
     int rc = qw_msg_to_html(data, size, &html, &html_size, report);
     if (rc == QW_STATUS_OK && html) {
-        rc = convert_html_to_pdf(html, html_size, out_pdf, out_size, report);
+        rc = convert_html_to_pdf(html, html_size, options, out_pdf, out_size, report);
         free(html);
     }
     return rc;
 }
 
 static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
+                                const QwConvertOptions *options,
                                 uint8_t **out_pdf, size_t *out_size,
                                 QwConvertReport *report)
 {
@@ -1379,7 +1395,7 @@ static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
             document.member_name_bytes, document.member_name_size, &rewritten,
             &rewritten_size, &inlined);
         if (inline_status == QW_STATUS_OK && rewritten && rewritten_size) {
-            rc = convert_html_to_pdf(rewritten, rewritten_size, out_pdf,
+            rc = convert_html_to_pdf(rewritten, rewritten_size, options, out_pdf,
                                      out_size, report);
             free(rewritten);
             if (rc == QW_STATUS_OK && report) {
@@ -1391,7 +1407,7 @@ static int convert_htmlz_to_pdf(const uint8_t *data, size_t size,
         } else {
             free(rewritten);
             rc = convert_html_to_pdf(document.html_bytes, document.html_size,
-                                     out_pdf, out_size, report);
+                                     options, out_pdf, out_size, report);
         }
     }
     qw_htmlz_document_free(&document);
@@ -1599,6 +1615,7 @@ static int mdx_route_to_text(const uint8_t *data, size_t size,
 }
 
 static int convert_rtf_to_pdf(const uint8_t *data, size_t size,
+                              const QwConvertOptions *options,
                               uint8_t **out_pdf, size_t *out_size,
                               QwConvertReport *report)
 {
@@ -1614,7 +1631,7 @@ static int convert_rtf_to_pdf(const uint8_t *data, size_t size,
         return convert_map_rtf_status((int)status);
     }
     rc = convert_html_to_pdf((const uint8_t *)document.html, document.html_size,
-                             out_pdf, out_size, report);
+                             options, out_pdf, out_size, report);
     qw_rtf_document_free(&document);
     if (rc == QW_STATUS_OK && report) {
         snprintf(report->note, sizeof(report->note),
@@ -1726,11 +1743,11 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
     }
     else if (qw_msg_probe(data, size) ||
              convert_extension_contains(extension, "msg")) {
-        return convert_msg_to_pdf(data, size, out_pdf, out_size, report);
+        return convert_msg_to_pdf(data, size, options, out_pdf, out_size, report);
     }
     else if (qw_email_probe(data, size) ||
              convert_extension_contains(extension, "eml")) {
-        return convert_email_to_pdf(data, size, out_pdf, out_size, report);
+        return convert_email_to_pdf(data, size, options, out_pdf, out_size, report);
     }
     else if (qw_mobi_probe(data, size) ||
              convert_extension_contains(extension, "mobi") ||
@@ -1740,7 +1757,7 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
     }
     else if (convert_extension_contains(extension, "rtf") ||
              convert_region_equals(data, size, 0u, "{\\rtf")) {
-        return convert_rtf_to_pdf(data, size, out_pdf, out_size, report);
+        return convert_rtf_to_pdf(data, size, options, out_pdf, out_size, report);
     }
     else if ((spreadsheet_format = convert_spreadsheet_format(
                   extension, &is_spreadsheet)) !=
@@ -1774,28 +1791,28 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
             convert_extension_contains(extension, "ppsx") ||
             convert_extension_contains(extension, "ppsm") ||
             contains_text(data, size, "ppt/presentation.xml")) {
-            return convert_pptx_to_pdf(data, size, extension, out_pdf, out_size,
+            return convert_pptx_to_pdf(data, size, extension, options, out_pdf, out_size,
                                        report);
         }
         if (convert_extension_contains(extension, "odp") ||
             convert_extension_contains(extension, "otp") ||
             contains_text(data, size,
                           "application/vnd.oasis.opendocument.presentation")) {
-            return convert_odp_to_pdf(data, size, extension, out_pdf, out_size,
+            return convert_odp_to_pdf(data, size, extension, options, out_pdf, out_size,
                                       report);
         }
         if (convert_extension_contains(extension, "xps") ||
             contains_text(data, size, "FixedDocumentSequence.fdseq")) {
-            return convert_xps_to_pdf(data, size, out_pdf, out_size, report);
+            return convert_xps_to_pdf(data, size, options, out_pdf, out_size, report);
         }
         if (convert_extension_contains(extension, "hwpx") ||
             contains_text(data, size, "Contents/section")) {
-            return convert_hwpx_to_pdf(data, size, out_pdf, out_size, report);
+            return convert_hwpx_to_pdf(data, size, options, out_pdf, out_size, report);
         }
         if (convert_extension_contains(extension, "htmlz") ||
             contains_text(data, size, "index.html") ||
             contains_text(data, size, "index.htm")) {
-            return convert_htmlz_to_pdf(data, size, out_pdf, out_size, report);
+            return convert_htmlz_to_pdf(data, size, options, out_pdf, out_size, report);
         }
         if (convert_extension_contains(extension, "txtz") ||
             contains_text(data, size, "index.txt")) {
@@ -1872,7 +1889,7 @@ int qw_doc_convert_memory_with_options(const uint8_t *data, size_t size,
             return QW_STATUS_ERR_UNSUPPORTED;
         }
         if (contains_text((const char *)data, size, "office:presentation")) {
-            return convert_odp_to_pdf(data, size, extension, out_pdf, out_size,
+            return convert_odp_to_pdf(data, size, extension, options, out_pdf, out_size,
                                       report);
         }
         is_odt = 1;
