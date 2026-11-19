@@ -135,7 +135,7 @@ if(BUILD_TESTING)
         QUIREWISE_TABLE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/table.pdf"
         QUIREWISE_CMYK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cmyk.pdf")
     target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
-        quirewise_document)
+        quirewise_document Quirewise::Image)
     add_test(NAME quirewise_document_pdf_office_reflow
         COMMAND quirewise_document_pdf_office_reflow_test)
 
