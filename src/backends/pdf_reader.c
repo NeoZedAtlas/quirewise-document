@@ -4791,3 +4791,311 @@ int qw_doc_decode_caj_jp2(const uint8_t *data, size_t size, QwPageImage *out_pag
                          "CAJ JP2 payload decoded by the internal image decoder");
     return QW_STATUS_OK;
 }
+
+/* Decode one image XObject to malloc-owned RGB24 pixels. Self-describing
+ * streams (JPEG/PNG files) go through the image package; raw DeviceRGB and
+ * DeviceGray Flate streams are expanded here. Returns 0 when unsupported. */
+static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
+                                uint8_t **out_rgb, size_t *out_width,
+                                size_t *out_height)
+{
+    const char *body = NULL;
+    size_t dict_size = 0u;
+    uint8_t *stream;
+    size_t stream_size = 0u;
+    QwImage image;
+    long image_width;
+    long image_height;
+    long bits = 8;
+    size_t components;
+    size_t expected;
+    size_t index;
+    uint8_t *rgb;
+
+    *out_rgb = NULL;
+    *out_width = 0u;
+    *out_height = 0u;
+    if (!pdf_object_body(reader, object, &body, &dict_size)) return 0;
+    if (!pdf_memmem(body, dict_size, "/Subtype", 8u)) return 0;
+    stream = pdf_object_stream(reader, object, &stream_size);
+    if (!stream) return 0;
+    if (pdf_memmem(body, dict_size, "/DCTDecode", 10u) ||
+        pdf_memmem(body, dict_size, "/JPXDecode", 10u)) {
+        memset(&image, 0, sizeof(image));
+        if (qw_image_decode(stream, stream_size, &image) != QW_IMAGE_OK) {
+            free(stream);
+            return 0;
+        }
+        if (!image.pixels || !image.width || !image.height ||
+            (image.format != QW_IMAGE_PIXEL_RGB24 &&
+             image.format != QW_IMAGE_PIXEL_GRAY8)) {
+            qw_image_free(&image);
+            free(stream);
+            return 0;
+        }
+        rgb = (uint8_t *)malloc((size_t)image.width * (size_t)image.height * 3u);
+        if (!rgb) {
+            qw_image_free(&image);
+            free(stream);
+            return 0;
+        }
+        for (index = 0u; index < (size_t)image.height; ++index) {
+            size_t column;
+            const uint8_t *source = image.pixels + index * image.stride;
+            uint8_t *target = rgb + index * (size_t)image.width * 3u;
+            if (image.format == QW_IMAGE_PIXEL_RGB24) {
+                memcpy(target, source, (size_t)image.width * 3u);
+                continue;
+            }
+            for (column = 0u; column < image.width; ++column) {
+                target[column * 3u + 0u] = source[column];
+                target[column * 3u + 1u] = source[column];
+                target[column * 3u + 2u] = source[column];
+            }
+        }
+        *out_width = image.width;
+        *out_height = image.height;
+        *out_rgb = rgb;
+        qw_image_free(&image);
+        free(stream);
+        return 1;
+    }
+    if (pdf_memmem(body, dict_size, "/CCITTFaxDecode", 15u) ||
+        pdf_memmem(body, dict_size, "/JBIG2Decode", 12u) ||
+        pdf_memmem(body, dict_size, "/ImageMask", 10u)) {
+        free(stream);
+        return 0;
+    }
+    if (pdf_memmem(body, dict_size, "/DeviceRGB", 10u)) {
+        components = 3u;
+    } else if (pdf_memmem(body, dict_size, "/DeviceGray", 11u)) {
+        components = 1u;
+    } else {
+        free(stream);
+        return 0;
+    }
+    image_width = pdf_parse_int_field(body, dict_size, "/Width", -1);
+    image_height = pdf_parse_int_field(body, dict_size, "/Height", -1);
+    bits = pdf_parse_int_field(body, dict_size, "/BitsPerComponent", 8);
+    if (image_width <= 0 || image_height <= 0 || bits != 8 ||
+        (size_t)image_width * components * (size_t)image_height != stream_size) {
+        free(stream);
+        return 0;
+    }
+    expected = (size_t)image_width * (size_t)image_height * 3u;
+    rgb = (uint8_t *)malloc(expected);
+    if (!rgb) {
+        free(stream);
+        return 0;
+    }
+    for (index = 0u; index < (size_t)image_height; ++index) {
+        size_t column;
+        const uint8_t *source = stream + index * (size_t)image_width * components;
+        uint8_t *target = rgb + index * (size_t)image_width * 3u;
+        for (column = 0u; column < (size_t)image_width; ++column) {
+            if (components == 3u) {
+                target[column * 3u + 0u] = source[column * 3u + 0u];
+                target[column * 3u + 1u] = source[column * 3u + 1u];
+                target[column * 3u + 2u] = source[column * 3u + 2u];
+            } else {
+                target[column * 3u + 0u] = source[column];
+                target[column * 3u + 1u] = source[column];
+                target[column * 3u + 2u] = source[column];
+            }
+        }
+    }
+    *out_rgb = rgb;
+    *out_width = (size_t)image_width;
+    *out_height = (size_t)image_height;
+    free(stream);
+    return 1;
+}
+
+/* Fetch a page's content stream (NULL when the page has none). */
+static uint8_t *pdf_page_content_stream(const QwPdfReader *reader,
+                                        size_t page_object, size_t *out_size)
+{
+    const char *body = NULL;
+    size_t dict_size = 0u;
+    size_t contents = 0u;
+    char *dict_copy;
+    uint8_t *stream = NULL;
+    *out_size = 0u;
+    if (!pdf_object_body(reader, page_object, &body, &dict_size)) return NULL;
+    dict_copy = (char *)malloc(dict_size + 1u);
+    if (!dict_copy) return NULL;
+    memcpy(dict_copy, body, dict_size);
+    dict_copy[dict_size] = '\0';
+    if (pdf_find_reference(dict_copy, dict_size, "/Contents", &contents))
+        stream = pdf_object_stream(reader, contents, out_size);
+    free(dict_copy);
+    return stream;
+}
+
+/* Multiply PDF matrices: result = m x n (row-vector convention). */
+static void pdf_matrix_multiply(double result[6], const double m[6],
+                                const double n[6])
+{
+    result[0] = m[0] * n[0] + m[1] * n[2];
+    result[1] = m[0] * n[1] + m[1] * n[3];
+    result[2] = m[2] * n[0] + m[3] * n[2];
+    result[3] = m[2] * n[1] + m[3] * n[3];
+    result[4] = m[4] * n[0] + m[5] * n[2] + n[4];
+    result[5] = m[4] * n[1] + m[5] * n[3] + n[5];
+}
+
+void qw_doc_pdf_images_free(QwPdfExtractedImage *images, size_t count);
+
+int qw_doc_pdf_extract_page_images(QwPdfReader *reader, size_t page_index,
+                                   QwPdfExtractedImage **out_images, size_t *out_count)
+{
+    PdfImageRef refs[32];
+    size_t ref_count;
+    uint8_t *content;
+    size_t content_size = 0u;
+    const char *cursor;
+    const char *end;
+    double ctm[6] = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    double stack[32][6];
+    size_t depth = 0u;
+    double numbers[8];
+    size_t number_count = 0u;
+    char name[64] = "";
+    QwPdfExtractedImage *images = NULL;
+    size_t count = 0u;
+    size_t capacity = 0u;
+
+    if (!reader || !out_images || !out_count)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    *out_images = NULL;
+    *out_count = 0u;
+    if (page_index >= reader->page_count)
+        return QW_STATUS_ERR_INVALID_ARGUMENT;
+    if (reader->encryption_unsupported) return QW_STATUS_ERR_UNSUPPORTED;
+    ref_count = pdf_collect_image_xobjects(reader, reader->page_objects[page_index],
+                                           refs, 32u);
+    if (!ref_count) return QW_STATUS_OK;
+    content = pdf_page_content_stream(reader, reader->page_objects[page_index],
+                                      &content_size);
+    if (!content) return QW_STATUS_OK;
+    cursor = (const char *)content;
+    end = cursor + content_size;
+    while (cursor < end) {
+        const char *token;
+        size_t token_length = 0u;
+        while (cursor < end && (isspace((unsigned char)*cursor) || *cursor == '\0'))
+            ++cursor;
+        if (cursor >= end) break;
+        if (*cursor == '/') {
+            size_t length = 0u;
+            while (cursor + 1u + length < end &&
+                   (isalnum((unsigned char)cursor[1u + length]) ||
+                    cursor[1u + length] == '_' || cursor[1u + length] == '-'))
+                ++length;
+            if (length + 1u < sizeof(name)) {
+                memcpy(name, cursor + 1u, length);
+                name[length] = '\0';
+            }
+            cursor += 1u + length;
+            continue;
+        }
+        if (*cursor == '(') {
+            int depth_paren = 1;
+            ++cursor;
+            while (cursor < end && depth_paren > 0) {
+                if (*cursor == '\\') { cursor += 2; continue; }
+                if (*cursor == '(') ++depth_paren;
+                else if (*cursor == ')') --depth_paren;
+                ++cursor;
+            }
+            continue;
+        }
+        if (*cursor == '<' || *cursor == '>' || *cursor == '[' || *cursor == ']') {
+            ++cursor;
+            continue;
+        }
+        token = cursor;
+        while (cursor + token_length < end &&
+               !isspace((unsigned char)cursor[token_length]) &&
+               cursor[token_length] != '(' && cursor[token_length] != '<' &&
+               cursor[token_length] != '/')
+            ++token_length;
+        cursor += token_length ? token_length : 1u;
+        if (token_length &&
+            (isdigit((unsigned char)token[0]) || token[0] == '-' ||
+             token[0] == '+' || token[0] == '.')) {
+            char number[32];
+            if (token_length < sizeof(number)) {
+                memcpy(number, token, token_length);
+                number[token_length] = '\0';
+                if (number_count < 8u)
+                    numbers[number_count++] = strtod(number, NULL);
+            }
+            continue;
+        }
+        if (token_length == 1u && token[0] == 'q') {
+            if (depth < 32u) {
+                memcpy(stack[depth], ctm, sizeof(ctm));
+                ++depth;
+            }
+        } else if (token_length == 1u && token[0] == 'Q') {
+            if (depth > 0u) {
+                --depth;
+                memcpy(ctm, stack[depth], sizeof(ctm));
+            }
+        } else if (token_length == 2u && memcmp(token, "cm", 2u) == 0) {
+            if (number_count >= 6u) {
+                double matrix[6];
+                memcpy(matrix, numbers + number_count - 6u, sizeof(matrix));
+                pdf_matrix_multiply(ctm, matrix, ctm);
+            }
+        } else if (token_length == 2u && memcmp(token, "Do", 2u) == 0 &&
+                   name[0]) {
+            size_t ref_index;
+            for (ref_index = 0u; ref_index < ref_count; ++ref_index) {
+                uint8_t *rgb = NULL;
+                size_t width = 0u;
+                size_t height = 0u;
+                if (strcmp(refs[ref_index].name, name) != 0) continue;
+                if (!pdf_image_object_rgb(reader, refs[ref_index].object, &rgb,
+                                          &width, &height))
+                    break;
+                if (count >= capacity) {
+                    size_t grown = capacity ? capacity * 2u : 4u;
+                    QwPdfExtractedImage *resized = (QwPdfExtractedImage *)realloc(
+                        images, grown * sizeof(*resized));
+                    if (!resized) {
+                        free(rgb);
+                        qw_doc_pdf_images_free(images, count);
+                        free(content);
+                        return QW_STATUS_ERR_OUT_OF_MEMORY;
+                    }
+                    images = resized;
+                    capacity = grown;
+                }
+                images[count].x = ctm[4];
+                images[count].y = ctm[5];
+                images[count].w = ctm[0];
+                images[count].h = ctm[3];
+                images[count].width = width;
+                images[count].height = height;
+                images[count].rgb = rgb;
+                ++count;
+                break;
+            }
+        }
+        number_count = 0u;
+    }
+    free(content);
+    *out_images = images;
+    *out_count = count;
+    return QW_STATUS_OK;
+}
+
+void qw_doc_pdf_images_free(QwPdfExtractedImage *images, size_t count)
+{
+    size_t index;
+    if (!images) return;
+    for (index = 0u; index < count; ++index) free(images[index].rgb);
+    free(images);
+}

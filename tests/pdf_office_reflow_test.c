@@ -343,7 +343,8 @@ int main(void)
                                           &opts, &image_docx,
                                           &image_docx_size, &report) ==
               QW_STATUS_OK);
-        CHECK(strstr(report.note, "image(s) are not included") != NULL);
+        CHECK(strstr(report.note, "image(s) embedded") != NULL);
+        CHECK(contains(image_docx, image_docx_size, "word/media/image1.png"));
         free(bytes);
         free(image_docx);
     }
@@ -394,6 +395,49 @@ int main(void)
         }
         free(bytes);
         free(table_docx);
+    }
+
+    /* Images embedded in the PDF become PNG media in the DOCX. */
+    {
+        static const char *image_html =
+            "<html><body><p>pic</p>"
+            "<img src=\"data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
+            "z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\">"
+            "</body></html>";
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *image_pdf = NULL;
+        size_t image_pdf_size = 0u;
+        uint8_t *media_docx = NULL;
+        size_t media_docx_size = 0u;
+        QwConvertReport media_report;
+
+        CHECK(qw_convert_to_pdf_memory(image_html, strlen(image_html), &opts,
+                                       &image_pdf, &image_pdf_size,
+                                       NULL) == QW_STATUS_OK);
+        opts.pdf_office_reflow = 1;
+        memset(&media_report, 0, sizeof(media_report));
+        CHECK(qw_convert_to_format_memory(image_pdf, image_pdf_size,
+                                          QW_FORMAT_DOCX, &opts, &media_docx,
+                                          &media_docx_size,
+                                          &media_report) == QW_STATUS_OK);
+        CHECK(contains(media_docx, media_docx_size, "word/media/image1.png"));
+        CHECK(contains(media_docx, media_docx_size, "<w:drawing>"));
+        CHECK(strstr(media_report.note, "image(s) embedded") != NULL);
+        {
+            uint8_t *media_epub = NULL;
+            size_t media_epub_size = 0u;
+            CHECK(qw_convert_to_format_memory(image_pdf, image_pdf_size,
+                                              QW_FORMAT_EPUB, &opts, &media_epub,
+                                              &media_epub_size, NULL) ==
+                  QW_STATUS_OK);
+            CHECK(contains(media_epub, media_epub_size, "OEBPS/image1.png"));
+            CHECK(contains(media_epub, media_epub_size,
+                           "img src=\"image1.png\""));
+            free(media_epub);
+        }
+        free(image_pdf);
+        free(media_docx);
     }
 
     puts("PASS: PDF -> DOCX/EPUB reflow mode");

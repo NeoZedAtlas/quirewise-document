@@ -107,6 +107,20 @@ typedef struct QwPdfLine {
     QwPdfRun *runs;
 } QwPdfLine;
 
+typedef struct QwPdfExtractedImage {
+    double x;
+    double y;
+    double w;
+    double h;
+    size_t width;
+    size_t height;
+    uint8_t *rgb;
+} QwPdfExtractedImage;
+
+int qw_doc_pdf_extract_page_images(QwPdfReader *reader, size_t page_index,
+                                   QwPdfExtractedImage **out_images, size_t *out_count);
+void qw_doc_pdf_images_free(QwPdfExtractedImage *images, size_t count);
+
 int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
                                   QwPdfLine **out_lines, size_t *out_count);
 void qw_doc_pdf_lines_free(QwPdfLine *lines, size_t count);
