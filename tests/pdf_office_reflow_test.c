@@ -1,6 +1,7 @@
 /* PDF -> DOCX/EPUB: layout-preserving page images vs editable text mode. */
 #include <quirewise/convert.h>
 #include <quirewise/pdf.h>
+#include <quirewise/image.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -389,6 +390,7 @@ int main(void)
                                           &table_docx_size, NULL) ==
               QW_STATUS_OK);
         CHECK(contains(table_docx, table_docx_size, "<w:tbl>"));
+        CHECK(contains(table_docx, table_docx_size, "<w:tblBorders>"));
         CHECK(contains(table_docx, table_docx_size, "<w:tr>"));
         CHECK(contains(table_docx, table_docx_size, "Name"));
         CHECK(contains(table_docx, table_docx_size, "Qty"));
@@ -401,7 +403,8 @@ int main(void)
                                               &opts, &table_epub,
                                               &table_epub_size, NULL) ==
                   QW_STATUS_OK);
-            CHECK(contains(table_epub, table_epub_size, "<table>"));
+            CHECK(contains(table_epub, table_epub_size,
+                           "<table border=\"1\""));
             CHECK(contains(table_epub, table_epub_size, "<tr>"));
             CHECK(contains(table_epub, table_epub_size, "<td>"));
             CHECK(contains(table_epub, table_epub_size, "Apple"));
@@ -508,6 +511,76 @@ int main(void)
         }
         free(order_pdf);
         free(order_docx);
+    }
+
+    /* CMYK images decode to RGB and embed as PNG media. */
+    {
+        FILE *file = fopen(QUIREWISE_CMYK_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        QwConvertReport report;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size,
+                                          &report) == QW_STATUS_OK);
+        CHECK(strstr(report.note, "image(s) embedded") != NULL);
+        {
+            static const uint8_t signature[8] = {0x89u, 'P', 'N', 'G',
+                                                 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+            const uint8_t *png = NULL;
+            size_t probe;
+            for (probe = 0u; probe + 8u <= docx_size; ++probe) {
+                if (memcmp(docx + probe, signature, 8u) == 0) {
+                    png = docx + probe;
+                    break;
+                }
+            }
+            CHECK(png != NULL);
+            if (png) {
+                const uint8_t *end = NULL;
+                for (probe = (size_t)(png - docx); probe + 8u <= docx_size;
+                     ++probe) {
+                    if (memcmp(docx + probe, "IEND", 4u) == 0) {
+                        end = docx + probe + 8u;
+                        break;
+                    }
+                }
+                CHECK(end != NULL);
+                if (end) {
+                    QwImage decoded;
+                    memset(&decoded, 0, sizeof(decoded));
+                    CHECK(qw_image_decode(png, (size_t)(end - png),
+                                          &decoded) == QW_IMAGE_OK);
+                    CHECK(decoded.width == 1u);
+                    CHECK(decoded.height == 1u);
+                    CHECK(decoded.pixels != NULL);
+                    if (decoded.pixels && decoded.format == QW_IMAGE_PIXEL_RGB24) {
+                        CHECK(decoded.pixels[0] > 200u);
+                        CHECK(decoded.pixels[1] < 60u);
+                        CHECK(decoded.pixels[2] < 60u);
+                    }
+                    qw_image_free(&decoded);
+                }
+            }
+        }
+        free(bytes);
+        free(docx);
     }
 
     puts("PASS: PDF -> DOCX/EPUB reflow mode");

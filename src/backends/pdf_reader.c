@@ -4870,6 +4870,32 @@ static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
         components = 3u;
     } else if (pdf_memmem(body, dict_size, "/DeviceGray", 11u)) {
         components = 1u;
+    } else if (pdf_memmem(body, dict_size, "/DeviceCMYK", 11u)) {
+        components = 4u;
+    } else if (pdf_memmem(body, dict_size, "/ICCBased", 9u)) {
+        const char *icc = pdf_memmem(body, dict_size, "/ICCBased", 9u);
+        const char *scan = icc + 9u;
+        const char *limit = body + dict_size;
+        size_t icc_object = 0u;
+        int colors = 0;
+        while (scan < limit && isspace((unsigned char)*scan)) ++scan;
+        while (scan < limit && isdigit((unsigned char)*scan)) {
+            icc_object = icc_object * 10u + (size_t)(*scan - '0');
+            ++scan;
+        }
+        if (icc_object) {
+            const char *icc_body = NULL;
+            size_t icc_size = 0u;
+            if (pdf_object_body(reader, icc_object, &icc_body, &icc_size))
+                colors = (int)pdf_parse_int_field(icc_body, icc_size, "/N", 0);
+        }
+        if (colors == 4) components = 4u;
+        else if (colors == 3) components = 3u;
+        else if (colors == 1) components = 1u;
+        else {
+            free(stream);
+            return 0;
+        }
     } else {
         free(stream);
         return 0;
@@ -4897,6 +4923,17 @@ static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
                 target[column * 3u + 0u] = source[column * 3u + 0u];
                 target[column * 3u + 1u] = source[column * 3u + 1u];
                 target[column * 3u + 2u] = source[column * 3u + 2u];
+            } else if (components == 4u) {
+                double c = source[column * 4u + 0u] / 255.0;
+                double m = source[column * 4u + 1u] / 255.0;
+                double y = source[column * 4u + 2u] / 255.0;
+                double k = source[column * 4u + 3u] / 255.0;
+                target[column * 3u + 0u] =
+                    (uint8_t)(255.0 * (1.0 - c) * (1.0 - k));
+                target[column * 3u + 1u] =
+                    (uint8_t)(255.0 * (1.0 - m) * (1.0 - k));
+                target[column * 3u + 2u] =
+                    (uint8_t)(255.0 * (1.0 - y) * (1.0 - k));
             } else {
                 target[column * 3u + 0u] = source[column];
                 target[column * 3u + 1u] = source[column];

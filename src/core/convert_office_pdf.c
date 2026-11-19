@@ -857,7 +857,13 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                 if (!pdf_buffer_text(
                         &body,
                         "<w:tbl><w:tblPr><w:tblW w:w=\"0\" w:type=\"auto\"/>"
-                        "</w:tblPr>")) {
+                        "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/><w:left w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/><w:bottom w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/><w:right w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/><w:insideH w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/><w:insideV w:val=\"single\" w:sz=\"4\" "
+                        "w:color=\"auto\"/></w:tblBorders></w:tblPr>")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
@@ -1208,7 +1214,9 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             }
             if (block_end - line_index >= 2u) {
                 size_t row;
-                if (!pdf_buffer_text(&chapter, "<table>")) {
+                if (!pdf_buffer_text(&chapter,
+                                     "<table border=\"1\" cellspacing=\"0\" "
+                                     "cellpadding=\"4\">")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
