@@ -633,16 +633,62 @@ static size_t office_pdf_image_count(const uint8_t *data, size_t size)
 }
 
 /* Two lines share a table layout when their runs start at the same x. */
-static int office_pdf_same_columns(const QwPdfLine *a, const QwPdfLine *b)
+#define OFFICE_PDF_MAX_COLUMNS 16u
+
+typedef struct OfficePdfTable {
+    double columns[OFFICE_PDF_MAX_COLUMNS];
+    size_t column_count;
+} OfficePdfTable;
+
+static size_t office_pdf_column_index(const OfficePdfTable *table, double x)
 {
     size_t index;
-    if (a->run_count != b->run_count || a->run_count < 2u) return 0;
-    for (index = 0u; index < a->run_count; ++index) {
-        double dx = a->runs[index].x - b->runs[index].x;
-        if (dx < 0.0) dx = -dx;
-        if (dx > 2.0) return 0;
+    for (index = 0u; index < table->column_count; ++index) {
+        double delta = table->columns[index] - x;
+        if (delta < 0.0) delta = -delta;
+        if (delta <= 2.0) return index;
     }
-    return 1;
+    return SIZE_MAX;
+}
+
+/* Collect the column origins of consecutive lines that look like table rows. */
+static size_t office_pdf_table_block(const QwPdfLine *lines, size_t line_count,
+                                     size_t start, OfficePdfTable *table)
+{
+    size_t end = start;
+    memset(table, 0, sizeof(*table));
+    while (end < line_count && lines[end].run_count >= 2u) {
+        size_t run_index;
+        int fits = 1;
+        for (run_index = 0u; run_index < lines[end].run_count; ++run_index) {
+            if (office_pdf_column_index(table, lines[end].runs[run_index].x) ==
+                SIZE_MAX) {
+                if (table->column_count >= OFFICE_PDF_MAX_COLUMNS) {
+                    fits = 0;
+                    break;
+                }
+                table->columns[table->column_count++] =
+                    lines[end].runs[run_index].x;
+            }
+        }
+        if (!fits) break;
+        ++end;
+    }
+    return end;
+}
+
+/* Number of grid columns covered by the run starting at `column`. */
+static size_t office_pdf_cell_span(const OfficePdfTable *table, size_t column,
+                                   size_t next_column)
+{
+    size_t span;
+    if (column == SIZE_MAX) return 1u;
+    if (next_column == SIZE_MAX || next_column <= column)
+        next_column = table->column_count;
+    span = next_column - column;
+    if (column + span > table->column_count)
+        span = table->column_count - column;
+    return span ? span : 1u;
 }
 
 /* Encode one extracted image as PNG media and emit the DOCX drawing. */
@@ -829,6 +875,7 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
         line_index = 0u;
         while (line_index < line_count) {
             size_t block_end = line_index + 1u;
+            OfficePdfTable table;
             int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
             while (next_image < page_image_total &&
                    page_images[next_image].y + page_images[next_image].h >=
@@ -847,10 +894,8 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             if (indent < 0) indent = 0;
             if (indent > 20000) indent = 20000;
             if (page_lines[line_index].run_count >= 2u) {
-                while (block_end < line_count &&
-                       office_pdf_same_columns(&page_lines[line_index],
-                                               &page_lines[block_end]))
-                    ++block_end;
+                block_end = office_pdf_table_block(page_lines, line_count,
+                                                   line_index, &table);
             }
             if (block_end - line_index >= 2u) {
                 size_t row;
@@ -875,8 +920,23 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                     }
                     for (cell = 0u; cell < page_lines[row].run_count; ++cell) {
                         const QwPdfRun *run = &page_lines[row].runs[cell];
-                        if (!pdf_buffer_text(&body,
-                                             "<w:tc><w:p><w:r><w:rPr>") ||
+                        size_t column = office_pdf_column_index(&table, run->x);
+                        size_t next_column =
+                            cell + 1u < page_lines[row].run_count
+                                ? office_pdf_column_index(
+                                      &table,
+                                      page_lines[row].runs[cell + 1u].x)
+                                : table.column_count;
+                        size_t span =
+                            office_pdf_cell_span(&table, column, next_column);
+                        if (!pdf_buffer_text(&body, "<w:tc>") ||
+                            (span > 1u &&
+                             !pdf_buffer_printf(
+                                 &body,
+                                 "<w:tcPr><w:gridSpan w:val=\"%zu\"/>"
+                                 "</w:tcPr>",
+                                 span)) ||
+                            !pdf_buffer_text(&body, "<w:p><w:r><w:rPr>") ||
                             !pdf_buffer_text(
                                 &body,
                                 office_pdf_is_bold(run->font) ? "<w:b/>" : "") ||
@@ -1191,6 +1251,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
         line_index = 0u;
         while (line_index < line_count) {
             size_t block_end = line_index + 1u;
+            OfficePdfTable table;
             double indent = (page_lines[line_index].x - base_x);
             while (next_image < page_image_total &&
                    page_images[next_image].y + page_images[next_image].h >=
@@ -1207,10 +1268,8 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             }
             if (indent < 0.0) indent = 0.0;
             if (page_lines[line_index].run_count >= 2u) {
-                while (block_end < line_count &&
-                       office_pdf_same_columns(&page_lines[line_index],
-                                               &page_lines[block_end]))
-                    ++block_end;
+                block_end = office_pdf_table_block(page_lines, line_count,
+                                                   line_index, &table);
             }
             if (block_end - line_index >= 2u) {
                 size_t row;
@@ -1228,7 +1287,20 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                     }
                     for (cell = 0u; cell < page_lines[row].run_count; ++cell) {
                         const QwPdfRun *run = &page_lines[row].runs[cell];
-                        if (!pdf_buffer_text(&chapter, "<td>") ||
+                        size_t column = office_pdf_column_index(&table, run->x);
+                        size_t next_column =
+                            cell + 1u < page_lines[row].run_count
+                                ? office_pdf_column_index(
+                                      &table,
+                                      page_lines[row].runs[cell + 1u].x)
+                                : table.column_count;
+                        size_t span =
+                            office_pdf_cell_span(&table, column, next_column);
+                        if (!pdf_buffer_text(&chapter, "<td") ||
+                            (span > 1u &&
+                             !pdf_buffer_printf(&chapter,
+                                                " colspan=\"%zu\"", span)) ||
+                            !pdf_buffer_text(&chapter, ">") ||
                             !pdf_buffer_text(&chapter, run->text) ||
                             !pdf_buffer_text(&chapter, "</td>")) {
                             qw_doc_pdf_lines_free(page_lines, line_count);
