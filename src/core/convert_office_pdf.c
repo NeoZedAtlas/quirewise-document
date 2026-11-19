@@ -645,6 +645,67 @@ static int office_pdf_same_columns(const QwPdfLine *a, const QwPdfLine *b)
     return 1;
 }
 
+/* Encode one extracted image as PNG media and emit the DOCX drawing. */
+static int office_docx_emit_image(OfficePdfBuffer *body,
+                                  OfficePdfBuffer *relationships,
+                                  const QwPdfExtractedImage *image,
+                                  uint8_t **media_data, size_t *media_size,
+                                  size_t *media_count)
+{
+    QwImage encoded;
+    uint8_t *png = NULL;
+    size_t png_size = 0u;
+    unsigned emu_w;
+    unsigned emu_h;
+    if (*media_count >= 64u) return 1;
+    memset(&encoded, 0, sizeof(encoded));
+    encoded.pixels = image->rgb;
+    encoded.stride = image->width * 3u;
+    encoded.size = encoded.stride * image->height;
+    encoded.width = (uint32_t)image->width;
+    encoded.height = (uint32_t)image->height;
+    encoded.format = QW_IMAGE_PIXEL_RGB24;
+    if (qw_image_encode(&encoded, QW_IMAGE_ENCODE_PNG, &png, &png_size) !=
+        QW_IMAGE_OK)
+        return 1;
+    media_data[*media_count] = png;
+    media_size[*media_count] = png_size;
+    ++*media_count;
+    emu_w = (unsigned)(image->w * 12700.0);
+    emu_h = (unsigned)(image->h * 12700.0);
+    if (emu_w == 0u) emu_w = 12700u;
+    if (emu_h == 0u) emu_h = 12700u;
+    if (!pdf_buffer_printf(
+            body,
+            "<w:p><w:r><w:drawing><wp:inline distT=\"0\" "
+            "distB=\"0\" distL=\"0\" distR=\"0\">"
+            "<wp:extent cx=\"%u\" cy=\"%u\"/><wp:docPr "
+            "id=\"%zu\" name=\"Image %zu\"/><a:graphic>"
+            "<a:graphicData uri=\"http://schemas.openxmlformats"
+            ".org/drawingml/2006/picture\"><pic:pic>"
+            "<pic:nvPicPr><pic:cNvPr id=\"%zu\" "
+            "name=\"image%zu.png\"/><pic:cNvPicPr/>"
+            "</pic:nvPicPr><pic:blipFill><a:blip "
+            "r:embed=\"rId%zu\"/><a:stretch><a:fillRect/>"
+            "</a:stretch></pic:blipFill><pic:spPr><a:xfrm>"
+            "<a:off x=\"0\" y=\"0\"/><a:ext cx=\"%u\" "
+            "cy=\"%u\"/></a:xfrm><a:prstGeom prst=\"rect\">"
+            "<a:avLst/></a:prstGeom></pic:spPr></pic:pic>"
+            "</a:graphicData></a:graphic></wp:inline>"
+            "</w:drawing></w:r></w:p>",
+            emu_w, emu_h, *media_count, *media_count, *media_count,
+            *media_count, *media_count, emu_w, emu_h) ||
+        !pdf_buffer_printf(
+            relationships,
+            "<Relationship Id=\"rId%zu\" Type=\"http://schemas"
+            ".openxmlformats.org/officeDocument/2006/"
+            "relationships/image\" Target=\"media/image%zu"
+            ".png\"/>",
+            *media_count, *media_count))
+        return 0;
+    return 1;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -725,9 +786,36 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
         size_t line_count = 0u;
         size_t line_index;
         double base_x = 0.0;
+        QwPdfExtractedImage *page_images = NULL;
+        size_t page_image_total = 0u;
+        size_t next_image = 0u;
         status = qw_doc_pdf_extract_page_lines(document, index, &page_lines,
                                                &line_count);
         if (status != QW_STATUS_OK) goto out_of_memory;
+        {
+            size_t image_index;
+            status = qw_doc_pdf_extract_page_images(document, index,
+                                                    &page_images,
+                                                    &page_image_total);
+            if (status != QW_STATUS_OK) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
+            }
+            for (image_index = 0u; image_index < page_image_total;
+                 ++image_index) {
+                size_t other;
+                for (other = image_index + 1u; other < page_image_total;
+                     ++other) {
+                    if (page_images[other].y + page_images[other].h >
+                        page_images[image_index].y +
+                            page_images[image_index].h) {
+                        QwPdfExtractedImage swap = page_images[image_index];
+                        page_images[image_index] = page_images[other];
+                        page_images[other] = swap;
+                    }
+                }
+            }
+        }
         if (index &&
             !pdf_buffer_text(&body,
                              "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>")) {
@@ -742,6 +830,19 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
         while (line_index < line_count) {
             size_t block_end = line_index + 1u;
             int indent = (int)((page_lines[line_index].x - base_x) * 20.0);
+            while (next_image < page_image_total &&
+                   page_images[next_image].y + page_images[next_image].h >=
+                       page_lines[line_index].y) {
+                if (!office_docx_emit_image(&body, &relationships,
+                                            &page_images[next_image],
+                                            media_data, media_size,
+                                            &media_count)) {
+                    qw_doc_pdf_images_free(page_images, page_image_total);
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                ++next_image;
+            }
             int spacing = 0;
             if (indent < 0) indent = 0;
             if (indent > 20000) indent = 20000;
@@ -861,76 +962,18 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             }
             ++line_index;
         }
-        qw_doc_pdf_lines_free(page_lines, line_count);
-        {
-            QwPdfExtractedImage *page_images = NULL;
-            size_t page_image_total = 0u;
-            status = qw_doc_pdf_extract_page_images(document, index,
-                                                    &page_images,
-                                                    &page_image_total);
-            if (status == QW_STATUS_OK && page_image_total) {
-                size_t image_index;
-                for (image_index = 0u;
-                     image_index < page_image_total && media_count < 64u;
-                     ++image_index) {
-                    QwImage image;
-                    uint8_t *png = NULL;
-                    size_t png_size = 0u;
-                    unsigned emu_w;
-                    unsigned emu_h;
-                    memset(&image, 0, sizeof(image));
-                    image.pixels = page_images[image_index].rgb;
-                    image.stride = page_images[image_index].width * 3u;
-                    image.size = image.stride * page_images[image_index].height;
-                    image.width = (uint32_t)page_images[image_index].width;
-                    image.height = (uint32_t)page_images[image_index].height;
-                    image.format = QW_IMAGE_PIXEL_RGB24;
-                    if (qw_image_encode(&image, QW_IMAGE_ENCODE_PNG, &png,
-                                        &png_size) != QW_IMAGE_OK)
-                        continue;
-                    media_data[media_count] = png;
-                    media_size[media_count] = png_size;
-                    ++media_count;
-                    emu_w = (unsigned)(page_images[image_index].w * 12700.0);
-                    emu_h = (unsigned)(page_images[image_index].h * 12700.0);
-                    if (emu_w == 0u) emu_w = 12700u;
-                    if (emu_h == 0u) emu_h = 12700u;
-                    if (!pdf_buffer_printf(
-                            &body,
-                            "<w:p><w:r><w:drawing><wp:inline distT=\"0\" "
-                            "distB=\"0\" distL=\"0\" distR=\"0\">"
-                            "<wp:extent cx=\"%u\" cy=\"%u\"/><wp:docPr "
-                            "id=\"%zu\" name=\"Image %zu\"/><a:graphic>"
-                            "<a:graphicData uri=\"http://schemas.openxmlformats"
-                            ".org/drawingml/2006/picture\"><pic:pic>"
-                            "<pic:nvPicPr><pic:cNvPr id=\"%zu\" "
-                            "name=\"image%zu.png\"/><pic:cNvPicPr/>"
-                            "</pic:nvPicPr><pic:blipFill><a:blip "
-                            "r:embed=\"rId%zu\"/><a:stretch><a:fillRect/>"
-                            "</a:stretch></pic:blipFill><pic:spPr><a:xfrm>"
-                            "<a:off x=\"0\" y=\"0\"/><a:ext cx=\"%u\" "
-                            "cy=\"%u\"/></a:xfrm><a:prstGeom prst=\"rect\">"
-                            "<a:avLst/></a:prstGeom></pic:spPr></pic:pic>"
-                            "</a:graphicData></a:graphic></wp:inline>"
-                            "</w:drawing></w:r></w:p>",
-                            emu_w, emu_h, media_count, media_count,
-                            media_count, media_count, media_count, emu_w,
-                            emu_h) ||
-                        !pdf_buffer_printf(
-                            &relationships,
-                            "<Relationship Id=\"rId%zu\" Type=\"http://schemas"
-                            ".openxmlformats.org/officeDocument/2006/"
-                            "relationships/image\" Target=\"media/image%zu"
-                            ".png\"/>",
-                            media_count, media_count)) {
-                        qw_doc_pdf_images_free(page_images,
-                                               page_image_total);
-                        goto out_of_memory;
-                    }
-                }
+        while (next_image < page_image_total) {
+            if (!office_docx_emit_image(&body, &relationships,
+                                        &page_images[next_image], media_data,
+                                        media_size, &media_count)) {
+                qw_doc_pdf_images_free(page_images, page_image_total);
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
             }
-            qw_doc_pdf_images_free(page_images, page_image_total);
+            ++next_image;
         }
+        qw_doc_pdf_images_free(page_images, page_image_total);
+        qw_doc_pdf_lines_free(page_lines, line_count);
     }
     qw_pdf_close(document);
     document = NULL;
@@ -995,6 +1038,41 @@ out_of_memory:
     if (document) qw_pdf_close(document);
     free(body.data);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
+}
+
+/* Encode one extracted image as PNG media and emit the EPUB img element. */
+static int office_epub_emit_image(OfficePdfBuffer *chapter,
+                                  OfficePdfBuffer *manifest,
+                                  const QwPdfExtractedImage *image,
+                                  uint8_t **media_data, size_t *media_size,
+                                  size_t *media_count)
+{
+    QwImage encoded;
+    uint8_t *png = NULL;
+    size_t png_size = 0u;
+    if (*media_count >= 64u) return 1;
+    memset(&encoded, 0, sizeof(encoded));
+    encoded.pixels = image->rgb;
+    encoded.stride = image->width * 3u;
+    encoded.size = encoded.stride * image->height;
+    encoded.width = (uint32_t)image->width;
+    encoded.height = (uint32_t)image->height;
+    encoded.format = QW_IMAGE_PIXEL_RGB24;
+    if (qw_image_encode(&encoded, QW_IMAGE_ENCODE_PNG, &png, &png_size) !=
+        QW_IMAGE_OK)
+        return 1;
+    media_data[*media_count] = png;
+    media_size[*media_count] = png_size;
+    ++*media_count;
+    if (!pdf_buffer_printf(chapter,
+                           "<p><img src=\"image%zu.png\" alt=\"\" "
+                           "style=\"max-width:100%%\"/></p>", *media_count) ||
+        !pdf_buffer_printf(manifest,
+                           "<item id=\"image%zu\" href=\"image%zu.png\" "
+                           "media-type=\"image/png\"/>", *media_count,
+                           *media_count))
+        return 0;
+    return 1;
 }
 
 int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
@@ -1066,9 +1144,36 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
         size_t line_count = 0u;
         size_t line_index;
         double base_x = 0.0;
+        QwPdfExtractedImage *page_images = NULL;
+        size_t page_image_total = 0u;
+        size_t next_image = 0u;
         status = qw_doc_pdf_extract_page_lines(document, index, &page_lines,
                                                &line_count);
         if (status != QW_STATUS_OK) goto out_of_memory;
+        {
+            size_t image_index;
+            status = qw_doc_pdf_extract_page_images(document, index,
+                                                    &page_images,
+                                                    &page_image_total);
+            if (status != QW_STATUS_OK) {
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
+            }
+            for (image_index = 0u; image_index < page_image_total;
+                 ++image_index) {
+                size_t other;
+                for (other = image_index + 1u; other < page_image_total;
+                     ++other) {
+                    if (page_images[other].y + page_images[other].h >
+                        page_images[image_index].y +
+                            page_images[image_index].h) {
+                        QwPdfExtractedImage swap = page_images[image_index];
+                        page_images[image_index] = page_images[other];
+                        page_images[other] = swap;
+                    }
+                }
+            }
+        }
         if (!pdf_buffer_text(&chapter, "<div class=\"page\">")) {
             qw_doc_pdf_lines_free(page_lines, line_count);
             goto out_of_memory;
@@ -1081,6 +1186,19 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
         while (line_index < line_count) {
             size_t block_end = line_index + 1u;
             double indent = (page_lines[line_index].x - base_x);
+            while (next_image < page_image_total &&
+                   page_images[next_image].y + page_images[next_image].h >=
+                       page_lines[line_index].y) {
+                if (!office_epub_emit_image(&chapter, &manifest,
+                                            &page_images[next_image],
+                                            media_data, media_size,
+                                            &media_count)) {
+                    qw_doc_pdf_images_free(page_images, page_image_total);
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
+                ++next_image;
+            }
             if (indent < 0.0) indent = 0.0;
             if (page_lines[line_index].run_count >= 2u) {
                 while (block_end < line_count &&
@@ -1192,52 +1310,18 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             }
             ++line_index;
         }
-        qw_doc_pdf_lines_free(page_lines, line_count);
-        {
-            QwPdfExtractedImage *page_images = NULL;
-            size_t page_image_total = 0u;
-            status = qw_doc_pdf_extract_page_images(document, index,
-                                                    &page_images,
-                                                    &page_image_total);
-            if (status == QW_STATUS_OK && page_image_total) {
-                size_t image_index;
-                for (image_index = 0u;
-                     image_index < page_image_total && media_count < 64u;
-                     ++image_index) {
-                    QwImage image;
-                    uint8_t *png = NULL;
-                    size_t png_size = 0u;
-                    memset(&image, 0, sizeof(image));
-                    image.pixels = page_images[image_index].rgb;
-                    image.stride = page_images[image_index].width * 3u;
-                    image.size = image.stride * page_images[image_index].height;
-                    image.width = (uint32_t)page_images[image_index].width;
-                    image.height = (uint32_t)page_images[image_index].height;
-                    image.format = QW_IMAGE_PIXEL_RGB24;
-                    if (qw_image_encode(&image, QW_IMAGE_ENCODE_PNG, &png,
-                                        &png_size) != QW_IMAGE_OK)
-                        continue;
-                    media_data[media_count] = png;
-                    media_size[media_count] = png_size;
-                    ++media_count;
-                    if (!pdf_buffer_printf(
-                            &chapter,
-                            "<p><img src=\"image%zu.png\" alt=\"\" "
-                            "style=\"max-width:100%%\"/></p>",
-                            media_count) ||
-                        !pdf_buffer_printf(
-                            &manifest,
-                            "<item id=\"image%zu\" href=\"image%zu.png\" "
-                            "media-type=\"image/png\"/>",
-                            media_count, media_count)) {
-                        qw_doc_pdf_images_free(page_images,
-                                               page_image_total);
-                        goto out_of_memory;
-                    }
-                }
+        while (next_image < page_image_total) {
+            if (!office_epub_emit_image(&chapter, &manifest,
+                                        &page_images[next_image], media_data,
+                                        media_size, &media_count)) {
+                qw_doc_pdf_images_free(page_images, page_image_total);
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                goto out_of_memory;
             }
-            qw_doc_pdf_images_free(page_images, page_image_total);
+            ++next_image;
         }
+        qw_doc_pdf_images_free(page_images, page_image_total);
+        qw_doc_pdf_lines_free(page_lines, line_count);
         if (!pdf_buffer_text(&chapter, "</div>")) goto out_of_memory;
     }
     qw_pdf_close(document);

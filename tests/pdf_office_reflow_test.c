@@ -24,6 +24,20 @@ static int contains(const uint8_t *data, size_t size, const char *needle)
     return 0;
 }
 
+
+static const uint8_t *find_bytes(const uint8_t *data, size_t size,
+                                 const char *needle)
+{
+    size_t needle_size = strlen(needle);
+    size_t index;
+    if (!needle_size || needle_size > size) return NULL;
+    for (index = 0u; index + needle_size <= size; ++index) {
+        if (memcmp(data + index, needle, needle_size) == 0)
+            return data + index;
+    }
+    return NULL;
+}
+
 int main(void)
 {
     static const char *html =
@@ -438,6 +452,62 @@ int main(void)
         }
         free(image_pdf);
         free(media_docx);
+    }
+
+    /* Images keep their vertical position between paragraphs. */
+    {
+        static const char *order_html =
+            "<html><body><p>before</p>"
+            "<img src=\"data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
+            "z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==\">"
+            "<p>after</p></body></html>";
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *order_pdf = NULL;
+        size_t order_pdf_size = 0u;
+        uint8_t *order_docx = NULL;
+        size_t order_docx_size = 0u;
+
+        CHECK(qw_convert_to_pdf_memory(order_html, strlen(order_html), &opts,
+                                       &order_pdf, &order_pdf_size,
+                                       NULL) == QW_STATUS_OK);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(order_pdf, order_pdf_size,
+                                          QW_FORMAT_DOCX, &opts, &order_docx,
+                                          &order_docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *before = find_bytes(order_docx, order_docx_size, "before");
+            const uint8_t *drawing = find_bytes(order_docx, order_docx_size, "<w:drawing>");
+            const uint8_t *after = find_bytes(order_docx, order_docx_size, "after");
+            CHECK(before != NULL);
+            CHECK(drawing != NULL);
+            CHECK(after != NULL);
+            CHECK(before < drawing);
+            CHECK(drawing < after);
+        }
+        {
+            uint8_t *order_epub = NULL;
+            size_t order_epub_size = 0u;
+            const uint8_t *before;
+            const uint8_t *image;
+            const uint8_t *after;
+            CHECK(qw_convert_to_format_memory(order_pdf, order_pdf_size,
+                                              QW_FORMAT_EPUB, &opts,
+                                              &order_epub, &order_epub_size,
+                                              NULL) == QW_STATUS_OK);
+            before = find_bytes(order_epub, order_epub_size, "before");
+            image = find_bytes(order_epub, order_epub_size, "<img src=");
+            after = find_bytes(order_epub, order_epub_size, "after");
+            CHECK(before != NULL);
+            CHECK(image != NULL);
+            CHECK(after != NULL);
+            CHECK(before < image);
+            CHECK(image < after);
+            free(order_epub);
+        }
+        free(order_pdf);
+        free(order_docx);
     }
 
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
