@@ -4795,9 +4795,59 @@ int qw_doc_decode_caj_jp2(const uint8_t *data, size_t size, QwPageImage *out_pag
 /* Decode one image XObject to malloc-owned RGB24 pixels. Self-describing
  * streams (JPEG/PNG files) go through the image package; raw DeviceRGB and
  * DeviceGray Flate streams are expanded here. Returns 0 when unsupported. */
-static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
-                                uint8_t **out_rgb, size_t *out_width,
-                                size_t *out_height)
+static int pdf_image_object_rgb_depth(const QwPdfReader *reader, size_t object,
+                                      uint8_t **out_rgb, size_t *out_width,
+                                      size_t *out_height, int allow_mask);
+
+/* Composite an image over white using its /SMask (soft mask) alpha. */
+static void pdf_image_apply_smask(const QwPdfReader *reader, const char *body,
+                                  size_t dict_size, uint8_t *rgb,
+                                  size_t width, size_t height)
+{
+    const char *smask = pdf_memmem(body, dict_size, "/SMask", 6u);
+    const char *limit = body + dict_size;
+    const char *scan;
+    size_t object = 0u;
+    uint8_t *mask_rgb = NULL;
+    size_t mask_width = 0u;
+    size_t mask_height = 0u;
+    size_t y;
+    size_t x;
+    if (!smask) return;
+    scan = smask + 6u;
+    while (scan < limit && isspace((unsigned char)*scan)) ++scan;
+    while (scan < limit && isdigit((unsigned char)*scan)) {
+        object = object * 10u + (size_t)(*scan - '0');
+        ++scan;
+    }
+    if (!object) return;
+    if (!pdf_image_object_rgb_depth(reader, object, &mask_rgb, &mask_width,
+                                    &mask_height, 0))
+        return;
+    if (!mask_rgb || !mask_width || !mask_height) {
+        free(mask_rgb);
+        return;
+    }
+    for (y = 0u; y < height; ++y) {
+        size_t mask_y = y < mask_height ? y : mask_height - 1u;
+        for (x = 0u; x < width; ++x) {
+            size_t mask_x = x < mask_width ? x : mask_width - 1u;
+            unsigned alpha = mask_rgb[(mask_y * mask_width + mask_x) * 3u];
+            size_t offset = (y * width + x) * 3u;
+            rgb[offset + 0u] = (uint8_t)((rgb[offset + 0u] * alpha +
+                                          255u * (255u - alpha)) / 255u);
+            rgb[offset + 1u] = (uint8_t)((rgb[offset + 1u] * alpha +
+                                          255u * (255u - alpha)) / 255u);
+            rgb[offset + 2u] = (uint8_t)((rgb[offset + 2u] * alpha +
+                                          255u * (255u - alpha)) / 255u);
+        }
+    }
+    free(mask_rgb);
+}
+
+static int pdf_image_object_rgb_depth(const QwPdfReader *reader, size_t object,
+                                      uint8_t **out_rgb, size_t *out_width,
+                                      size_t *out_height, int allow_mask)
 {
     const char *body = NULL;
     size_t dict_size = 0u;
@@ -4853,6 +4903,9 @@ static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
                 target[column * 3u + 2u] = source[column];
             }
         }
+        if (allow_mask)
+            pdf_image_apply_smask(reader, body, dict_size, rgb, image.width,
+                                  image.height);
         *out_width = image.width;
         *out_height = image.height;
         *out_rgb = rgb;
@@ -4941,11 +4994,22 @@ static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
             }
         }
     }
+    if (allow_mask)
+        pdf_image_apply_smask(reader, body, dict_size, rgb,
+                              (size_t)image_width, (size_t)image_height);
     *out_rgb = rgb;
     *out_width = (size_t)image_width;
     *out_height = (size_t)image_height;
     free(stream);
     return 1;
+}
+
+static int pdf_image_object_rgb(const QwPdfReader *reader, size_t object,
+                                uint8_t **out_rgb, size_t *out_width,
+                                size_t *out_height)
+{
+    return pdf_image_object_rgb_depth(reader, object, out_rgb, out_width,
+                                      out_height, 1);
 }
 
 /* Fetch a page's content stream (NULL when the page has none). */

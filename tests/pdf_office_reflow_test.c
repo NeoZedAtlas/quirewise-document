@@ -626,6 +626,124 @@ int main(void)
         free(merged_docx);
     }
 
+    /* Two-column pages emit the left column before the right column. */
+    {
+        FILE *file = fopen(QUIREWISE_COLUMNS_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *columns_docx = NULL;
+        size_t columns_docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &columns_docx,
+                                          &columns_docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *left1 = find_bytes(columns_docx, columns_docx_size,
+                                              "Left1");
+            const uint8_t *left2 = find_bytes(columns_docx, columns_docx_size,
+                                              "Left2");
+            const uint8_t *right1 = find_bytes(columns_docx, columns_docx_size,
+                                               "Right1");
+            const uint8_t *right2 = find_bytes(columns_docx, columns_docx_size,
+                                               "Right2");
+            CHECK(left1 != NULL);
+            CHECK(left2 != NULL);
+            CHECK(right1 != NULL);
+            CHECK(right2 != NULL);
+            CHECK(left1 < left2);
+            CHECK(left2 < right1);
+            CHECK(right1 < right2);
+        }
+        free(bytes);
+        free(columns_docx);
+    }
+
+    /* A soft mask composites the image over white. */
+    {
+        FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        QwConvertReport report;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size,
+                                          &report) == QW_STATUS_OK);
+        CHECK(strstr(report.note, "image(s) embedded") != NULL);
+        {
+            static const uint8_t signature[8] = {0x89u, 'P', 'N', 'G',
+                                                 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+            const uint8_t *png = NULL;
+            size_t probe;
+            for (probe = 0u; probe + 8u <= docx_size; ++probe) {
+                if (memcmp(docx + probe, signature, 8u) == 0) {
+                    png = docx + probe;
+                    break;
+                }
+            }
+            CHECK(png != NULL);
+            if (png) {
+                const uint8_t *end = NULL;
+                for (probe = (size_t)(png - docx); probe + 8u <= docx_size;
+                     ++probe) {
+                    if (memcmp(docx + probe, "IEND", 4u) == 0) {
+                        end = docx + probe + 8u;
+                        break;
+                    }
+                }
+                CHECK(end != NULL);
+                if (end) {
+                    QwImage decoded;
+                    memset(&decoded, 0, sizeof(decoded));
+                    CHECK(qw_image_decode(png, (size_t)(end - png),
+                                          &decoded) == QW_IMAGE_OK);
+                    CHECK(decoded.width == 2u);
+                    CHECK(decoded.height == 1u);
+                    if (decoded.pixels && decoded.format == QW_IMAGE_PIXEL_RGB24) {
+                        CHECK(decoded.pixels[0] > 200u);
+                        CHECK(decoded.pixels[1] < 60u);
+                        CHECK(decoded.pixels[2] < 60u);
+                        CHECK(decoded.pixels[3] > 200u);
+                        CHECK(decoded.pixels[4] > 200u);
+                        CHECK(decoded.pixels[5] > 200u);
+                    }
+                    qw_image_free(&decoded);
+                }
+            }
+        }
+        free(bytes);
+        free(docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

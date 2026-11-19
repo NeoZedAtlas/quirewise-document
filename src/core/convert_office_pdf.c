@@ -752,6 +752,54 @@ static int office_docx_emit_image(OfficePdfBuffer *body,
     return 1;
 }
 
+/* Detect a two-column page: line origins cluster left and right of a split. */
+static int office_pdf_column_split(const QwPdfLine *lines, size_t line_count,
+                                   double *split)
+{
+    double min_x;
+    double max_x;
+    size_t left = 0u;
+    size_t right = 0u;
+    size_t index;
+    if (line_count < 4u) return 0;
+    min_x = lines[0].x;
+    max_x = lines[0].x;
+    for (index = 1u; index < line_count; ++index) {
+        if (lines[index].x < min_x) min_x = lines[index].x;
+        if (lines[index].x > max_x) max_x = lines[index].x;
+    }
+    if (max_x - min_x < 120.0) return 0;
+    *split = (min_x + max_x) / 2.0;
+    for (index = 0u; index < line_count; ++index) {
+        if (lines[index].x < *split) ++left;
+        else ++right;
+    }
+    if (left < 2u || right < 2u) return 0;
+    return 1;
+}
+
+/* Stable insertion sort: left column first, top-to-bottom, then right. */
+static void office_pdf_sort_columns(QwPdfLine *lines, size_t line_count,
+                                    double split)
+{
+    size_t index;
+    for (index = 1u; index < line_count; ++index) {
+        QwPdfLine current = lines[index];
+        int key = current.x < split ? 0 : 1;
+        size_t position = index;
+        while (position > 0u) {
+            const QwPdfLine *previous = &lines[position - 1u];
+            int previous_key = previous->x < split ? 0 : 1;
+            if (previous_key < key ||
+                (previous_key == key && previous->y >= current.y))
+                break;
+            lines[position] = *previous;
+            --position;
+        }
+        lines[position] = current;
+    }
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -861,6 +909,13 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                     }
                 }
             }
+        }
+        {
+            double column_split = 0.0;
+            if (page_image_total == 0u &&
+                office_pdf_column_split(page_lines, line_count,
+                                        &column_split))
+                office_pdf_sort_columns(page_lines, line_count, column_split);
         }
         if (index &&
             !pdf_buffer_text(&body,
@@ -1239,6 +1294,13 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                     }
                 }
             }
+        }
+        {
+            double column_split = 0.0;
+            if (page_image_total == 0u &&
+                office_pdf_column_split(page_lines, line_count,
+                                        &column_split))
+                office_pdf_sort_columns(page_lines, line_count, column_split);
         }
         if (!pdf_buffer_text(&chapter, "<div class=\"page\">")) {
             qw_doc_pdf_lines_free(page_lines, line_count);
