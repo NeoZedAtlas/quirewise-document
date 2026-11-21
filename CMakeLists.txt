@@ -136,7 +136,8 @@ if(BUILD_TESTING)
         QUIREWISE_CMYK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cmyk.pdf"
         QUIREWISE_MERGED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/merged.pdf"
         QUIREWISE_COLUMNS_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns.pdf"
-        QUIREWISE_SMASK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/smask.pdf")
+        QUIREWISE_SMASK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/smask.pdf"
+        QUIREWISE_ROTATED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rotated.pdf")
     target_link_libraries(quirewise_document_pdf_office_reflow_test PRIVATE
         quirewise_document Quirewise::Image)
     add_test(NAME quirewise_document_pdf_office_reflow

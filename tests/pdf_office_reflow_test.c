@@ -744,6 +744,88 @@ int main(void)
         free(docx);
     }
 
+    /* Rotated pages are mapped into the displayed orientation. */
+    {
+        FILE *file = fopen(QUIREWISE_ROTATED_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *rotated_docx = NULL;
+        size_t rotated_docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &rotated_docx,
+                                          &rotated_docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(rotated_docx, rotated_docx_size,
+                       "w:pgSz w:w=\"16000\" w:h=\"12000\""));
+        {
+            const uint8_t *first = find_bytes(rotated_docx, rotated_docx_size,
+                                              "First");
+            const uint8_t *second = find_bytes(rotated_docx, rotated_docx_size,
+                                               "Second");
+            CHECK(first != NULL);
+            CHECK(second != NULL);
+            CHECK(first < second);
+        }
+        free(bytes);
+        free(rotated_docx);
+    }
+
+    /* Font names are carried into the DOCX run properties and EPUB spans. */
+    {
+        FILE *file = fopen(QUIREWISE_STYLES_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *font_docx = NULL;
+        size_t font_docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &font_docx, &font_docx_size,
+                                          NULL) == QW_STATUS_OK);
+        CHECK(contains(font_docx, font_docx_size,
+                       "w:rFonts w:ascii=\"Helvetica\""));
+        CHECK(contains(font_docx, font_docx_size,
+                       "w:ascii=\"Helvetica-Bold\""));
+        {
+            uint8_t *font_epub = NULL;
+            size_t font_epub_size = 0u;
+            CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                              &opts, &font_epub,
+                                              &font_epub_size, NULL) ==
+                  QW_STATUS_OK);
+            CHECK(contains(font_epub, font_epub_size, "font-family:Helvetica"));
+            free(font_epub);
+        }
+        free(bytes);
+        free(font_docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

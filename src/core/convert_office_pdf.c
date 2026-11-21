@@ -16,6 +16,7 @@
 #include "../backends/document_backend.h"
 #include "../formats/archive/zip_native.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -800,6 +801,75 @@ static void office_pdf_sort_columns(QwPdfLine *lines, size_t line_count,
     }
 }
 
+/* Map a point from unrotated PDF space into the displayed orientation. */
+static void office_pdf_rotate_point(int rotation, double page_width,
+                                    double page_height, double *x, double *y)
+{
+    double px = *x;
+    double py = *y;
+    switch (rotation) {
+    case 90:
+        *x = py;
+        *y = page_width - px;
+        break;
+    case 180:
+        *x = page_width - px;
+        *y = page_height - py;
+        break;
+    case 270:
+        *x = page_height - py;
+        *y = px;
+        break;
+    default:
+        break;
+    }
+}
+
+/* WordprocessingML run font, sanitised; empty when the PDF name is unusable. */
+static const char *office_pdf_font_tag(const char *font)
+{
+    static char tag[192];
+    char name[64];
+    size_t length = 0u;
+    if (!font || !font[0]) return "";
+    if (strlen(font) > 7u && font[6] == '+') font += 7;
+    while (font[length] && length + 1u < sizeof(name)) {
+        char value = font[length];
+        name[length] = (isalnum((unsigned char)value) || value == '-' ||
+                        value == '_' || value == ' ')
+                           ? value
+                           : '_';
+        ++length;
+    }
+    name[length] = '\0';
+    if (!length) return "";
+    snprintf(tag, sizeof(tag),
+             "<w:rFonts w:ascii=\"%s\" w:hAnsi=\"%s\"/>", name, name);
+    return tag;
+}
+
+/* CSS font-family declaration for EPUB spans, or "". */
+static const char *office_pdf_font_css(const char *font)
+{
+    static char css[128];
+    char name[64];
+    size_t length = 0u;
+    if (!font || !font[0]) return "";
+    if (strlen(font) > 7u && font[6] == '+') font += 7;
+    while (font[length] && length + 1u < sizeof(name)) {
+        char value = font[length];
+        name[length] = (isalnum((unsigned char)value) || value == '-' ||
+                        value == '_' || value == ' ')
+                           ? value
+                           : '_';
+        ++length;
+    }
+    name[length] = '\0';
+    if (!length) return "";
+    snprintf(css, sizeof(css), "font-family:%s;", name);
+    return css;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -868,6 +938,11 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
             media[2] > media[0] && media[3] > media[1]) {
             page_w = (int)((media[2] - media[0]) * 20.0 + 0.5);
             page_h = (int)((media[3] - media[1]) * 20.0 + 0.5);
+            if (rotation == 90 || rotation == 270) {
+                int swap = page_w;
+                page_w = page_h;
+                page_h = swap;
+            }
         }
     }
     memset(&body, 0, sizeof(body));
@@ -906,6 +981,47 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                         QwPdfExtractedImage swap = page_images[image_index];
                         page_images[image_index] = page_images[other];
                         page_images[other] = swap;
+                    }
+                }
+            }
+        }
+        {
+            double media[4];
+            double crop[4];
+            int rotation = 0;
+            if (qw_pdf_page_geometry(document, index, media, crop, &rotation) ==
+                    QW_STATUS_OK &&
+                rotation != 0) {
+                double page_width = media[2] - media[0];
+                double page_height = media[3] - media[1];
+                size_t line_index2;
+                size_t image_index2;
+                for (line_index2 = 0u; line_index2 < line_count;
+                     ++line_index2) {
+                    size_t run_index2;
+                    office_pdf_rotate_point(rotation, page_width, page_height,
+                                            &page_lines[line_index2].x,
+                                            &page_lines[line_index2].y);
+                    for (run_index2 = 0u;
+                         run_index2 < page_lines[line_index2].run_count;
+                         ++run_index2) {
+                        office_pdf_rotate_point(
+                            rotation, page_width, page_height,
+                            &page_lines[line_index2].runs[run_index2].x,
+                            &page_lines[line_index2].runs[run_index2].y);
+                    }
+                }
+                for (image_index2 = 0u; image_index2 < page_image_total;
+                     ++image_index2) {
+                    office_pdf_rotate_point(
+                        rotation, page_width, page_height,
+                        &page_images[image_index2].x,
+                        &page_images[image_index2].y);
+                    if (rotation == 90 || rotation == 270) {
+                        double swap = page_images[image_index2].w;
+                        page_images[image_index2].w =
+                            page_images[image_index2].h;
+                        page_images[image_index2].h = swap;
                     }
                 }
             }
@@ -992,6 +1108,8 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                  "</w:tcPr>",
                                  span)) ||
                             !pdf_buffer_text(&body, "<w:p><w:r><w:rPr>") ||
+                            !pdf_buffer_text(&body,
+                                             office_pdf_font_tag(run->font)) ||
                             !pdf_buffer_text(
                                 &body,
                                 office_pdf_is_bold(run->font) ? "<w:b/>" : "") ||
@@ -1062,8 +1180,9 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                             vertical = "<w:vertAlign w:val=\"subscript\"/>";
                     }
                     if (!pdf_buffer_printf(
-                            &body, "<w:r><w:rPr>%s%s%s%s</w:rPr>"
+                            &body, "<w:r><w:rPr>%s%s%s%s%s</w:rPr>"
                                    "<w:t xml:space=\"preserve\">",
+                            office_pdf_font_tag(run->font),
                             office_pdf_is_bold(run->font) ? "<w:b/>" : "",
                             office_pdf_is_italic(run->font) ? "<w:i/>" : "",
                             office_pdf_size_tag(run->size), vertical) ||
@@ -1296,6 +1415,47 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
             }
         }
         {
+            double media[4];
+            double crop[4];
+            int rotation = 0;
+            if (qw_pdf_page_geometry(document, index, media, crop, &rotation) ==
+                    QW_STATUS_OK &&
+                rotation != 0) {
+                double page_width = media[2] - media[0];
+                double page_height = media[3] - media[1];
+                size_t line_index2;
+                size_t image_index2;
+                for (line_index2 = 0u; line_index2 < line_count;
+                     ++line_index2) {
+                    size_t run_index2;
+                    office_pdf_rotate_point(rotation, page_width, page_height,
+                                            &page_lines[line_index2].x,
+                                            &page_lines[line_index2].y);
+                    for (run_index2 = 0u;
+                         run_index2 < page_lines[line_index2].run_count;
+                         ++run_index2) {
+                        office_pdf_rotate_point(
+                            rotation, page_width, page_height,
+                            &page_lines[line_index2].runs[run_index2].x,
+                            &page_lines[line_index2].runs[run_index2].y);
+                    }
+                }
+                for (image_index2 = 0u; image_index2 < page_image_total;
+                     ++image_index2) {
+                    office_pdf_rotate_point(
+                        rotation, page_width, page_height,
+                        &page_images[image_index2].x,
+                        &page_images[image_index2].y);
+                    if (rotation == 90 || rotation == 270) {
+                        double swap = page_images[image_index2].w;
+                        page_images[image_index2].w =
+                            page_images[image_index2].h;
+                        page_images[image_index2].h = swap;
+                    }
+                }
+            }
+        }
+        {
             double column_split = 0.0;
             if (page_image_total == 0u &&
                 office_pdf_column_split(page_lines, line_count,
@@ -1429,7 +1589,9 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                             vertical_close = "</sub>";
                         }
                     }
-                    if (!pdf_buffer_printf(&chapter, "<span style=\"%s%s\">",
+                    if (!pdf_buffer_printf(&chapter,
+                                           "<span style=\"%s%s%s\">",
+                                           office_pdf_font_css(run->font),
                                            office_pdf_is_bold(run->font)
                                                ? "font-weight:bold;" : "",
                                            office_pdf_is_italic(run->font)
