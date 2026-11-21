@@ -725,6 +725,54 @@ int main(void)
         free(docx);
     }
 
+    /* Five columns: the layout cap is six, so a newspaper-style page still
+       reads column by column instead of row by row. */
+    {
+        FILE *file = fopen(QUIREWISE_COLUMNS5_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *a1 = find_bytes(docx, docx_size, "A1");
+            const uint8_t *a2 = find_bytes(docx, docx_size, "A2");
+            const uint8_t *b1 = find_bytes(docx, docx_size, "B1");
+            const uint8_t *b2 = find_bytes(docx, docx_size, "B2");
+            const uint8_t *c1 = find_bytes(docx, docx_size, "C1");
+            const uint8_t *d1 = find_bytes(docx, docx_size, "D1");
+            const uint8_t *e1 = find_bytes(docx, docx_size, "E1");
+            const uint8_t *e2 = find_bytes(docx, docx_size, "E2");
+            CHECK(a1 != NULL && a2 != NULL);
+            CHECK(b1 != NULL && b2 != NULL);
+            CHECK(c1 != NULL && d1 != NULL);
+            CHECK(e1 != NULL && e2 != NULL);
+            CHECK(a1 < a2);
+            CHECK(a2 < b1);
+            CHECK(b2 < c1);
+            CHECK(d1 < e1);
+            CHECK(e1 < e2);
+        }
+        free(bytes);
+        free(docx);
+    }
+
     /* A soft mask composites the image over white. */
     {
         FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");

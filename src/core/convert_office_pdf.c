@@ -1,4 +1,4 @@
-/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
+﻿/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
  *
  * The PDF pages are rasterized with the package's own renderer at 120 dpi,
  * encoded as baseline JPEG (the image package already writes it) and embedded
@@ -796,7 +796,7 @@ static int office_docx_emit_image(OfficePdfBuffer *body,
     return 1;
 }
 
-#define OFFICE_PDF_MAX_LINE_COLUMNS 4u
+#define OFFICE_PDF_MAX_LINE_COLUMNS 6u
 
 /* Cluster the line origins. A single cluster is ordinary prose; two to four
    clusters separated by real gutters are text columns. Column detection is
