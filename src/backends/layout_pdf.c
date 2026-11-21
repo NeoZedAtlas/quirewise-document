@@ -2454,12 +2454,13 @@ static int pdf_render_html(const char *html, size_t html_size,
         return QW_STATUS_ERR_UNSUPPORTED;
     }
     if (font_path) {
-        font = qw_pdf_font_load(font_path);
+        const char *font_reason = NULL;
+        font = qw_pdf_font_load_ex(font_path, &font_reason);
         if (!font) {
             if (report) {
                 snprintf(report->note, sizeof(report->note),
-                         "Cannot embed font %s: only TrueType (glyf) fonts are supported",
-                         font_path);
+                         "Cannot embed font %s: %s", font_path,
+                         font_reason ? font_reason : "unsupported font");
             }
             return QW_STATUS_ERR_UNSUPPORTED;
         }

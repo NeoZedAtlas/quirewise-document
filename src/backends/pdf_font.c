@@ -178,18 +178,20 @@ static int cmap_lookup(const QwPdfFont *font, unsigned codepoint,
     return 0;
 }
 
-QwPdfFont *qw_pdf_font_load(const char *path)
+QwPdfFont *qw_pdf_font_load_ex(const char *path, const char **reason)
 {
     FILE *file;
     long length;
     QwPdfFont *font;
     uint32_t version;
+    if (reason) *reason = "cannot read the font file";
     if (!path) return NULL;
     file = fopen(path, "rb");
     if (!file) return NULL;
     if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return NULL; }
     length = ftell(file);
     if (length <= 0 || (size_t)length > QW_PDF_FONT_MAX_BYTES) {
+        if (reason) *reason = "font file is empty or too large";
         fclose(file);
         return NULL;
     }
@@ -211,8 +213,24 @@ QwPdfFont *qw_pdf_font_load(const char *path)
     if (version == 0x4F54544Fu) {
         font->cff = 1; /* OpenType/CFF: no loca/glyf tables */
     } else if (version != 0x00010000u && version != 0x74727565u) {
+        if (reason)
+            *reason = "unsupported sfnt version (expected TrueType or OTTO)";
         qw_pdf_font_free(font);
         return NULL;
+    }
+    /* CFF2 has no PDF 1.x representation, so say so instead of failing on the
+       missing CFF table later. */
+    {
+        size_t cff2_offset = 0u;
+        size_t cff2_size = 0u;
+        if (find_table(font->data, font->size, "CFF2", &cff2_offset,
+                       &cff2_size)) {
+            if (reason)
+                *reason = "CFF2 variable-font outlines cannot be embedded in "
+                          "PDF 1.x; export a static instance (CFF or TrueType)";
+            qw_pdf_font_free(font);
+            return NULL;
+        }
     }
     if (!find_table(font->data, font->size, "head", &font->head,
                     &font->head_size) ||
@@ -227,6 +245,7 @@ QwPdfFont *qw_pdf_font_load(const char *path)
                     &font->hmtx_size) ||
         !find_table(font->data, font->size, "cmap", &font->cmap,
                     &font->cmap_size)) {
+        if (reason) *reason = "missing required sfnt tables (head/maxp/hhea/hmtx/cmap)";
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -235,6 +254,7 @@ QwPdfFont *qw_pdf_font_load(const char *path)
                      &font->loca_size) ||
          !find_table(font->data, font->size, "glyf", &font->glyf,
                      &font->glyf_size))) {
+        if (reason) *reason = "missing loca/glyf tables";
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -248,6 +268,7 @@ QwPdfFont *qw_pdf_font_load(const char *path)
     font->num_hmetrics = read_u16(font->data, font->size, font->hhea + 34u);
     if (!font->units_per_em || !font->num_glyphs || !font->num_hmetrics ||
         (!font->cff && (font->index_to_loc < 0 || font->index_to_loc > 1))) {
+        if (reason) *reason = "invalid font metrics";
         qw_pdf_font_free(font);
         return NULL;
     }
@@ -266,7 +287,13 @@ QwPdfFont *qw_pdf_font_load(const char *path)
             }
         }
     }
+    if (reason) *reason = NULL;
     return font;
+}
+
+QwPdfFont *qw_pdf_font_load(const char *path)
+{
+    return qw_pdf_font_load_ex(path, NULL);
 }
 
 void qw_pdf_font_free(QwPdfFont *font)

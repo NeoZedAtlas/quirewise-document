@@ -358,6 +358,28 @@ int main(void)
         free(data);
     }
 
+    /* CFF2 variable-font outlines cannot be embedded in PDF 1.x: the loader
+       must say so instead of failing on a missing CFF table. */
+    {
+        const char *reason = NULL;
+        QwPdfFont *font = qw_pdf_font_load_ex(QUIREWISE_CFF2_TEST_PATH, &reason);
+        CHECK(font == NULL);
+        CHECK(reason != NULL);
+        CHECK(strstr(reason, "CFF2") != NULL);
+        {
+            QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+            uint8_t *pdf = NULL;
+            size_t pdf_size = 0u;
+            options.pdf_font_path = QUIREWISE_CFF2_TEST_PATH;
+            memset(&report, 0, sizeof(report));
+            CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdf,
+                                           &pdf_size, &report) ==
+                  QW_STATUS_ERR_UNSUPPORTED);
+            CHECK(pdf == NULL);
+            CHECK(strstr(report.note, "CFF2") != NULL);
+        }
+    }
+
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
     return 0;
 }

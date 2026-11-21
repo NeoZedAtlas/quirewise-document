@@ -5,17 +5,22 @@
 #include <stdint.h>
 
 /*
- * Minimal TrueType reader used by the PDF writer to embed a caller-supplied
- * font. Only the tables needed for CIDFontType2 embedding and for measuring
- * text are parsed: head, maxp, hhea, hmtx, cmap (formats 4 and 12), loca and
- * glyf. The original font file is embedded unchanged, so no subsetting is
- * performed and glyph ids stay valid.
+ * Minimal font reader used by the PDF writer to embed a caller-supplied font.
+ * TrueType (glyf) and CFF/OpenType (OTTO) fonts are supported; the tables
+ * needed for CIDFontType2/CIDFontType0 embedding and for measuring text are
+ * parsed: head, maxp, hhea, hmtx, cmap (formats 4 and 12), loca/glyf, or the
+ * CFF table. CFF2 variable-font outlines are rejected with a reason because
+ * PDF 1.x has no way to embed them.
  */
 
 typedef struct QwPdfFont QwPdfFont;
 
-/* Load a TrueType (glyf) font from disk. Returns NULL for unreadable files,
- * CFF/OTTO fonts and malformed tables. */
+/* Load a font from disk. Returns NULL for unreadable, malformed or
+ * unembeddable fonts; `reason` (when non-NULL) receives a static description
+ * of the problem. */
+QwPdfFont *qw_pdf_font_load_ex(const char *path, const char **reason);
+
+/* Convenience wrapper around qw_pdf_font_load_ex without a reason. */
 QwPdfFont *qw_pdf_font_load(const char *path);
 
 void qw_pdf_font_free(QwPdfFont *font);
