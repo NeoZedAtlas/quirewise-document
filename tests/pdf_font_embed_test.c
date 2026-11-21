@@ -2,6 +2,7 @@
 #include "document_backend.h"
 #include "pdf_font.h"
 
+#include <quirewise/compression.h>
 #include <quirewise/convert.h>
 #include <quirewise/pdf.h>
 
@@ -259,6 +260,50 @@ int main(void)
                                        &zh_size, &note) == QW_STATUS_OK);
         CHECK(strstr(note.note, "without embedding") == NULL);
         free(zh_pdf);
+    }
+
+    /* CFF blanking keeps the file size but shrinks unused glyph data. */
+    {
+        FILE *file = fopen(QUIREWISE_OTF_TEST_PATH, "rb");
+        long length;
+        uint8_t *original = NULL;
+        uint8_t *blanked = NULL;
+        size_t size = 0u;
+        size_t bound;
+        uint8_t *plain_zip = NULL;
+        uint8_t *blank_zip = NULL;
+        size_t plain_size = 0u;
+        size_t blank_size = 0u;
+        uint16_t gids[1] = {1u};
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        original = (uint8_t *)malloc((size_t)length);
+        blanked = (uint8_t *)malloc((size_t)length);
+        CHECK(original != NULL);
+        CHECK(blanked != NULL);
+        size = fread(original, 1u, (size_t)length, file);
+        fclose(file);
+        memcpy(blanked, original, size);
+        CHECK(qw_pdf_cff_blank_unused(blanked, size, gids, 1u) == 1);
+        CHECK(memcmp(original, blanked, size) != 0);
+        bound = qw_compression_zlib_bound(size);
+        plain_zip = (uint8_t *)malloc(bound);
+        blank_zip = (uint8_t *)malloc(bound);
+        CHECK(plain_zip != NULL);
+        CHECK(blank_zip != NULL);
+        CHECK(qw_compression_deflate_zlib(original, size, plain_zip, bound,
+                                          &plain_size));
+        CHECK(qw_compression_deflate_zlib(blanked, size, blank_zip, bound,
+                                          &blank_size));
+        CHECK(blank_size < plain_size);
+        free(original);
+        free(blanked);
+        free(plain_zip);
+        free(blank_zip);
     }
 
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");

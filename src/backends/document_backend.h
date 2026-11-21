@@ -212,6 +212,9 @@ int qw_doc_convert_html(const char *html,
  * Helvetica/STSong-Light pair. */
 /* Same renderer, emitting the PDF/A-1b structure (XMP metadata, sRGB output
  * intent and an embedded font is required). */
+int qw_pdf_cff_blank_unused(uint8_t *font, size_t font_size,
+                            const uint16_t *gids, size_t count);
+
 int qw_doc_convert_html_pdfa(const char *html,
                              size_t html_size,
                              float page_width_points,

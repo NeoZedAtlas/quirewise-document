@@ -709,6 +709,255 @@ done:
     return out;
 }
 
+/* --- CFF glyph blanking -------------------------------------------------
+ * The whole CFF table is kept in place, but every glyph that is not used by
+ * the document gets a one-byte endchar charstring. Offsets, charset, FDSelect
+ * and Private data stay valid, and the Flate-compressed PDF stream shrinks a
+ * lot for fonts with many unused glyphs.
+ */
+
+static uint16_t pdf_cff_u16(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
+}
+
+static uint32_t pdf_cff_u32(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
+static uint32_t pdf_cff_read_offset(const uint8_t *p, unsigned size)
+{
+    uint32_t value = 0u;
+    unsigned i;
+    for (i = 0u; i < size; ++i) value = (value << 8) | p[i];
+    return value;
+}
+
+static void pdf_cff_write_offset(uint8_t *p, uint32_t value, unsigned size)
+{
+    unsigned i;
+    for (i = 0u; i < size; ++i)
+        p[size - 1u - i] = (uint8_t)(value >> (8u * i));
+}
+
+/* Locate a CFF INDEX: count, offSize, offsets array and data bounds. */
+static int pdf_cff_index(const uint8_t *cff, size_t size, size_t pos,
+                         size_t *count, unsigned *off_size, size_t *offsets,
+                         size_t *data, size_t *end)
+{
+    uint32_t last;
+    if (pos + 2u > size) return 0;
+    *count = pdf_cff_u16(cff + pos);
+    if (*count == 0u) {
+        *off_size = 1u;
+        *offsets = pos + 2u;
+        *data = pos + 2u;
+        *end = pos + 2u;
+        return 1;
+    }
+    if (pos + 3u > size) return 0;
+    *off_size = cff[pos + 2u];
+    if (*off_size < 1u || *off_size > 4u) return 0;
+    *offsets = pos + 3u;
+    if (*offsets + (*count + 1u) * (*off_size) > size) return 0;
+    *data = *offsets + (*count + 1u) * (*off_size);
+    last = pdf_cff_read_offset(cff + *offsets + *count * (*off_size), *off_size);
+    if (last == 0u || *data + last - 1u > size) return 0;
+    *end = *data + last - 1u;
+    return 1;
+}
+
+/* Return the last operand before DICT operator `op` (12 `op2`). */
+static int pdf_cff_dict_operand(const uint8_t *dict, size_t size, unsigned op,
+                                unsigned op2, uint32_t *out)
+{
+    uint32_t operands[48];
+    size_t operand_count = 0u;
+    size_t pos = 0u;
+    while (pos < size) {
+        uint8_t b = dict[pos];
+        if (b <= 21u) {
+            unsigned current = b;
+            if (b == 12u) {
+                if (pos + 1u >= size) return 0;
+                current = 1200u + dict[pos + 1u];
+                pos += 2u;
+            } else {
+                pos += 1u;
+            }
+            if (operand_count > 0u &&
+                (current == op || (op2 && current == 1200u + op2))) {
+                *out = operands[(operand_count - 1u) % 48u];
+                return 1;
+            }
+            operand_count = 0u;
+            continue;
+        }
+        if (b == 28u) {
+            if (pos + 3u > size) return 0;
+            operands[operand_count % 48u] =
+                (uint32_t)(int16_t)pdf_cff_u16(dict + pos + 1u);
+            pos += 3u;
+        } else if (b == 29u) {
+            if (pos + 5u > size) return 0;
+            operands[operand_count % 48u] = pdf_cff_u32(dict + pos + 1u);
+            pos += 5u;
+        } else if (b >= 32u && b <= 246u) {
+            operands[operand_count % 48u] = (uint32_t)((int32_t)b - 139);
+            pos += 1u;
+        } else if (b >= 247u && b <= 250u) {
+            if (pos + 2u > size) return 0;
+            operands[operand_count % 48u] =
+                (uint32_t)((b - 247u) * 256u + dict[pos + 1u] + 108u);
+            pos += 2u;
+        } else if (b >= 251u && b <= 254u) {
+            if (pos + 2u > size) return 0;
+            operands[operand_count % 48u] = (uint32_t)(
+                -((int32_t)((b - 251u) * 256u) + dict[pos + 1u] + 108));
+            pos += 2u;
+        } else if (b == 30u) {
+            pos += 1u;
+            while (pos < size) {
+                uint8_t value = dict[pos++];
+                if ((value & 0x0fu) == 0x0fu || (value >> 4) == 0x0fu) break;
+            }
+            operands[operand_count % 48u] = 0u;
+        } else {
+            return 0;
+        }
+        ++operand_count;
+    }
+    return 0;
+}
+
+int qw_pdf_cff_blank_unused(uint8_t *font, size_t font_size,
+                            const uint16_t *gids, size_t count)
+{
+    size_t table_count;
+    size_t table;
+    size_t cff_offset = 0u;
+    size_t cff_length = 0u;
+    uint8_t *cff;
+    size_t header_size;
+    size_t name_count;
+    unsigned off_size;
+    size_t name_offsets;
+    size_t name_data;
+    size_t name_end;
+    size_t top_count;
+    size_t top_offsets;
+    size_t top_data;
+    size_t top_end;
+    size_t top_dict_start;
+    size_t top_dict_end;
+    uint32_t charstrings_offset = 0u;
+    size_t cs_count;
+    unsigned cs_off_size;
+    size_t cs_offsets;
+    size_t cs_data;
+    size_t cs_end;
+    uint32_t *new_offsets;
+    uint8_t *new_data;
+    size_t total;
+    size_t gid;
+    int ok = 0;
+
+    if (!font || font_size < 12u) return 0;
+    table_count = pdf_cff_u16(font + 4u);
+    if (!table_count || 12u + table_count * 16u > font_size) return 0;
+    for (table = 0u; table < table_count; ++table) {
+        const uint8_t *record = font + 12u + table * 16u;
+        if (memcmp(record, "CFF ", 4u) == 0) {
+            cff_offset = pdf_cff_u32(record + 8u);
+            cff_length = pdf_cff_u32(record + 12u);
+            break;
+        }
+    }
+    if (!cff_length || cff_offset + cff_length > font_size) return 0;
+    cff = font + cff_offset;
+    if (cff_length < 4u) return 0;
+    header_size = cff[2];
+    if (header_size < 4u || header_size >= cff_length) return 0;
+    if (!pdf_cff_index(cff, cff_length, header_size, &name_count, &off_size,
+                       &name_offsets, &name_data, &name_end))
+        return 0;
+    (void)name_count;
+    (void)name_offsets;
+    (void)name_data;
+    if (!pdf_cff_index(cff, cff_length, name_end, &top_count, &off_size,
+                       &top_offsets, &top_data, &top_end))
+        return 0;
+    if (top_count == 0u) return 0;
+    top_dict_start =
+        top_data + pdf_cff_read_offset(cff + top_offsets, off_size) - 1u;
+    top_dict_end = top_data +
+                   pdf_cff_read_offset(cff + top_offsets + off_size, off_size) -
+                   1u;
+    if (top_dict_end <= top_dict_start || top_dict_end > cff_length) return 0;
+    if (!pdf_cff_dict_operand(cff + top_dict_start,
+                              top_dict_end - top_dict_start, 17u, 0u,
+                              &charstrings_offset))
+        return 0;
+    if (!charstrings_offset || charstrings_offset >= cff_length) return 0;
+    if (!pdf_cff_index(cff, cff_length, charstrings_offset, &cs_count,
+                       &cs_off_size, &cs_offsets, &cs_data, &cs_end))
+        return 0;
+    if (cs_count == 0u) return 0;
+    new_offsets = (uint32_t *)malloc((cs_count + 1u) * sizeof(uint32_t));
+    new_data = (uint8_t *)malloc(cs_end - cs_data + 1u);
+    if (!new_offsets || !new_data) {
+        free(new_offsets);
+        free(new_data);
+        return 0;
+    }
+    total = 1u;
+    new_offsets[0] = 1u;
+    for (gid = 0u; gid < cs_count; ++gid) {
+        size_t start =
+            cs_data + pdf_cff_read_offset(cff + cs_offsets + gid * cs_off_size,
+                                          cs_off_size) -
+            1u;
+        size_t stop = cs_data +
+                      pdf_cff_read_offset(cff + cs_offsets +
+                                              (gid + 1u) * cs_off_size,
+                                          cs_off_size) -
+                      1u;
+        int used = gid == 0u;
+        size_t item;
+        if (stop < start || stop > cs_end) goto done;
+        for (item = 0u; item < count; ++item) {
+            if (gids[item] == gid) {
+                used = 1;
+                break;
+            }
+        }
+        if (used) {
+            if (total - 1u + (stop - start) > cs_end - cs_data) goto done;
+            memcpy(new_data + total - 1u, cff + start, stop - start);
+            total += stop - start;
+        } else {
+            if (total > cs_end - cs_data) goto done;
+            new_data[total - 1u] = 0x0eu;
+            total += 1u;
+        }
+        new_offsets[gid + 1u] = (uint32_t)total;
+    }
+    if (total - 1u > cs_end - cs_data) goto done;
+    for (gid = 0u; gid <= cs_count; ++gid)
+        pdf_cff_write_offset(cff + cs_offsets + gid * cs_off_size,
+                             new_offsets[gid], cs_off_size);
+    memcpy(cff + cs_data, new_data, total - 1u);
+    memset(cff + cs_data + (total - 1u), 0,
+           (cs_end - cs_data) - (total - 1u));
+    ok = 1;
+done:
+    free(new_offsets);
+    free(new_data);
+    return ok;
+}
+
 int qw_pdf_font_subset(const QwPdfFont *font, const uint16_t *gids,
                        const unsigned int *codepoints, size_t count,
                        QwPdfFontSubset *out)
@@ -731,6 +980,7 @@ int qw_pdf_font_subset(const QwPdfFont *font, const uint16_t *gids,
             return 0;
         }
         memcpy(copy, font->data, font->size);
+        if (count) qw_pdf_cff_blank_unused(copy, font->size, gids, count);
         for (index = 0u; index < font->num_glyphs; ++index)
             map[index] = (uint16_t)index;
         out->data = copy;
