@@ -1,4 +1,4 @@
-﻿/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
+/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
  *
  * The PDF pages are rasterized with the package's own renderer at 120 dpi,
  * encoded as baseline JPEG (the image package already writes it) and embedded
@@ -1690,7 +1690,13 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
     }
     if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
     zip_open = 0;
+    {
+        size_t media_index;
+        for (media_index = 0u; media_index < media_count; ++media_index)
+            free(media_data[media_index]);
+    }
     free(body.data);
+    free(relationships.data);
     if (report) {
         report->format = QW_FORMAT_PDF;
         report->output_format = QW_FORMAT_DOCX;
@@ -1715,7 +1721,13 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
 out_of_memory:
     if (zip_open) qw_zip_writer_end(&writer);
     if (document) qw_pdf_close(document);
+    {
+        size_t media_index;
+        for (media_index = 0u; media_index < media_count; ++media_index)
+            free(media_data[media_index]);
+    }
     free(body.data);
+    free(relationships.data);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
 }
 
@@ -1817,6 +1829,7 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     image_count = office_pdf_image_count(data, size);
     memset(&chapter, 0, sizeof(chapter));
     memset(&manifest, 0, sizeof(manifest));
+    memset(&opf, 0, sizeof(opf));
     if (!pdf_buffer_text(&chapter, chapter_prefix)) goto out_of_memory;
     for (index = 0u; index < page_count; ++index) {
         QwPdfLine *page_lines = NULL;
@@ -2171,7 +2184,6 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     document = NULL;
     if (!pdf_buffer_text(&chapter, "</body></html>")) goto out_of_memory;
     if (!pdf_buffer_text(&manifest, content_opf_suffix)) goto out_of_memory;
-    memset(&opf, 0, sizeof(opf));
     if (!pdf_buffer_text(&opf, content_opf_prefix) ||
         !pdf_buffer_append(&opf, manifest.data, manifest.size))
         goto out_of_memory;
@@ -2199,7 +2211,14 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
     }
     if (!office_zip_finish(&writer, out_data, out_size)) goto out_of_memory;
     zip_open = 0;
+    {
+        size_t media_index;
+        for (media_index = 0u; media_index < media_count; ++media_index)
+            free(media_data[media_index]);
+    }
     free(chapter.data);
+    free(manifest.data);
+    free(opf.data);
     if (report) {
         report->format = QW_FORMAT_PDF;
         report->output_format = QW_FORMAT_EPUB;
@@ -2224,6 +2243,13 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
 out_of_memory:
     if (zip_open) qw_zip_writer_end(&writer);
     if (document) qw_pdf_close(document);
+    {
+        size_t media_index;
+        for (media_index = 0u; media_index < media_count; ++media_index)
+            free(media_data[media_index]);
+    }
     free(chapter.data);
+    free(manifest.data);
+    free(opf.data);
     return QW_STATUS_ERR_OUT_OF_MEMORY;
 }

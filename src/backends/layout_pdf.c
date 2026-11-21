@@ -2383,6 +2383,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                                 "/Info (sRGB IEC61966-2.1) "
                                 "/DestOutputProfile %zu 0 R >>\nendobj\n",
                                 pdfa_object_base + 2u, pdfa_object_base + 1u);
+        free(icc_compressed);
+        icc_compressed = NULL;
     }
     {
         size_t xref_offset = out.bytes.size;
