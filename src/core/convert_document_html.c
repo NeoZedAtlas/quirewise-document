@@ -1815,11 +1815,11 @@ int qw_doc_convert_html_memory_with_options(
         return html_from_zip(data, size, extension, out_html, out_size, report);
     if (html_region_equals(data, size, 0u, "{\\rtf"))
         return html_from_rtf(data, size, out_html, out_size, report);
-    if (html_contains(data, 1024u, "<FictionBook"))
+    if (html_contains(data, size < 1024u ? size : 1024u, "<FictionBook"))
         return html_from_fb2(data, size, out_html, out_size, report);
     if (html_region_equals(data, size, 0u, "<!DOCTYPE") ||
         html_region_equals(data, size, 0u, "<!doctype") ||
-        html_contains(data, 1024u, "<html"))
+        html_contains(data, size < 1024u ? size : 1024u, "<html"))
         return html_copy_bytes(data, size, out_html, out_size);
     if (qw_mdx_probe(data, size))
         return html_from_mdx(data, size, mdd_resources, out_html,
