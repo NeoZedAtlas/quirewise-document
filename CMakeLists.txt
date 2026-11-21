@@ -217,6 +217,8 @@ if(BUILD_TESTING)
     add_executable(quirewise_document_merge_objstm_test
         tests/merge_objstm_test.c)
     target_compile_features(quirewise_document_merge_objstm_test PRIVATE c_std_11)
+    target_compile_definitions(quirewise_document_merge_objstm_test PRIVATE
+        QUIREWISE_MERGE_OBJSTM_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/merge_objstm.pdf")
     target_include_directories(quirewise_document_merge_objstm_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
     target_link_libraries(quirewise_document_merge_objstm_test PRIVATE quirewise_document)

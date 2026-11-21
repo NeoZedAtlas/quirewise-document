@@ -1,3 +1,7 @@
+/* Merging a PDF whose page object lives in an object stream: the merge must
+   expand the compressed object before copying, and the result must reopen with
+   both pages. The fixture (tests/data/merge_objstm.pdf) is a well-formed PDF
+   1.5 file with an xref table and a type-2 entry for object 6. */
 #include <quirewise/convert.h>
 #include <quirewise/document.h>
 
@@ -7,23 +11,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char prefix[] =
-    "%PDF-1.5\n"
-    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
-    "2 0 obj\n<< /Type /Pages /Kids [6 0 R] /Count 1 >>\nendobj\n"
-    "4 0 obj\n<< /Length 25 >>\nstream\nBT /F1 12 Tf 10 40 Td (S) Tj ET\n"
-    "endstream\nendobj\n"
-    "5 0 obj\n<< /Type /ObjStm /N 1 /First 4 /Length %d >>\nstream\n";
-static const char objstm_body[] =
-    "6 0 << /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
-    "/Contents 4 0 R >>";
-static const char suffix[] =
-    "\nendstream\nendobj\nstartxref\n0\n%%EOF\n";
-
 int main(void)
 {
-    char *pdf;
-    size_t pdf_size;
+    FILE *file = fopen(QUIREWISE_MERGE_OBJSTM_PDF, "rb");
+    long length;
+    uint8_t *bytes = NULL;
+    size_t byte_count = 0u;
     const uint8_t *pdfs[2];
     size_t sizes[2];
     uint8_t *merged = NULL;
@@ -32,44 +25,49 @@ int main(void)
     QwConvertReport report;
     QwPdfReader *reader = NULL;
     size_t reader_pages = 0u;
-    int written;
     int rc;
-    pdf_size = sizeof(prefix) + sizeof(objstm_body) - 1u + sizeof(suffix) + 32u;
-    pdf = (char *)malloc(pdf_size);
-    if (!pdf) return 1;
-    written = snprintf(pdf, pdf_size, prefix, (int)(sizeof(objstm_body) - 1u));
-    if (written <= 0) { free(pdf); return 2; }
-    memcpy(pdf + written, objstm_body, sizeof(objstm_body) - 1u);
-    memcpy(pdf + written + sizeof(objstm_body) - 1u, suffix,
-           sizeof(suffix) - 1u);
-    pdf_size = (size_t)written + sizeof(objstm_body) - 1u + sizeof(suffix) - 1u;
-    pdfs[0] = (const uint8_t *)pdf;
-    pdfs[1] = (const uint8_t *)pdf;
-    sizes[0] = pdf_size;
-    sizes[1] = pdf_size;
+
+    if (!file) {
+        fprintf(stderr, "cannot open fixture %s\n", QUIREWISE_MERGE_OBJSTM_PDF);
+        return 1;
+    }
+    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return 1; }
+    length = ftell(file);
+    if (length <= 0 || fseek(file, 0, SEEK_SET) != 0) { fclose(file); return 1; }
+    bytes = (uint8_t *)malloc((size_t)length);
+    if (!bytes) { fclose(file); return 1; }
+    byte_count = fread(bytes, 1u, (size_t)length, file);
+    fclose(file);
+    if (byte_count != (size_t)length) { free(bytes); return 1; }
+
+    pdfs[0] = bytes;
+    pdfs[1] = bytes;
+    sizes[0] = byte_count;
+    sizes[1] = byte_count;
     memset(&report, 0, sizeof(report));
     rc = qw_pdf_merge_documents(pdfs, sizes, 2u, &merged, &merged_size,
-                                      &pages, &report);
+                                &pages, &report);
     if (rc != 0 || !merged || pages != 2u) {
-        fprintf(stderr, "ObjStm merge failed: rc=%d pages=%zu note=%s\n", rc,
-                pages, report.note);
+        fprintf(stderr,
+                "ObjStm merge failed: rc=%d pages=%zu note=%s size=%zu\n", rc,
+                pages, report.note, byte_count);
         free(merged);
-        free(pdf);
+        free(bytes);
         return 3;
     }
     rc = qw_pdf_reader_open(merged, merged_size, &reader, &reader_pages,
-                                  &report);
+                            &report);
     if (rc != 0 || reader_pages != 2u) {
         fprintf(stderr, "merged ObjStm PDF does not open: rc=%d pages=%zu\n",
                 rc, reader_pages);
         qw_pdf_reader_close(reader);
         free(merged);
-        free(pdf);
+        free(bytes);
         return 4;
     }
     qw_pdf_reader_close(reader);
     free(merged);
-    free(pdf);
+    free(bytes);
     puts("PDF merge expands compressed object streams before copying");
     return 0;
 }
