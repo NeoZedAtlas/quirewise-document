@@ -906,6 +906,123 @@ static void office_pdf_sort_columns(QwPdfLine *lines, size_t line_count,
     }
 }
 
+#define OFFICE_PDF_COLUMN_GUTTER 40.0
+#define OFFICE_PDF_PROSE_MIN_CHARS 20u
+
+/* Lines whose runs are all prose-length belong to columns; table cells hold
+   short text, and keeping their runs keeps the table detector working. */
+static int office_pdf_line_is_prose_runs(const QwPdfLine *line)
+{
+    size_t run_index;
+    if (line->run_count < 2u) return 0;
+    for (run_index = 0u; run_index < line->run_count; ++run_index) {
+        const char *text = line->runs[run_index].text;
+        if (!text || strlen(text) < OFFICE_PDF_PROSE_MIN_CHARS) return 0;
+    }
+    return 1;
+}
+
+/* Number of column segments in a line: one, or the run groups separated by a
+   gutter on a prose line. */
+static size_t office_pdf_line_segments(const QwPdfLine *line)
+{
+    size_t segments = 1u;
+    size_t run_index;
+    if (!office_pdf_line_is_prose_runs(line)) return 1u;
+    for (run_index = 1u; run_index < line->run_count; ++run_index) {
+        if (line->runs[run_index].x - line->runs[run_index - 1u].x >=
+            OFFICE_PDF_COLUMN_GUTTER)
+            ++segments;
+    }
+    return segments <= OFFICE_PDF_MAX_LINE_COLUMNS ? segments : 1u;
+}
+
+static int office_pdf_line_copy_runs(const QwPdfLine *source, size_t start,
+                                     size_t count, QwPdfLine *target)
+{
+    size_t run_index;
+    if (!count) {
+        target->x = source->x;
+        target->y = source->y;
+        target->run_count = 0u;
+        target->runs = NULL;
+        return 1;
+    }
+    target->x = source->runs[start].x;
+    target->y = source->runs[start].y;
+    target->run_count = count;
+    target->runs = (QwPdfRun *)calloc(count ? count : 1u,
+                                      sizeof(*target->runs));
+    if (!target->runs) return 0;
+    for (run_index = 0u; run_index < count; ++run_index) {
+        const QwPdfRun *run = &source->runs[start + run_index];
+        QwPdfRun *copy = &target->runs[run_index];
+        *copy = *run;
+        copy->text = NULL;
+        if (run->text) {
+            size_t length = strlen(run->text);
+            copy->text = (char *)malloc(length + 1u);
+            if (!copy->text) return 0;
+            memcpy(copy->text, run->text, length + 1u);
+        }
+    }
+    return 1;
+}
+
+/* Split prose lines whose runs sit at different columns into one line per
+   segment, so the column layout below can order them. */
+static int office_pdf_split_aligned_prose(QwPdfLine **lines_ptr,
+                                          size_t *count_ptr)
+{
+    QwPdfLine *lines = *lines_ptr;
+    size_t count = *count_ptr;
+    size_t total = 0u;
+    size_t index;
+    size_t out_index = 0u;
+    QwPdfLine *out;
+
+    for (index = 0u; index < count; ++index)
+        total += office_pdf_line_segments(&lines[index]);
+    if (total == count) return 1;
+    out = (QwPdfLine *)calloc(total, sizeof(*out));
+    if (!out) return 0;
+    for (index = 0u; index < count; ++index) {
+        QwPdfLine *line = &lines[index];
+        size_t segments = office_pdf_line_segments(line);
+        if (segments <= 1u) {
+            if (!office_pdf_line_copy_runs(line, 0u, line->run_count,
+                                           &out[out_index])) {
+                qw_doc_pdf_lines_free(out, out_index);
+                return 0;
+            }
+            ++out_index;
+            continue;
+        }
+        {
+            size_t run_index = 0u;
+            while (run_index < line->run_count) {
+                size_t end = run_index + 1u;
+                while (end < line->run_count &&
+                       line->runs[end].x - line->runs[end - 1u].x <
+                           OFFICE_PDF_COLUMN_GUTTER)
+                    ++end;
+                if (!office_pdf_line_copy_runs(line, run_index,
+                                               end - run_index,
+                                               &out[out_index])) {
+                    qw_doc_pdf_lines_free(out, out_index);
+                    return 0;
+                }
+                ++out_index;
+                run_index = end;
+            }
+        }
+    }
+    qw_doc_pdf_lines_free(lines, count);
+    *lines_ptr = out;
+    *count_ptr = out_index;
+    return 1;
+}
+
 /* Map a point from unrotated PDF space into the displayed orientation. */
 static void office_pdf_rotate_point(int rotation, double page_width,
                                     double page_height, double *x, double *y)
@@ -1230,9 +1347,15 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                 {
             double column_boundaries[OFFICE_PDF_MAX_LINE_COLUMNS];
             size_t column_count = 1u;
-            if (page_image_total == 0u)
+            if (page_image_total == 0u) {
+                if (!office_pdf_split_aligned_prose(&page_lines,
+                                                    &line_count)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
                 column_count = office_pdf_column_layout(
                     page_lines, line_count, column_boundaries);
+            }
             if (column_count >= 2u)
                 office_pdf_sort_columns(page_lines, line_count,
                                         column_boundaries, column_count);
@@ -1774,9 +1897,15 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                 {
             double column_boundaries[OFFICE_PDF_MAX_LINE_COLUMNS];
             size_t column_count = 1u;
-            if (page_image_total == 0u)
+            if (page_image_total == 0u) {
+                if (!office_pdf_split_aligned_prose(&page_lines,
+                                                    &line_count)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    goto out_of_memory;
+                }
                 column_count = office_pdf_column_layout(
                     page_lines, line_count, column_boundaries);
+            }
             if (column_count >= 2u)
                 office_pdf_sort_columns(page_lines, line_count,
                                         column_boundaries, column_count);

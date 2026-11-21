@@ -1091,6 +1091,21 @@ int main(void)
         CHECK(!contains(docx, docx_size, "<w:tbl>"));
         CHECK(contains(docx, docx_size,
                        "The left column sentence number one"));
+        /* Aligned-baseline prose is split at the gutter, so the whole left
+           column precedes the right column instead of interleaving rows. */
+        {
+            const uint8_t *left_one = find_bytes(
+                docx, docx_size, "The left column sentence number one");
+            const uint8_t *left_two = find_bytes(
+                docx, docx_size, "Left column continues with more text");
+            const uint8_t *right_one = find_bytes(
+                docx, docx_size, "The right column sentence number two");
+            CHECK(left_one != NULL);
+            CHECK(left_two != NULL);
+            CHECK(right_one != NULL);
+            CHECK(left_one < left_two);
+            CHECK(left_two < right_one);
+        }
         free(bytes);
         free(docx);
     }
