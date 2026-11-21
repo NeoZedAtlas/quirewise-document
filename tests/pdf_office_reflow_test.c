@@ -826,6 +826,68 @@ int main(void)
         free(font_docx);
     }
 
+    /* A CMYK JPEG image decodes through the DCT path. */
+    {
+        FILE *file = fopen(QUIREWISE_CMYK_JPEG_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            static const uint8_t signature[8] = {0x89u, 'P', 'N', 'G',
+                                                 0x0Du, 0x0Au, 0x1Au, 0x0Au};
+            const uint8_t *png = NULL;
+            size_t probe;
+            for (probe = 0u; probe + 8u <= docx_size; ++probe) {
+                if (memcmp(docx + probe, signature, 8u) == 0) {
+                    png = docx + probe;
+                    break;
+                }
+            }
+            CHECK(png != NULL);
+            if (png) {
+                QwImage decoded;
+                size_t end = (size_t)(png - docx);
+                memset(&decoded, 0, sizeof(decoded));
+                while (end + 8u <= docx_size) {
+                    if (memcmp(docx + end, "IEND", 4u) == 0) {
+                        end += 8u;
+                        break;
+                    }
+                    ++end;
+                }
+                CHECK(qw_image_decode(png, end - (size_t)(png - docx),
+                                      &decoded) == QW_IMAGE_OK);
+                CHECK(decoded.width == 2u);
+                if (decoded.pixels && decoded.format == QW_IMAGE_PIXEL_RGB24) {
+                    CHECK(decoded.pixels[0] > 200u);
+                    CHECK(decoded.pixels[1] < 60u);
+                    CHECK(decoded.pixels[2] < 60u);
+                }
+                qw_image_free(&decoded);
+            }
+        }
+        free(bytes);
+        free(docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }
