@@ -216,7 +216,7 @@ int qw_doc_convert_html_pdfa(const char *html,
                              size_t html_size,
                              float page_width_points,
                              float page_height_points,
-                             const char *font_path,
+                             const char *font_path, int pdfa_level,
                              uint8_t **out_pdf,
                              size_t *out_size,
                              QwConvertReport *report);

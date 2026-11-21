@@ -191,9 +191,30 @@ int main(void)
         CHECK(contains(pdfa_pdf, pdfa_size, "pdfaid:conformance"));
         CHECK(contains(pdfa_pdf, pdfa_size, "/DestOutputProfile"));
         CHECK(contains(pdfa_pdf, pdfa_size, "/FontFile2"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "<pdfaid:part>1</pdfaid:part>"));
+        free(pdfa_pdf);
+
+        /* PDF/A-2b and 3b keep the same structure with another part id. */
+        options.pdfa_level = QW_PDFA_2B;
+        pdfa_pdf = NULL;
+        pdfa_size = 0u;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdfa_pdf,
+                                       &pdfa_size, &report) == QW_STATUS_OK);
+        CHECK(contains(pdfa_pdf, pdfa_size, "<pdfaid:part>2</pdfaid:part>"));
+        CHECK(contains(pdfa_pdf, pdfa_size, "/GTS_PDFA1"));
+        free(pdfa_pdf);
+        options.pdfa_level = QW_PDFA_3B;
+        pdfa_pdf = NULL;
+        pdfa_size = 0u;
+        memset(&report, 0, sizeof(report));
+        CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdfa_pdf,
+                                       &pdfa_size, &report) == QW_STATUS_OK);
+        CHECK(contains(pdfa_pdf, pdfa_size, "<pdfaid:part>3</pdfaid:part>"));
         free(pdfa_pdf);
 
         /* Without an embedded font the writer refuses PDF/A. */
+        options.pdfa_level = QW_PDFA_1B;
         options.pdf_font_path = NULL;
         pdfa_pdf = NULL;
         pdfa_size = 0u;

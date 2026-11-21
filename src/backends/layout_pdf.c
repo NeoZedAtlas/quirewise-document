@@ -2185,7 +2185,7 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
     free(font_uses);
     qw_pdf_font_subset_free(&subset);
     if (ok && pdfa) {
-        static const char xmp[] =
+        static const char xmp_prefix[] =
             "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n"
             "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n"
             " <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n"
@@ -2193,7 +2193,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             "   xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\"\n"
             "   xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n"
             "   xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
-            "   <pdfaid:part>1</pdfaid:part>\n"
+            "   <pdfaid:part>";
+        static const char xmp_suffix[] =
+            "</pdfaid:part>\n"
             "   <pdfaid:conformance>B</pdfaid:conformance>\n"
             "   <xmp:CreatorTool>Quirewise</xmp:CreatorTool>\n"
             "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">"
@@ -2202,6 +2204,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             " </rdf:RDF>\n"
             "</x:xmpmeta>\n"
             "<?xpacket end=\"w\"?>\n";
+        char xmp[1024];
+        int xmp_length = snprintf(xmp, sizeof(xmp), "%s%d%s", xmp_prefix,
+                                  pdfa, xmp_suffix);
         const uint8_t *icc;
         size_t icc_size = 0u;
         size_t icc_bound;
@@ -2224,8 +2229,9 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             int p = pdf_out_printf(&out,
                                    "%zu 0 obj\n<< /Type /Metadata /Subtype /XML "
                                    "/Length %zu >>\nstream\n",
-                                   pdfa_object_base, sizeof(xmp) - 1u);
-            int a = pdf_out_append(&out, xmp, sizeof(xmp) - 1u);
+                                   pdfa_object_base, (size_t)xmp_length);
+            int a = xmp_length > 0 &&
+                    pdf_out_append(&out, xmp, (size_t)xmp_length);
             int e = pdf_out_printf(&out, "\nendstream\nendobj\n");
             ok = t && p && a && e;
         }
@@ -2424,7 +2430,7 @@ int qw_doc_convert_html_with_font(const char *html, size_t html_size,
 int qw_doc_convert_html_pdfa(const char *html, size_t html_size,
                                  float page_width_points,
                                  float page_height_points,
-                                 const char *font_path,
+                                 const char *font_path, int pdfa_level,
                                  uint8_t **out_pdf, size_t *out_size,
                                  QwConvertReport *report)
 {
@@ -2437,7 +2443,7 @@ int qw_doc_convert_html_pdfa(const char *html, size_t html_size,
     rc = pdf_render_html(html, html_size,
                          page_width_points > 0.0f ? page_width_points : 595.0,
                          page_height_points > 0.0f ? page_height_points : 842.0,
-                         font_path, 1, &output, NULL, report);
+                         font_path, pdfa_level, &output, NULL, report);
     if (rc != QW_STATUS_OK) return rc;
     *out_pdf = (uint8_t *)output.data;
     *out_size = output.size;
