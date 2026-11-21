@@ -141,6 +141,7 @@ if(BUILD_TESTING)
         QUIREWISE_COLUMNS5_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns5.pdf"
         QUIREWISE_COLUMNS8_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns8.pdf"
         QUIREWISE_TABLE_GAPS_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/table_gaps.pdf"
+        QUIREWISE_COLUMNS_DENSE_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns_dense.pdf"
         QUIREWISE_SMASK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/smask.pdf"
         QUIREWISE_ROTATED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rotated.pdf"
         QUIREWISE_CMYK_JPEG_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cmyk_jpeg.pdf"

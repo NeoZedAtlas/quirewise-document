@@ -1,4 +1,4 @@
-﻿/* Internal PDF reading, rasterisation, merging and CAJ JP2 support.
+/* Internal PDF reading, rasterisation, merging and CAJ JP2 support.
  *
  * Implemented behaviour:
  *  - `qw_pdf_reader_open` resolves objects through the cross-reference table
@@ -3455,32 +3455,60 @@ static size_t pdf_text_columns(QwPdfLine *lines, size_t count)
     }
     if (kept < 2u || centers[kept - 1u] - centers[0] < PDF_TEXT_COLUMN_SPAN)
         return 1u;
-    for (index = 0u; index + 1u < kept; ++index)
+    for (index = 0u; index + 1u < kept; ++index) {
         if (centers[index + 1u] - centers[index] < PDF_TEXT_COLUMN_GUTTER)
             return 1u;
-    if (kept > 2u) {
-        /* require every gutter, not just the first one */
-        for (index = 0u; index + 1u < kept; ++index)
-            if (centers[index + 1u] - centers[index] < PDF_TEXT_COLUMN_GUTTER)
-                return 1u;
-    }
-    for (index = 0u; index + 1u < kept; ++index)
         boundaries[index] = (centers[index] + centers[index + 1u]) / 2.0;
-    for (index = 1u; index < count; ++index) {
-        QwPdfLine current = lines[index];
-        size_t key = pdf_text_column_of(boundaries, kept, current.x);
-        size_t position = index;
-        while (position > 0u) {
-            const QwPdfLine *previous = &lines[position - 1u];
-            size_t previous_key =
-                pdf_text_column_of(boundaries, kept, previous->x);
-            if (previous_key < key ||
-                (previous_key == key && previous->y >= current.y))
-                break;
-            lines[position] = *previous;
-            --position;
+    }
+    {
+        /* Bottom-up merge sort keeps a dense page O(n log n); an insertion
+           sort would go quadratic on the text of a whole newspaper page. */
+        QwPdfLine *scratch = (QwPdfLine *)malloc(count * sizeof(*scratch));
+        if (scratch) {
+            QwPdfLine *source = lines;
+            QwPdfLine *target = scratch;
+            size_t width;
+            for (width = 1u; width < count; width *= 2u) {
+                size_t start;
+                for (start = 0u; start < count; start += 2u * width) {
+                    size_t left = start;
+                    size_t left_end = start + width;
+                    size_t right;
+                    size_t right_end = start + 2u * width;
+                    size_t out = start;
+                    if (left_end > count) left_end = count;
+                    right = left_end;
+                    if (right_end > count) right_end = count;
+                    while (left < left_end || right < right_end) {
+                        int take_left;
+                        if (left >= left_end) {
+                            take_left = 0;
+                        } else if (right >= right_end) {
+                            take_left = 1;
+                        } else {
+                            size_t left_key = pdf_text_column_of(
+                                boundaries, kept, source[left].x);
+                            size_t right_key = pdf_text_column_of(
+                                boundaries, kept, source[right].x);
+                            take_left = left_key != right_key
+                                            ? left_key < right_key
+                                            : source[left].y >=
+                                                  source[right].y;
+                        }
+                        target[out++] = take_left ? source[left++]
+                                                  : source[right++];
+                    }
+                }
+                {
+                    QwPdfLine *swap = source;
+                    source = target;
+                    target = swap;
+                }
+            }
+            if (source != lines)
+                memcpy(lines, source, count * sizeof(*lines));
+            free(scratch);
         }
-        lines[position] = current;
     }
     return kept;
 }

@@ -887,6 +887,46 @@ int main(void)
         free(docx);
     }
 
+    /* A dense two-column page (60 lines per column): the sorter must stay
+       column-major and finish quickly. */
+    {
+        FILE *file = fopen(QUIREWISE_COLUMNS_DENSE_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *text = NULL;
+        size_t text_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_TXT,
+                                          &opts, &text, &text_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *left_last =
+                find_bytes(text, text_size, "Left column line 60");
+            const uint8_t *right_first =
+                find_bytes(text, text_size, "Right column line 01");
+            const uint8_t *right_last =
+                find_bytes(text, text_size, "Right column line 60");
+            CHECK(left_last != NULL && right_first != NULL &&
+                  right_last != NULL);
+            CHECK(left_last < right_first);
+            CHECK(right_first < right_last);
+        }
+        free(text);
+        free(bytes);
+    }
+
     /* A soft mask composites the image over white. */
     {
         FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");
