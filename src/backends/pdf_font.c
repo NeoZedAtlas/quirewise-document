@@ -218,18 +218,28 @@ QwPdfFont *qw_pdf_font_load_ex(const char *path, const char **reason)
         qw_pdf_font_free(font);
         return NULL;
     }
-    /* CFF2 has no PDF 1.x representation, so say so instead of failing on the
-       missing CFF table later. */
+    /* CFF2 has no PDF 1.x representation. A static CFF2 font is rewritten as
+       CFF 1 first; a variable one still needs a static instance from the user,
+       so say that instead of failing on the missing CFF table later. */
     {
         size_t cff2_offset = 0u;
         size_t cff2_size = 0u;
         if (find_table(font->data, font->size, "CFF2", &cff2_offset,
                        &cff2_size)) {
-            if (reason)
-                *reason = "CFF2 variable-font outlines cannot be embedded in "
-                          "PDF 1.x; export a static instance (CFF or TrueType)";
-            qw_pdf_font_free(font);
-            return NULL;
+            uint8_t *converted = NULL;
+            size_t converted_size = 0u;
+            if (!qw_pdf_cff2_to_cff(font->data, font->size, &converted,
+                                    &converted_size)) {
+                if (reason)
+                    *reason = "CFF2 variable-font outlines cannot be embedded "
+                              "in PDF 1.x; export a static instance (CFF or "
+                              "TrueType)";
+                qw_pdf_font_free(font);
+                return NULL;
+            }
+            free(font->data);
+            font->data = converted;
+            font->size = converted_size;
         }
     }
     if (!find_table(font->data, font->size, "head", &font->head,

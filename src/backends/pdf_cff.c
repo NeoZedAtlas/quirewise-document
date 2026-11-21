@@ -1,4 +1,4 @@
-/* Rebuild a CFF/OpenType font with only the glyphs a document uses. */
+﻿/* Rebuild a CFF/OpenType font with only the glyphs a document uses. */
 #include "pdf_cff.h"
 
 #include <stdlib.h>
@@ -950,4 +950,456 @@ done:
     free(new_cff);
     free(new_otf);
     return ok;
+}
+
+/* ---------------------------------------------------------------------------
+ * CFF2 -> CFF 1 conversion (static instances only)
+ * ------------------------------------------------------------------------- */
+
+typedef struct Cff2Index {
+    size_t count;
+    unsigned off_size;
+    size_t offsets;
+    size_t data;
+    size_t end;
+} Cff2Index;
+
+/* CFF2 stores the INDEX count as a 32-bit value. */
+static int cff2_index(const uint8_t *cff, size_t size, size_t pos,
+                      Cff2Index *index)
+{
+    uint32_t last;
+    if (pos + 5u > size) return 0;
+    index->count = cff_u32(cff + pos);
+    if (index->count == 0u) {
+        index->off_size = 1u;
+        index->offsets = pos + 5u;
+        index->data = pos + 5u;
+        index->end = pos + 5u;
+        return 1;
+    }
+    index->off_size = cff[pos + 4u];
+    if (index->off_size < 1u || index->off_size > 4u) return 0;
+    index->offsets = pos + 5u;
+    if (index->offsets + (index->count + 1u) * index->off_size > size)
+        return 0;
+    index->data = index->offsets + (index->count + 1u) * index->off_size;
+    last = cff_read_offset(cff + index->offsets +
+                               index->count * index->off_size,
+                           index->off_size);
+    if (last == 0u || index->data + last - 1u > size) return 0;
+    index->end = index->data + last - 1u;
+    return 1;
+}
+
+static const uint8_t *cff2_object(const uint8_t *cff, const Cff2Index *index,
+                                  size_t object, size_t *length)
+{
+    uint32_t start;
+    uint32_t stop;
+    if (object >= index->count) return NULL;
+    start = cff_read_offset(cff + index->offsets + object * index->off_size,
+                            index->off_size);
+    stop = cff_read_offset(cff + index->offsets +
+                               (object + 1u) * index->off_size,
+                           index->off_size);
+    if (stop < start) return NULL;
+    *length = stop - start;
+    return cff + index->data + start - 1u;
+}
+
+static int cff2_find_table(const uint8_t *font, size_t size, const char *tag,
+                           size_t *offset, size_t *length)
+{
+    size_t count;
+    size_t index;
+    if (size < 12u) return 0;
+    count = cff_u16(font + 4u);
+    for (index = 0u; index < count; ++index) {
+        const uint8_t *record = font + 12u + index * 16u;
+        if (memcmp(record, tag, 4u) == 0) {
+            uint32_t table_offset = cff_u32(record + 8u);
+            uint32_t table_length = cff_u32(record + 12u);
+            if ((size_t)table_offset + table_length > size) return 0;
+            *offset = table_offset;
+            *length = table_length;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void cff2_put_fixed(uint8_t *p, uint32_t value)
+{
+    p[0] = 29u;
+    cff_put_u32(p + 1u, value);
+}
+
+static int cff2_build_index(uint8_t *out, size_t capacity,
+                            const uint8_t *const *objects,
+                            const size_t *lengths, size_t count,
+                            size_t *out_size)
+{
+    return cff_build_index(out, capacity, objects, lengths, count, out_size);
+}
+
+static int cff2_advance(const uint8_t *font, size_t font_size, size_t gid)
+{
+    size_t hhea_offset = 0u;
+    size_t hhea_size = 0u;
+    size_t hmtx_offset = 0u;
+    size_t hmtx_size = 0u;
+    unsigned metrics;
+    size_t entry;
+    if (!cff2_find_table(font, font_size, "hhea", &hhea_offset, &hhea_size) ||
+        hhea_size < 36u ||
+        !cff2_find_table(font, font_size, "hmtx", &hmtx_offset, &hmtx_size))
+        return 0;
+    metrics = cff_u16(font + hhea_offset + 34u);
+    if (!metrics || hmtx_size < 2u) return 0;
+    entry = gid < metrics ? gid : (size_t)(metrics - 1u);
+    if (entry * 4u + 2u > hmtx_size) return 0;
+    return (int)cff_u16(font + hmtx_offset + entry * 4u);
+}
+
+static size_t cff2_width_length(int advance)
+{
+    if (advance >= -107 && advance <= 107) return 1u;
+    if (advance >= -32768 && advance <= 32767) return 3u;
+    return 5u;
+}
+
+static size_t cff2_width_write(uint8_t *out, int advance)
+{
+    size_t length = cff2_width_length(advance);
+    if (length == 1u) {
+        out[0] = (uint8_t)(advance + 139);
+    } else if (length == 3u) {
+        out[0] = 28u;
+        out[1] = (uint8_t)((advance >> 8) & 0xFF);
+        out[2] = (uint8_t)(advance & 0xFF);
+    } else {
+        int32_t fixed_value = (int32_t)((double)advance * 65536.0);
+        out[0] = 255u;
+        cff_put_u32(out + 1u, (uint32_t)fixed_value);
+    }
+    return length;
+}
+
+int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
+                       uint8_t **out_font, size_t *out_size)
+{
+    static const char name[] = "QwCFF2";
+    static const char registry_text[] = "Adobe";
+    static const char ordering_text[] = "Identity";
+    size_t cff2_offset = 0u;
+    size_t cff2_size = 0u;
+    size_t header_size;
+    size_t top_dict_size;
+    size_t top_dict_offset;
+    const uint8_t *top_dict;
+    uint32_t values[8];
+    size_t value_count;
+    size_t charstrings_offset;
+    size_t private_offset = 0u;
+    size_t private_size = 0u;
+    Cff2Index charstrings_index;
+    Cff2Index subrs_index;
+    size_t glyph_count;
+    size_t glyph;
+    size_t charstrings_total = 0u;
+    size_t charstrings_off_size = 1u;
+    size_t name_len;
+    size_t string_len;
+    size_t top_index_len;
+    size_t charstrings_len;
+    size_t charset_len;
+    size_t fdselect_len;
+    size_t fdarray_len;
+    size_t private_block = 0u;
+    size_t cff_size = 0u;
+    size_t offset;
+    size_t body;
+    uint8_t *cff = NULL;
+    const uint8_t *objects[2];
+    size_t lengths[2];
+    size_t part;
+    /* Top DICT: ROS (2-byte op) 5+5+5+2, charset 5+1, CharStrings 5+1,
+       FDArray 5+2, FDSelect 5+2. Every number is the fixed 5-byte form, so the
+       length does not depend on the offsets it will hold. */
+    const size_t top_dict_len = 17u + 6u + 6u + 7u + 7u;
+    const size_t font_dict_len = 11u;
+
+    if (!out_font || !out_size) return 0;
+    *out_font = NULL;
+    *out_size = 0u;
+    if (!font || font_size < 12u) return 0;
+    if (!cff2_find_table(font, font_size, "CFF2", &cff2_offset, &cff2_size))
+        return 0;
+    if (cff2_offset + cff2_size > font_size || cff2_size < 5u) return 0;
+    {
+        const uint8_t *cff2 = font + cff2_offset;
+        header_size = cff2[2];
+        top_dict_size = cff_u16(cff2 + 3u);
+        if (header_size < 5u || header_size + top_dict_size > cff2_size)
+            return 0;
+        top_dict_offset = header_size;
+        top_dict = cff2 + top_dict_offset;
+        if (cff_dict_operands(top_dict, top_dict_size, 24u, values,
+                              &value_count))
+            return 0; /* variable font: needs a static instance */
+        value_count = 8u;
+        if (!cff_dict_operands(top_dict, top_dict_size, 17u, values,
+                               &value_count) ||
+            value_count != 1u)
+            return 0;
+        charstrings_offset = values[0];
+        value_count = 8u;
+        if (cff_dict_operands(top_dict, top_dict_size, 18u, values,
+                              &value_count) &&
+            value_count == 2u) {
+            private_size = values[0];
+            private_offset = values[1];
+        }
+        value_count = 8u;
+        if (cff_dict_operands(top_dict, top_dict_size, 1236u, values,
+                              &value_count) ||
+            cff_dict_operands(top_dict, top_dict_size, 1237u, values,
+                              &value_count))
+            return 0; /* fonts with their own FDArray need a real instancer */
+        if (charstrings_offset >= cff2_size ||
+            !cff2_index(cff2, cff2_size, charstrings_offset,
+                        &charstrings_index) ||
+            !charstrings_index.count)
+            return 0;
+        if (private_size &&
+            (private_offset >= cff2_size ||
+             private_offset + private_size > cff2_size))
+            return 0;
+        if (header_size + top_dict_size < cff2_size) {
+            if (!cff2_index(cff2, cff2_size, header_size + top_dict_size,
+                            &subrs_index))
+                return 0;
+            if (subrs_index.count) return 0; /* global subrs need flattening */
+        }
+        glyph_count = charstrings_index.count;
+        for (glyph = 0u; glyph < glyph_count; ++glyph) {
+            size_t length = 0u;
+            if (!cff2_object(cff2, &charstrings_index, glyph, &length))
+                return 0;
+            charstrings_total +=
+                cff2_width_length(cff2_advance(font, font_size, glyph)) +
+                length + 1u; /* width operand + endchar */
+        }
+        while (charstrings_total + 1u > ((uint32_t)1u << (8u *
+                                                           charstrings_off_size)))
+            ++charstrings_off_size;
+    }
+
+    name_len = 2u + 1u + 2u * 1u + (sizeof(name) - 1u);
+    string_len = 2u + 1u + 3u * 1u + (sizeof(registry_text) - 1u) +
+                 (sizeof(ordering_text) - 1u);
+    top_index_len = 2u + 1u + 2u * 1u + top_dict_len;
+    charstrings_len = 2u + 1u + (glyph_count + 1u) * charstrings_off_size +
+                      charstrings_total;
+    charset_len = 1u + (glyph_count - 1u) * 2u;
+    fdselect_len = 1u + glyph_count;
+    fdarray_len = 2u + 1u + 2u * 1u + font_dict_len;
+
+    offset = 4u;                 /* header */
+    offset += name_len;
+    {
+        size_t top_index_start = offset;
+        size_t strings_start = top_index_start + top_index_len;
+        size_t subrs_start = strings_start + string_len;
+        size_t charstrings_start = subrs_start + 2u;
+        size_t charset_start = charstrings_start + charstrings_len;
+        size_t fdselect_start = charset_start + charset_len;
+        size_t fdarray_start = fdselect_start + fdselect_len;
+        size_t private_start = fdarray_start + fdarray_len;
+        cff_size = private_start + private_size;
+        size_t pos;
+        uint8_t *dict;
+
+        cff = (uint8_t *)calloc(cff_size, 1u);
+        if (!cff) return 0;
+        /* header */
+        cff[0] = 1u;
+        cff[1] = 0u;
+        cff[2] = 4u;
+        cff[3] = 1u;
+        /* Name INDEX */
+        pos = 4u;
+        cff[pos++] = 0u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = (uint8_t)(1u + sizeof(name) - 1u);
+        memcpy(cff + pos, name, sizeof(name) - 1u);
+        pos += sizeof(name) - 1u;
+        /* Top DICT INDEX */
+        cff[pos++] = 0u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = (uint8_t)(1u + top_dict_len);
+        dict = cff + pos;
+        {
+            size_t at = 0u;
+            cff2_put_fixed(dict + at, 391u); at += 5u;   /* registry */
+            cff2_put_fixed(dict + at, 392u); at += 5u;   /* ordering */
+            cff2_put_fixed(dict + at, 0u);   at += 5u;   /* supplement */
+            dict[at++] = 12u;
+            dict[at++] = 30u;
+            cff2_put_fixed(dict + at, (uint32_t)charset_start); at += 5u;
+            dict[at++] = 15u;
+            cff2_put_fixed(dict + at, (uint32_t)charstrings_start); at += 5u;
+            dict[at++] = 17u;
+            cff2_put_fixed(dict + at, (uint32_t)fdarray_start); at += 5u;
+            dict[at++] = 12u;
+            dict[at++] = 36u;
+            cff2_put_fixed(dict + at, (uint32_t)fdselect_start); at += 5u;
+            dict[at++] = 12u;
+            dict[at++] = 37u;
+            if (at != top_dict_len) { free(cff); cff = NULL; return 0; }
+        }
+        pos += top_dict_len;
+        /* String INDEX: registry + ordering */
+        cff[pos++] = 0u;
+        cff[pos++] = 2u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = (uint8_t)(1u + sizeof(registry_text) - 1u);
+        cff[pos++] = (uint8_t)(1u + (sizeof(registry_text) - 1u) +
+                               (sizeof(ordering_text) - 1u));
+        memcpy(cff + pos, registry_text, sizeof(registry_text) - 1u);
+        pos += sizeof(registry_text) - 1u;
+        memcpy(cff + pos, ordering_text, sizeof(ordering_text) - 1u);
+        pos += sizeof(ordering_text) - 1u;
+        /* Global Subr INDEX: empty */
+        cff[pos++] = 0u;
+        cff[pos++] = 0u;
+        /* CharStrings INDEX, with endchar appended to each program */
+        cff[pos++] = 0u;
+        cff[pos++] = (uint8_t)glyph_count;
+        cff[pos++] = (uint8_t)charstrings_off_size;
+        {
+            uint32_t running = 1u;
+            size_t gid;
+            size_t entry = 0u;
+            for (gid = 0u; gid < glyph_count; ++gid) {
+                size_t length = 0u;
+                size_t width_bytes = 0u;
+                cff2_object(font + cff2_offset, &charstrings_index, gid,
+                            &length);
+                cff_write_offset(cff + pos + entry * charstrings_off_size,
+                                 running, (unsigned)charstrings_off_size);
+                width_bytes =
+                    cff2_width_length(cff2_advance(font, font_size, gid));
+                running += (uint32_t)(width_bytes + length + 1u);
+                ++entry;
+            }
+            cff_write_offset(cff + pos + entry * charstrings_off_size, running,
+                             (unsigned)charstrings_off_size);
+        }
+        pos += (glyph_count + 1u) * charstrings_off_size;
+        {
+            size_t gid;
+            for (gid = 0u; gid < glyph_count; ++gid) {
+                size_t length = 0u;
+                const uint8_t *program =
+                    cff2_object(font + cff2_offset, &charstrings_index, gid,
+                                &length);
+                pos += cff2_width_write(cff + pos,
+                                          cff2_advance(font, font_size, gid));
+                memcpy(cff + pos, program, length);
+                pos += length;
+                cff[pos++] = 14u; /* endchar */
+            }
+        }
+        /* charset: CID 0 for .notdef, then 1..n-1 */
+        cff[pos++] = 0u;
+        {
+            size_t gid;
+            for (gid = 1u; gid < glyph_count; ++gid) {
+                cff[pos++] = (uint8_t)(gid >> 8);
+                cff[pos++] = (uint8_t)gid;
+            }
+        }
+        /* FDSelect: every glyph uses FD 0 */
+        cff[pos++] = 0u;
+        memset(cff + pos, 0, glyph_count);
+        pos += glyph_count;
+        /* FDArray: one Font DICT with the Private block */
+        cff[pos++] = 0u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = 1u;
+        cff[pos++] = (uint8_t)(1u + font_dict_len);
+        cff2_put_fixed(cff + pos, (uint32_t)private_size);
+        pos += 5u;
+        cff2_put_fixed(cff + pos, (uint32_t)private_start);
+        pos += 5u;
+        cff[pos++] = 18u;
+        /* Private block */
+        if (private_size) {
+            memcpy(cff + pos, font + cff2_offset + private_offset,
+                   private_size);
+            pos += private_size;
+        }
+        if (pos != cff_size) { free(cff); cff = NULL; return 0; }
+        private_block = private_size;
+        (void)private_block;
+    }
+
+    objects[0] = cff;
+    lengths[0] = 0u;
+    {
+        /* Rebuild the sfnt with the converted table renamed to "CFF ". */
+        size_t table_count;
+        size_t table;
+        size_t dir_size;
+        size_t data_size = 0u;
+        uint8_t *result;
+        size_t result_offset;
+        table_count = cff_u16(font + 4u);
+        dir_size = 12u + table_count * 16u;
+        for (table = 0u; table < table_count; ++table) {
+            const uint8_t *record = font + 12u + table * 16u;
+            uint32_t length = cff_u32(record + 12u);
+            if (memcmp(record, "CFF2", 4u) == 0)
+                data_size += align4(cff_size);
+            else
+                data_size += align4(length);
+        }
+        result = (uint8_t *)malloc(dir_size + data_size);
+        if (!result) { free(cff); return 0; }
+        memcpy(result, font, 12u);
+        result_offset = dir_size;
+        for (table = 0u; table < table_count; ++table) {
+            const uint8_t *record = font + 12u + table * 16u;
+            uint8_t *target = result + 12u + table * 16u;
+            memcpy(target, record, 16u);
+            if (memcmp(record, "CFF2", 4u) == 0) {
+                memcpy(target, "CFF ", 4u);
+                cff_put_u32(target + 8u, (uint32_t)result_offset);
+                cff_put_u32(target + 12u, (uint32_t)cff_size);
+                cff_put_u32(target + 4u, sfnt_checksum(cff, cff_size));
+                memcpy(result + result_offset, cff, cff_size);
+                result_offset += align4(cff_size);
+            } else {
+                uint32_t table_offset = cff_u32(record + 8u);
+                uint32_t length = cff_u32(record + 12u);
+                cff_put_u32(target + 8u, (uint32_t)result_offset);
+                memcpy(result + result_offset, font + table_offset, length);
+                result_offset += align4(length);
+            }
+        }
+        free(cff);
+        *out_font = result;
+        *out_size = dir_size + data_size;
+        lengths[0] = cff_size;
+        (void)part;
+        return 1;
+    }
 }

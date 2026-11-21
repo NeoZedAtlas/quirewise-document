@@ -358,6 +358,60 @@ int main(void)
         free(data);
     }
 
+    /* A static CFF2 font (no variation store) is rewritten as CFF 1 and
+       embeds as a CIDFontType0; a CFF2 font that cannot be flattened keeps the
+       actionable rejection. */
+    {
+        QwPdfFont *font = qw_pdf_font_load(QUIREWISE_CFF2_STATIC_PATH);
+        CHECK(font != NULL);
+        CHECK(qw_pdf_font_is_cff(font) == 1);
+        qw_pdf_font_free(font);
+        {
+            QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+            uint8_t *pdf = NULL;
+            size_t pdf_size = 0u;
+            QwConvertReport note;
+            memset(&note, 0, sizeof(note));
+            options.pdf_font_path = QUIREWISE_CFF2_STATIC_PATH;
+            CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdf,
+                                           &pdf_size, &note) == QW_STATUS_OK);
+            CHECK(pdf != NULL && pdf_size > 0u);
+            CHECK(contains(pdf, pdf_size, "/CIDFontType0"));
+            CHECK(contains(pdf, pdf_size, "/FontFile3"));
+            free(pdf);
+        }
+        /* PDF/A-2b accepts the converted CFF program ... */
+        {
+            QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+            uint8_t *pdf = NULL;
+            size_t pdf_size = 0u;
+            QwConvertReport note;
+            memset(&note, 0, sizeof(note));
+            options.pdf_font_path = QUIREWISE_CFF2_STATIC_PATH;
+            options.pdfa_level = QW_PDFA_2B;
+            CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdf,
+                                           &pdf_size, &note) == QW_STATUS_OK);
+            CHECK(contains(pdf, pdf_size, "<pdfaid:part>2</pdfaid:part>"));
+            free(pdf);
+        }
+        /* ... while PDF/A-1b only admits Type 1/TrueType/Type 3 programs. */
+        {
+            QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+            uint8_t *pdf = NULL;
+            size_t pdf_size = 0u;
+            QwConvertReport note;
+            memset(&note, 0, sizeof(note));
+            options.pdf_font_path = QUIREWISE_CFF2_STATIC_PATH;
+            options.pdfa_level = QW_PDFA_1B;
+            CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdf,
+                                           &pdf_size, &note) ==
+                  QW_STATUS_ERR_UNSUPPORTED);
+            CHECK(pdf == NULL);
+            CHECK(strstr(note.note, "PDF/A-1b") != NULL);
+            CHECK(strstr(note.note, "TrueType") != NULL);
+        }
+    }
+
     /* CFF2 variable-font outlines cannot be embedded in PDF 1.x: the loader
        must say so instead of failing on a missing CFF table. */
     {

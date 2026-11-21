@@ -1,4 +1,4 @@
-/* Internal HTML-to-PDF renderer for Quirewise document formats.
+﻿/* Internal HTML-to-PDF renderer for Quirewise document formats.
  *
  * This module replaces the former external MuPDF backend for the HTML/layout
  * to PDF path. It intentionally implements a small, well-defined subset:
@@ -2464,6 +2464,16 @@ static int pdf_render_html(const char *html, size_t html_size,
                          "Cannot embed font %s: %s", font_path,
                          font_reason ? font_reason : "unsupported font");
             }
+            return QW_STATUS_ERR_UNSUPPORTED;
+        }
+        /* ISO 19005-1 only admits Type 1, TrueType and Type 3 programs, so a
+           CFF/OpenType font cannot produce a conforming PDF/A-1b file. */
+        if (pdfa == 1 && qw_pdf_font_is_cff(font)) {
+            if (report)
+                snprintf(report->note, sizeof(report->note),
+                         "PDF/A-1b only accepts Type 1, TrueType and Type 3 "
+                         "font programs; use --pdfa 2b/3b or a TrueType font");
+            qw_pdf_font_free(font);
             return QW_STATUS_ERR_UNSUPPORTED;
         }
     }

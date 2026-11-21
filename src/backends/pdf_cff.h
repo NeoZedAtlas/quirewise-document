@@ -17,4 +17,17 @@ int qw_pdf_cff_subset(const uint8_t *font, size_t font_size,
                       uint8_t **out_font, size_t *out_size, uint16_t *map,
                       unsigned *out_glyph_count);
 
+/* Convert a static CFF2 OpenType font into a CID-keyed CFF 1 font.
+ *
+ * CFF2 cannot be embedded in PDF 1.x. A CFF2 font without a variation store
+ * has plain Type2 charstrings, so it can be rewritten as CFF 1: the charstrings
+ * gain their endchar, and a one-entry FDArray/FDSelect plus an Identity charset
+ * make the result a CID-keyed font the PDF writer already understands.
+ *
+ * Variable CFF2 fonts (a vstore in the Top DICT), CFF2 fonts with global
+ * subrs, and CFF2 fonts that carry their own FDArray are rejected: they need a
+ * static instance, which is the caller's job. */
+int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
+                       uint8_t **out_font, size_t *out_size);
+
 #endif
