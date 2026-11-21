@@ -983,6 +983,39 @@ int main(void)
         free(docx);
     }
 
+    /* A missing first-column cell becomes a vertical merge continuation. */
+    {
+        FILE *file = fopen(QUIREWISE_ROWSPAN_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(contains(docx, docx_size, "<w:vMerge w:val=\"restart\"/>"));
+        CHECK(contains(docx, docx_size, "<w:vMerge/>"));
+        CHECK(contains(docx, docx_size, "A"));
+        CHECK(contains(docx, docx_size, "C"));
+        CHECK(contains(docx, docx_size, "E"));
+        free(bytes);
+        free(docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }

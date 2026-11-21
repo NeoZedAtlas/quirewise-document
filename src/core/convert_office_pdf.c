@@ -658,9 +658,15 @@ static size_t office_pdf_table_block(const QwPdfLine *lines, size_t line_count,
 {
     size_t end = start;
     memset(table, 0, sizeof(*table));
-    while (end < line_count && lines[end].run_count >= 2u) {
+    while (end < line_count && lines[end].run_count >= 1u) {
         size_t run_index;
         int fits = 1;
+        if (lines[end].run_count == 1u) {
+            size_t column;
+            if (end == start) break;
+            column = office_pdf_column_index(table, lines[end].runs[0].x);
+            if (column == SIZE_MAX || column == 0u) break;
+        }
         for (run_index = 0u; run_index < lines[end].run_count; ++run_index) {
             if (office_pdf_column_index(table, lines[end].runs[run_index].x) ==
                 SIZE_MAX) {
@@ -690,6 +696,19 @@ static size_t office_pdf_cell_span(const OfficePdfTable *table, size_t column,
     if (column + span > table->column_count)
         span = table->column_count - column;
     return span ? span : 1u;
+}
+
+/* True when the row has a run starting at the given grid column. */
+static int office_pdf_row_has_column(const QwPdfLine *line,
+                                     const OfficePdfTable *table,
+                                     size_t column)
+{
+    size_t cell;
+    for (cell = 0u; cell < line->run_count; ++cell) {
+        if (office_pdf_column_index(table, line->runs[cell].x) == column)
+            return 1;
+    }
+    return 0;
 }
 
 /* Encode one extracted image as PNG media and emit the DOCX drawing. */
@@ -1205,6 +1224,24 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                         qw_doc_pdf_lines_free(page_lines, line_count);
                         goto out_of_memory;
                     }
+                    if (row > line_index &&
+                        !office_pdf_row_has_column(&page_lines[row], &table,
+                                                   0u) &&
+                        office_pdf_row_has_column(&page_lines[row - 1u],
+                                                  &table, 0u)) {
+                        if (!pdf_buffer_text(&body, "<w:tc><w:tcPr>") ||
+                            !pdf_buffer_printf(
+                                &body,
+                                "<w:tcW w:w=\"%d\" w:type=\"dxa\"/>",
+                                office_pdf_cell_twips(&table, 0u, 1u,
+                                                      page_w)) ||
+                            !pdf_buffer_text(&body,
+                                             "<w:vMerge/></w:tcPr>"
+                                             "<w:p/></w:tc>")) {
+                            qw_doc_pdf_lines_free(page_lines, line_count);
+                            goto out_of_memory;
+                        }
+                    }
                     for (cell = 0u; cell < page_lines[row].run_count; ++cell) {
                         const QwPdfRun *run = &page_lines[row].runs[cell];
                         size_t column = office_pdf_column_index(&table, run->x);
@@ -1218,6 +1255,13 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                             office_pdf_cell_span(&table, column, next_column);
                         if (!pdf_buffer_text(&body, "<w:tc>") ||
                             !pdf_buffer_text(&body, "<w:tcPr>") ||
+                            (cell == 0u && column == 0u &&
+                             row + 1u < block_end &&
+                             !office_pdf_row_has_column(
+                                 &page_lines[row + 1u], &table, 0u) &&
+                             !pdf_buffer_text(
+                                 &body,
+                                 "<w:vMerge w:val=\"restart\"/>")) ||
                             (span > 1u &&
                              !pdf_buffer_printf(
                                  &body,
