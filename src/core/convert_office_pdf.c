@@ -1,4 +1,4 @@
-﻿/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
+/* Layout-preserving PDF -> DOCX/EPUB reconstruction.
  *
  * The PDF pages are rasterized with the package's own renderer at 120 dpi,
  * encoded as baseline JPEG (the image package already writes it) and embedded
@@ -802,6 +802,34 @@ static int office_docx_emit_image(OfficePdfBuffer *body,
    clusters separated by real gutters are text columns. Column detection is
    capped because reordering more than four columns is a layout guess the
    reflow writer cannot express. */
+#define OFFICE_PDF_COLUMN_GUTTER 40.0
+#define OFFICE_PDF_PROSE_MIN_CHARS 20u
+
+/* A grid whose cells are all short is a table, even when missing cells make
+   the line origins look like wide columns. */
+static int office_pdf_looks_like_table(const QwPdfLine *lines,
+                                       size_t line_count)
+{
+    size_t rows = 0u;
+    size_t short_rows = 0u;
+    size_t index;
+    for (index = 0u; index < line_count; ++index) {
+        size_t run_index;
+        int all_short = 1;
+        if (lines[index].run_count < 2u) continue;
+        ++rows;
+        for (run_index = 0u; run_index < lines[index].run_count; ++run_index) {
+            const char *text = lines[index].runs[run_index].text;
+            if (!text || strlen(text) >= OFFICE_PDF_PROSE_MIN_CHARS) {
+                all_short = 0;
+                break;
+            }
+        }
+        if (all_short) ++short_rows;
+    }
+    return rows >= 2u && short_rows >= 2u && short_rows * 2u >= rows;
+}
+
 static size_t office_pdf_column_layout(const QwPdfLine *lines,
                                        size_t line_count,
                                        double *boundaries)
@@ -814,6 +842,7 @@ static size_t office_pdf_column_layout(const QwPdfLine *lines,
     int overflow = 0;
 
     if (line_count < 4u) return 1u;
+    if (office_pdf_looks_like_table(lines, line_count)) return 1u;
     origins = (double *)malloc(line_count * sizeof(*origins));
     if (!origins) return 1u;
     for (index = 0u; index < line_count; ++index)
@@ -905,9 +934,6 @@ static void office_pdf_sort_columns(QwPdfLine *lines, size_t line_count,
         lines[position] = current;
     }
 }
-
-#define OFFICE_PDF_COLUMN_GUTTER 40.0
-#define OFFICE_PDF_PROSE_MIN_CHARS 20u
 
 /* Lines whose runs are all prose-length belong to columns; table cells hold
    short text, and keeping their runs keeps the table detector working. */

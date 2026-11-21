@@ -3366,6 +3366,7 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
 #define PDF_TEXT_COLUMN_TOLERANCE 12.0
 #define PDF_TEXT_COLUMN_GUTTER 40.0
 #define PDF_TEXT_COLUMN_SPAN 120.0
+#define PDF_TEXT_PROSE_MIN_CHARS 20u
 
 static size_t pdf_text_column_of(const double *boundaries, size_t count,
                                  double x)
@@ -3374,6 +3375,30 @@ static size_t pdf_text_column_of(const double *boundaries, size_t count,
     for (index = 0u; index < count; ++index)
         if (x <= boundaries[index]) return index;
     return count ? count - 1u : 0u;
+}
+
+/* A grid whose cells are short is a table, even when missing cells make the
+   line origins look like wide columns. */
+static int pdf_text_looks_like_table(const QwPdfLine *lines, size_t count)
+{
+    size_t rows = 0u;
+    size_t short_rows = 0u;
+    size_t index;
+    for (index = 0u; index < count; ++index) {
+        size_t run_index;
+        int all_short = 1;
+        if (lines[index].run_count < 2u) continue;
+        ++rows;
+        for (run_index = 0u; run_index < lines[index].run_count; ++run_index) {
+            const char *text = lines[index].runs[run_index].text;
+            if (!text || strlen(text) >= PDF_TEXT_PROSE_MIN_CHARS) {
+                all_short = 0;
+                break;
+            }
+        }
+        if (all_short) ++short_rows;
+    }
+    return rows >= 2u && short_rows >= 2u && short_rows * 2u >= rows;
 }
 
 /* Return the number of columns, leaving the sorted order in `lines`. */
@@ -3388,6 +3413,7 @@ static size_t pdf_text_columns(QwPdfLine *lines, size_t count)
     double boundaries[PDF_TEXT_COLUMN_LIMIT];
 
     if (count < 4u) return 1u;
+    if (pdf_text_looks_like_table(lines, count)) return 1u;
     origins = (double *)malloc(count * sizeof(*origins));
     if (!origins) return 1u;
     for (index = 0u; index < count; ++index) origins[index] = lines[index].x;
@@ -3483,8 +3509,6 @@ static int pdf_text_append_lines(QwPdfBuffer *text, const QwPdfLine *lines,
     }
     return 1;
 }
-
-#define PDF_TEXT_PROSE_MIN_CHARS 20u
 
 static int pdf_text_line_is_prose(const QwPdfLine *line)
 {

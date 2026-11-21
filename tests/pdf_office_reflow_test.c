@@ -841,6 +841,52 @@ int main(void)
         free(docx);
     }
 
+    /* A grid whose first cell is missing on some rows looks like two wide
+       columns by origin, but its short cells mark it as a table: keep the row
+       order in both DOCX and TXT. */
+    {
+        FILE *file = fopen(QUIREWISE_TABLE_GAPS_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+        uint8_t *text = NULL;
+        size_t text_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_TXT,
+                                          &opts, &text, &text_size, NULL) ==
+              QW_STATUS_OK);
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *a1 = find_bytes(text, text_size, "A1");
+            const uint8_t *b2 = find_bytes(text, text_size, "B2");
+            const uint8_t *a3 = find_bytes(text, text_size, "A3");
+            const uint8_t *b4 = find_bytes(text, text_size, "B4");
+            CHECK(a1 != NULL && b2 != NULL && a3 != NULL && b4 != NULL);
+            CHECK(a1 < b2);
+            CHECK(b2 < a3);
+            CHECK(a3 < b4);
+        }
+        free(text);
+        free(bytes);
+        free(docx);
+    }
+
     /* A soft mask composites the image over white. */
     {
         FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");
