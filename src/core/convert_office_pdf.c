@@ -653,6 +653,9 @@ static size_t office_pdf_column_index(const OfficePdfTable *table, double x)
 }
 
 /* Collect the column origins of consecutive lines that look like table rows. */
+static int office_pdf_table_is_prose(const QwPdfLine *lines, size_t start,
+                                     size_t end);
+
 static size_t office_pdf_table_block(const QwPdfLine *lines, size_t line_count,
                                      size_t start, OfficePdfTable *table)
 {
@@ -681,6 +684,7 @@ static size_t office_pdf_table_block(const QwPdfLine *lines, size_t line_count,
         if (!fits) break;
         ++end;
     }
+    if (office_pdf_table_is_prose(lines, start, end)) return start;
     return end;
 }
 
@@ -696,6 +700,26 @@ static size_t office_pdf_cell_span(const OfficePdfTable *table, size_t column,
     if (column + span > table->column_count)
         span = table->column_count - column;
     return span ? span : 1u;
+}
+
+/* Two-column prose also has two runs per row; do not turn it into a table. */
+static int office_pdf_table_is_prose(const QwPdfLine *lines, size_t start,
+                                     size_t end)
+{
+    size_t row;
+    size_t runs = 0u;
+    size_t long_runs = 0u;
+    if (end - start < 2u) return 0;
+    for (row = start; row < end; ++row) {
+        size_t cell;
+        if (lines[row].run_count != 2u) return 0;
+        for (cell = 0u; cell < 2u; ++cell) {
+            const char *text = lines[row].runs[cell].text;
+            ++runs;
+            if (text && strlen(text) >= 20u) ++long_runs;
+        }
+    }
+    return runs > 0u && long_runs * 4u >= runs * 3u;
 }
 
 /* True when the row has a run starting at the given grid column. */
