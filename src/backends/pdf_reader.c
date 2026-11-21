@@ -1,4 +1,4 @@
-/* Internal PDF reading, rasterisation, merging and CAJ JP2 support.
+﻿/* Internal PDF reading, rasterisation, merging and CAJ JP2 support.
  *
  * Implemented behaviour:
  *  - `qw_pdf_reader_open` resolves objects through the cross-reference table
@@ -3362,7 +3362,7 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
    span rules: cluster the line origins, keep clusters with at least two lines,
    require a real gutter and a wide span, and cap the count. */
 
-#define PDF_TEXT_COLUMN_LIMIT 6u
+#define PDF_TEXT_COLUMN_LIMIT 8u
 #define PDF_TEXT_COLUMN_TOLERANCE 12.0
 #define PDF_TEXT_COLUMN_GUTTER 40.0
 #define PDF_TEXT_COLUMN_SPAN 120.0

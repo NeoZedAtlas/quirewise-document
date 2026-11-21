@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.21)
+﻿cmake_minimum_required(VERSION 3.21)
 
 project(QuirewiseDocument VERSION 0.1.0 LANGUAGES C)
 option(QUIREWISE_BUILD_SHARED "Build Quirewise libraries as shared libraries" OFF)
@@ -139,6 +139,7 @@ if(BUILD_TESTING)
         QUIREWISE_COLUMNS_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns.pdf"
         QUIREWISE_COLUMNS3_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns3.pdf"
         QUIREWISE_COLUMNS5_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns5.pdf"
+        QUIREWISE_COLUMNS8_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/columns8.pdf"
         QUIREWISE_SMASK_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/smask.pdf"
         QUIREWISE_ROTATED_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/rotated.pdf"
         QUIREWISE_CMYK_JPEG_PDF="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cmyk_jpeg.pdf"

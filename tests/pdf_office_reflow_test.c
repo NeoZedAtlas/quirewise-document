@@ -792,6 +792,55 @@ int main(void)
         free(docx);
     }
 
+    /* Eight columns: the layout cap is eight, so a dense newspaper page still
+       reads down each column. */
+    {
+        FILE *file = fopen(QUIREWISE_COLUMNS8_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            static const char *names[] = {"A", "B", "C", "D", "E", "F", "G", "H"};
+            const uint8_t *positions[8][2];
+            char label[4];
+            size_t column;
+            int ordered = 1;
+            for (column = 0u; column < 8u; ++column) {
+                snprintf(label, sizeof(label), "%s1", names[column]);
+                positions[column][0] = find_bytes(docx, docx_size, label);
+                snprintf(label, sizeof(label), "%s2", names[column]);
+                positions[column][1] = find_bytes(docx, docx_size, label);
+                CHECK(positions[column][0] != NULL);
+                CHECK(positions[column][1] != NULL);
+                if (positions[column][0] >= positions[column][1]) ordered = 0;
+            }
+            for (column = 0u; column + 1u < 8u; ++column)
+                if (positions[column][1] >= positions[column + 1u][0])
+                    ordered = 0;
+            CHECK(ordered);
+        }
+        free(bytes);
+        free(docx);
+    }
+
     /* A soft mask composites the image over white. */
     {
         FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");
