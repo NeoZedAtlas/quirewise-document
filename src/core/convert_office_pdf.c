@@ -796,44 +796,106 @@ static int office_docx_emit_image(OfficePdfBuffer *body,
     return 1;
 }
 
-/* Detect a two-column page: line origins cluster left and right of a split. */
-static int office_pdf_column_split(const QwPdfLine *lines, size_t line_count,
-                                   double *split)
+#define OFFICE_PDF_MAX_LINE_COLUMNS 4u
+
+/* Cluster the line origins. A single cluster is ordinary prose; two to four
+   clusters separated by real gutters are text columns. Column detection is
+   capped because reordering more than four columns is a layout guess the
+   reflow writer cannot express. */
+static size_t office_pdf_column_layout(const QwPdfLine *lines,
+                                       size_t line_count,
+                                       double *boundaries)
 {
-    double min_x;
-    double max_x;
-    size_t left = 0u;
-    size_t right = 0u;
+    double *origins;
+    double centers[OFFICE_PDF_MAX_LINE_COLUMNS + 1u];
+    size_t weights[OFFICE_PDF_MAX_LINE_COLUMNS + 1u];
     size_t index;
-    if (line_count < 4u) return 0;
-    min_x = lines[0].x;
-    max_x = lines[0].x;
+    size_t cluster_count;
+    int overflow = 0;
+
+    if (line_count < 4u) return 1u;
+    origins = (double *)malloc(line_count * sizeof(*origins));
+    if (!origins) return 1u;
+    for (index = 0u; index < line_count; ++index)
+        origins[index] = lines[index].x;
     for (index = 1u; index < line_count; ++index) {
-        if (lines[index].x < min_x) min_x = lines[index].x;
-        if (lines[index].x > max_x) max_x = lines[index].x;
+        double current = origins[index];
+        size_t position = index;
+        while (position > 0u && origins[position - 1u] > current) {
+            origins[position] = origins[position - 1u];
+            --position;
+        }
+        origins[position] = current;
     }
-    if (max_x - min_x < 120.0) return 0;
-    *split = (min_x + max_x) / 2.0;
-    for (index = 0u; index < line_count; ++index) {
-        if (lines[index].x < *split) ++left;
-        else ++right;
+    centers[0] = origins[0];
+    weights[0] = 1u;
+    cluster_count = 1u;
+    for (index = 1u; index < line_count; ++index) {
+        double center = centers[cluster_count - 1u];
+        if (origins[index] - center <= 12.0) {
+            centers[cluster_count - 1u] =
+                (center * (double)weights[cluster_count - 1u] + origins[index]) /
+                (double)(weights[cluster_count - 1u] + 1u);
+            ++weights[cluster_count - 1u];
+        } else if (cluster_count > OFFICE_PDF_MAX_LINE_COLUMNS) {
+            overflow = 1;
+            break;
+        } else {
+            centers[cluster_count] = origins[index];
+            weights[cluster_count] = 1u;
+            ++cluster_count;
+        }
     }
-    if (left < 2u || right < 2u) return 0;
-    return 1;
+    free(origins);
+
+    if (overflow || cluster_count < 2u) return 1u;
+    /* A cluster holding one line is an indent, not a column. */
+    {
+        size_t kept = 0u;
+        for (index = 0u; index < cluster_count; ++index) {
+            if (weights[index] >= 2u) {
+                centers[kept] = centers[index];
+                weights[kept] = weights[index];
+                ++kept;
+            }
+        }
+        cluster_count = kept;
+    }
+    if (cluster_count < 2u) return 1u;
+    if (centers[cluster_count - 1u] - centers[0] < 120.0) return 1u;
+    for (index = 1u; index < cluster_count; ++index) {
+        /* Columns need a gutter; closer clusters are indentation. */
+        if (centers[index] - centers[index - 1u] < 40.0) return 1u;
+        boundaries[index - 1u] = (centers[index] + centers[index - 1u]) / 2.0;
+    }
+    return cluster_count;
 }
 
-/* Stable insertion sort: left column first, top-to-bottom, then right. */
+static size_t office_pdf_column_for_x(const double *boundaries,
+                                      size_t column_count, double x)
+{
+    size_t index;
+    for (index = 1u; index < column_count; ++index) {
+        if (x < boundaries[index - 1u]) return index - 1u;
+    }
+    return column_count - 1u;
+}
+
+/* Stable insertion sort: column by column, each top-to-bottom. */
 static void office_pdf_sort_columns(QwPdfLine *lines, size_t line_count,
-                                    double split)
+                                    const double *boundaries,
+                                    size_t column_count)
 {
     size_t index;
     for (index = 1u; index < line_count; ++index) {
         QwPdfLine current = lines[index];
-        int key = current.x < split ? 0 : 1;
+        size_t key = office_pdf_column_for_x(boundaries, column_count,
+                                             current.x);
         size_t position = index;
         while (position > 0u) {
             const QwPdfLine *previous = &lines[position - 1u];
-            int previous_key = previous->x < split ? 0 : 1;
+            size_t previous_key = office_pdf_column_for_x(
+                boundaries, column_count, previous->x);
             if (previous_key < key ||
                 (previous_key == key && previous->y >= current.y))
                 break;
@@ -1165,12 +1227,15 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                 }
             }
         }
-        {
-            double column_split = 0.0;
-            if (page_image_total == 0u &&
-                office_pdf_column_split(page_lines, line_count,
-                                        &column_split))
-                office_pdf_sort_columns(page_lines, line_count, column_split);
+                {
+            double column_boundaries[OFFICE_PDF_MAX_LINE_COLUMNS];
+            size_t column_count = 1u;
+            if (page_image_total == 0u)
+                column_count = office_pdf_column_layout(
+                    page_lines, line_count, column_boundaries);
+            if (column_count >= 2u)
+                office_pdf_sort_columns(page_lines, line_count,
+                                        column_boundaries, column_count);
         }
         if (index &&
             !pdf_buffer_text(&body,
@@ -1706,12 +1771,15 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                 }
             }
         }
-        {
-            double column_split = 0.0;
-            if (page_image_total == 0u &&
-                office_pdf_column_split(page_lines, line_count,
-                                        &column_split))
-                office_pdf_sort_columns(page_lines, line_count, column_split);
+                {
+            double column_boundaries[OFFICE_PDF_MAX_LINE_COLUMNS];
+            size_t column_count = 1u;
+            if (page_image_total == 0u)
+                column_count = office_pdf_column_layout(
+                    page_lines, line_count, column_boundaries);
+            if (column_count >= 2u)
+                office_pdf_sort_columns(page_lines, line_count,
+                                        column_boundaries, column_count);
         }
         if (!pdf_buffer_text(&chapter, "<div class=\"page\">")) {
             qw_doc_pdf_lines_free(page_lines, line_count);

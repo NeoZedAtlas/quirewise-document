@@ -678,6 +678,53 @@ int main(void)
         free(columns_docx);
     }
 
+    /* Three-column pages emit each column in turn, not row by row. */
+    {
+        FILE *file = fopen(QUIREWISE_COLUMNS3_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *one1 = find_bytes(docx, docx_size, "One1");
+            const uint8_t *one2 = find_bytes(docx, docx_size, "One2");
+            const uint8_t *two1 = find_bytes(docx, docx_size, "Two1");
+            const uint8_t *two2 = find_bytes(docx, docx_size, "Two2");
+            const uint8_t *three1 = find_bytes(docx, docx_size, "Three1");
+            const uint8_t *three2 = find_bytes(docx, docx_size, "Three2");
+            CHECK(one1 != NULL);
+            CHECK(one2 != NULL);
+            CHECK(two1 != NULL);
+            CHECK(two2 != NULL);
+            CHECK(three1 != NULL);
+            CHECK(three2 != NULL);
+            CHECK(one1 < one2);
+            CHECK(one2 < two1);
+            CHECK(two1 < two2);
+            CHECK(two2 < three1);
+            CHECK(three1 < three2);
+        }
+        free(bytes);
+        free(docx);
+    }
+
     /* A soft mask composites the image over white. */
     {
         FILE *file = fopen(QUIREWISE_SMASK_PDF, "rb");
