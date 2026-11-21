@@ -2376,6 +2376,24 @@ static int pdf_render_html(const char *html, size_t html_size,
                      "Rendered %zu layout line(s) into %zu PDF page(s) with the internal Quirewise HTML/PDF writer",
                      lines.count, pages);
         }
+        if (!font) {
+            size_t probe;
+            int non_ascii = 0;
+            size_t note_length;
+            for (probe = 0u; probe < html_size; ++probe) {
+                if ((unsigned char)html[probe] >= 0x80u) {
+                    non_ascii = 1;
+                    break;
+                }
+            }
+            note_length = strlen(report->note);
+            if (non_ascii && note_length + 64u < sizeof(report->note)) {
+                snprintf(report->note + note_length,
+                         sizeof(report->note) - note_length,
+                         "; non-ASCII text uses the built-in STSong-Light "
+                         "without embedding");
+            }
+        }
     }
     pdf_lines_free(&lines);
     if (out_pages) *out_pages = pages;

@@ -239,6 +239,28 @@ int main(void)
         free(gap_pdf);
     }
 
+    /* Non-ASCII text without an embedded font carries a warning. */
+    {
+        static const char zh[] = "<p>\xE4\xB8\xAD\xE6\x96\x87</p>";
+        QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *zh_pdf = NULL;
+        size_t zh_size = 0u;
+        QwConvertReport note;
+        memset(&note, 0, sizeof(note));
+        CHECK(qw_convert_to_pdf_memory(zh, strlen(zh), &options, &zh_pdf,
+                                       &zh_size, &note) == QW_STATUS_OK);
+        CHECK(strstr(note.note, "without embedding") != NULL);
+        free(zh_pdf);
+        options.pdf_font_path = QUIREWISE_FONT_TEST_PATH;
+        zh_pdf = NULL;
+        zh_size = 0u;
+        memset(&note, 0, sizeof(note));
+        CHECK(qw_convert_to_pdf_memory(zh, strlen(zh), &options, &zh_pdf,
+                                       &zh_size, &note) == QW_STATUS_OK);
+        CHECK(strstr(note.note, "without embedding") == NULL);
+        free(zh_pdf);
+    }
+
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
     return 0;
 }
