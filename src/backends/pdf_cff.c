@@ -1043,6 +1043,90 @@ static int cff2_build_index(uint8_t *out, size_t capacity,
     return cff_build_index(out, capacity, objects, lengths, count, out_size);
 }
 
+/* CFF2's vstore operator is 24, above the CFF 1 operator range, so the
+   generic operand scanner stops on it. Walk the DICT with the CFF2 rules. */
+static int cff2_has_vstore(const uint8_t *dict, size_t size)
+{
+    size_t pos = 0u;
+    while (pos < size) {
+        uint8_t b = dict[pos];
+        if (b == 24u) return 1;
+        if (b == 12u) {
+            if (pos + 1u >= size) return 0;
+            pos += 2u;
+            continue;
+        }
+        if (b <= 21u) {
+            pos += 1u;
+            continue;
+        }
+        if (b == 28u) {
+            pos += 3u;
+            continue;
+        }
+        if (b == 29u) {
+            pos += 5u;
+            continue;
+        }
+        if (b == 30u) {
+            pos += 1u;
+            while (pos < size) {
+                uint8_t value = dict[pos++];
+                if ((value & 0x0fu) == 0x0fu || (value >> 4) == 0x0fu) break;
+            }
+            continue;
+        }
+        if (b >= 32u && b <= 246u) {
+            pos += 1u;
+            continue;
+        }
+        if (b >= 247u && b <= 254u) {
+            pos += 2u;
+            continue;
+        }
+        if (b == 255u) {
+            pos += 5u;
+            continue;
+        }
+        return 0;
+    }
+    return 0;
+}
+/* The Type2 width operand is only recognised in front of a stem, mask, moveto
+   or endchar, so a program that starts with a drawing operator needs an empty
+   rmoveto first. */
+static unsigned cff2_first_operator(const uint8_t *program, size_t size)
+{
+    size_t pos = 0u;
+    while (pos < size) {
+        uint8_t b = program[pos];
+        if (b == 12u) return pos + 1u < size ? 1200u + program[pos + 1u] : 0u;
+        if (b <= 21u) return b;
+        if (b == 28u) pos += 3u;
+        else if (b == 29u) pos += 5u;
+        else if (b == 30u) {
+            pos += 1u;
+            while (pos < size) {
+                uint8_t value = program[pos++];
+                if ((value & 0x0fu) == 0x0fu || (value >> 4) == 0x0fu) break;
+            }
+        } else if (b == 255u) pos += 5u;
+        else if (b >= 32u && b <= 246u) pos += 1u;
+        else if (b >= 247u && b <= 254u) pos += 2u;
+        else return 0u;
+    }
+    return 0u;
+}
+
+static int cff2_width_allowed(unsigned op)
+{
+    return op == 1u || op == 3u || op == 18u || op == 19u || op == 20u ||
+           op == 23u || op == 21u || op == 22u || op == 4u || op == 14u ||
+           op == 0u;
+}
+static int cff2_flatten_program(const uint8_t *in, size_t in_size,
+                                uint8_t **out, size_t *out_size);
+
 static int cff2_advance(const uint8_t *font, size_t font_size, size_t gid)
 {
     size_t hhea_offset = 0u;
@@ -1119,6 +1203,7 @@ int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
     size_t private_block = 0u;
     size_t cff_size = 0u;
     size_t offset;
+    int variable = 0;
     size_t body;
     uint8_t *cff = NULL;
     const uint8_t *objects[2];
@@ -1145,9 +1230,7 @@ int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
             return 0;
         top_dict_offset = header_size;
         top_dict = cff2 + top_dict_offset;
-        if (cff_dict_operands(top_dict, top_dict_size, 24u, values,
-                              &value_count))
-            return 0; /* variable font: needs a static instance */
+        if (cff2_has_vstore(top_dict, top_dict_size)) variable = 1;
         value_count = 8u;
         if (!cff_dict_operands(top_dict, top_dict_size, 17u, values,
                                &value_count) ||
@@ -1185,8 +1268,20 @@ int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
         glyph_count = charstrings_index.count;
         for (glyph = 0u; glyph < glyph_count; ++glyph) {
             size_t length = 0u;
-            if (!cff2_object(cff2, &charstrings_index, glyph, &length))
-                return 0;
+            const uint8_t *program =
+                cff2_object(cff2, &charstrings_index, glyph, &length);
+            if (!program) return 0;
+            if (variable) {
+                uint8_t *flat = NULL;
+                size_t flat_size = 0u;
+                unsigned op;
+                if (!cff2_flatten_program(program, length, &flat, &flat_size))
+                    return 0;
+                op = cff2_first_operator(flat, flat_size);
+                free(flat);
+                length = flat_size;
+                if (!cff2_width_allowed(op)) length += 3u; /* 0 0 rmoveto */
+            }
             charstrings_total +=
                 cff2_width_length(cff2_advance(font, font_size, glyph)) +
                 length + 1u; /* width operand + endchar */
@@ -1312,8 +1407,50 @@ int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
                                 &length);
                 pos += cff2_width_write(cff + pos,
                                           cff2_advance(font, font_size, gid));
-                memcpy(cff + pos, program, length);
-                pos += length;
+                {
+                    const uint8_t *first = program;
+                    size_t first_size = length;
+                    unsigned op;
+                    if (variable) {
+                        uint8_t *probe = NULL;
+                        size_t probe_size = 0u;
+                        if (!cff2_flatten_program(program, length, &probe,
+                                                  &probe_size)) {
+                            free(cff);
+                            cff = NULL;
+                            return 0;
+                        }
+                        first = probe;
+                        first_size = probe_size;
+                        op = cff2_first_operator(probe, probe_size);
+                        free(probe);
+                    } else {
+                        op = cff2_first_operator(program, length);
+                    }
+                    (void)first;
+                    (void)first_size;
+                    if (!cff2_width_allowed(op)) {
+                        cff[pos++] = 139u; /* 0 */
+                        cff[pos++] = 139u; /* 0 */
+                        cff[pos++] = 21u;  /* rmoveto */
+                    }
+                }
+                if (variable) {
+                    uint8_t *flat = NULL;
+                    size_t flat_size = 0u;
+                    if (!cff2_flatten_program(program, length, &flat,
+                                              &flat_size)) {
+                        free(cff);
+                        cff = NULL;
+                        return 0;
+                    }
+                    memcpy(cff + pos, flat, flat_size);
+                    pos += flat_size;
+                    free(flat);
+                } else {
+                    memcpy(cff + pos, program, length);
+                    pos += length;
+                }
                 cff[pos++] = 14u; /* endchar */
             }
         }
@@ -1402,4 +1539,204 @@ int qw_pdf_cff2_to_cff(const uint8_t *font, size_t font_size,
         (void)part;
         return 1;
     }
+}
+/* --- Type2 charstring flattening for variable CFF2 -------------------------
+ * A variable CFF2 charstring can contain `blend`; at the default instance the
+ * deltas all evaluate to zero, so flattening means keeping the first
+ * numBlends operands and dropping the operator. Operands are copied verbatim,
+ * so only their spans (and integer values, for numBlends) are tracked. */
+
+typedef struct Cff2Operand {
+    size_t start;
+    size_t length;
+    int32_t value;
+} Cff2Operand;
+
+#define CFF2_STACK_LIMIT 96u
+
+static int cff2_operand_at(const uint8_t *in, size_t in_size, size_t pos,
+                           Cff2Operand *operand, size_t *next)
+{
+    uint8_t b = in[pos];
+    if (b == 28u) {
+        if (pos + 3u > in_size) return 0;
+        operand->value = (int32_t)(int16_t)(((uint16_t)in[pos + 1u] << 8) |
+                                            in[pos + 2u]);
+        operand->start = pos;
+        operand->length = 3u;
+        *next = pos + 3u;
+        return 1;
+    }
+    if (b == 29u) {
+        if (pos + 5u > in_size) return 0;
+        operand->value = (int32_t)(((uint32_t)in[pos + 1u] << 24) |
+                                   ((uint32_t)in[pos + 2u] << 16) |
+                                   ((uint32_t)in[pos + 3u] << 8) |
+                                   in[pos + 4u]);
+        operand->start = pos;
+        operand->length = 5u;
+        *next = pos + 5u;
+        return 1;
+    }
+    if (b == 30u) {
+        size_t at = pos + 1u;
+        while (at < in_size) {
+            uint8_t value = in[at++];
+            if ((value & 0x0fu) == 0x0fu || (value >> 4) == 0x0fu) break;
+        }
+        operand->value = 0;
+        operand->start = pos;
+        operand->length = at - pos;
+        *next = at;
+        return 1;
+    }
+    if (b == 255u) {
+        int32_t fixed;
+        if (pos + 5u > in_size) return 0;
+        fixed = (int32_t)(((uint32_t)in[pos + 1u] << 24) |
+                          ((uint32_t)in[pos + 2u] << 16) |
+                          ((uint32_t)in[pos + 3u] << 8) | in[pos + 4u]);
+        operand->value = fixed / 65536;
+        operand->start = pos;
+        operand->length = 5u;
+        *next = pos + 5u;
+        return 1;
+    }
+    if (b >= 32u && b <= 246u) {
+        operand->value = (int32_t)b - 139;
+        operand->start = pos;
+        operand->length = 1u;
+        *next = pos + 1u;
+        return 1;
+    }
+    if (b >= 247u && b <= 250u) {
+        if (pos + 2u > in_size) return 0;
+        operand->value = (int32_t)(b - 247u) * 256 + in[pos + 1u] + 108;
+        operand->start = pos;
+        operand->length = 2u;
+        *next = pos + 2u;
+        return 1;
+    }
+    if (b >= 251u && b <= 254u) {
+        if (pos + 2u > in_size) return 0;
+        operand->value = -((int32_t)(b - 251u) * 256) - in[pos + 1u] - 108;
+        operand->start = pos;
+        operand->length = 2u;
+        *next = pos + 2u;
+        return 1;
+    }
+    return 0;
+}
+
+static int cff2_flatten_program(const uint8_t *in, size_t in_size,
+                                uint8_t **out, size_t *out_size)
+{
+    Cff2Operand stack[CFF2_STACK_LIMIT];
+    size_t stack_count = 0u;
+    size_t stems = 0u;
+    size_t pos = 0u;
+    size_t used = 0u;
+    uint8_t *buffer = (uint8_t *)malloc(in_size + 1u);
+    if (!buffer) return 0;
+    while (pos < in_size) {
+        uint8_t b = in[pos];
+        if (b == 12u) {
+            size_t index;
+            if (pos + 1u >= in_size) goto fail;
+            for (index = 0u; index < stack_count; ++index)
+                memcpy(buffer + used, in + stack[index].start,
+                       stack[index].length), used += stack[index].length;
+            buffer[used++] = 12u;
+            buffer[used++] = in[pos + 1u];
+            stack_count = 0u;
+            pos += 2u;
+            continue;
+        }
+        if (b <= 21u) {
+            switch (b) {
+            case 16u: { /* blend: keep the default operands only */
+                size_t index;
+                int32_t count;
+                size_t rest;
+                if (stack_count == 0u) goto fail;
+                count = stack[stack_count - 1u].value;
+                if (count <= 0 || (size_t)count > stack_count - 1u) goto fail;
+                rest = stack_count - 1u - (size_t)count;
+                if (rest % (size_t)count != 0u) goto fail;
+                for (index = 0u; index < (size_t)count; ++index) {
+                    memcpy(buffer + used, in + stack[index].start,
+                           stack[index].length);
+                    used += stack[index].length;
+                }
+                stack_count = (size_t)count;
+                pos += 1u;
+                break;
+            }
+            case 19u:
+            case 20u: { /* hintmask/cntrmask: operand stack holds vstems */
+                size_t index;
+                size_t mask_bytes;
+                if (stack_count) stems += stack_count / 2u;
+                for (index = 0u; index < stack_count; ++index) {
+                    memcpy(buffer + used, in + stack[index].start,
+                           stack[index].length);
+                    used += stack[index].length;
+                }
+                buffer[used++] = b;
+                mask_bytes = (stems + 7u) / 8u;
+                if (pos + 1u + mask_bytes > in_size) goto fail;
+                memcpy(buffer + used, in + pos + 1u, mask_bytes);
+                used += mask_bytes;
+                stack_count = 0u;
+                pos += 1u + mask_bytes;
+                break;
+            }
+            case 10u:
+            case 29u: /* callsubr/callgsubr: subr programs are not flattened */
+                goto fail;
+            case 1u:
+            case 3u:
+            case 18u:
+            case 23u: {
+                size_t index;
+                for (index = 0u; index < stack_count; ++index) {
+                    memcpy(buffer + used, in + stack[index].start,
+                           stack[index].length);
+                    used += stack[index].length;
+                }
+                buffer[used++] = b;
+                stems += stack_count / 2u;
+                stack_count = 0u;
+                pos += 1u;
+                break;
+            }
+            default: {
+                size_t index;
+                for (index = 0u; index < stack_count; ++index) {
+                    memcpy(buffer + used, in + stack[index].start,
+                           stack[index].length);
+                    used += stack[index].length;
+                }
+                buffer[used++] = b;
+                stack_count = 0u;
+                pos += 1u;
+                break;
+            }
+            }
+            continue;
+        }
+        if (cff2_operand_at(in, in_size, pos, &stack[stack_count], &pos)) {
+            if (stack_count + 1u >= CFF2_STACK_LIMIT) goto fail;
+            ++stack_count;
+            continue;
+        }
+        goto fail;
+    }
+    if (stack_count) goto fail;
+    *out = buffer;
+    *out_size = used;
+    return 1;
+fail:
+    free(buffer);
+    return 0;
 }

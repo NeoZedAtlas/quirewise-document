@@ -1,4 +1,4 @@
-/* Embedding a caller-supplied TrueType font as the PDF text font. */
+﻿/* Embedding a caller-supplied TrueType font as the PDF text font. */
 #include "document_backend.h"
 #include "pdf_cff.h"
 #include "pdf_font.h"
@@ -410,6 +410,28 @@ int main(void)
             CHECK(strstr(note.note, "PDF/A-1b") != NULL);
             CHECK(strstr(note.note, "TrueType") != NULL);
         }
+    }
+
+    /* A variable CFF2 font is flattened to its default instance: blend drops
+       the deltas, leaving the default operands. */
+    {
+        QwPdfFont *font = qw_pdf_font_load(QUIREWISE_CFF2_VARIABLE_PATH);
+        QwConvertOptions options = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *pdf = NULL;
+        size_t pdf_size = 0u;
+        QwConvertReport note;
+        CHECK(font != NULL);
+        CHECK(qw_pdf_font_is_cff(font) == 1);
+        qw_pdf_font_free(font);
+        memset(&note, 0, sizeof(note));
+        options.pdf_font_path = QUIREWISE_CFF2_VARIABLE_PATH;
+        options.pdfa_level = QW_PDFA_2B;
+        CHECK(qw_convert_to_pdf_memory(html, strlen(html), &options, &pdf,
+                                       &pdf_size, &note) == QW_STATUS_OK);
+        CHECK(pdf != NULL && pdf_size > 0u);
+        CHECK(contains(pdf, pdf_size, "/CIDFontType0"));
+        CHECK(contains(pdf, pdf_size, "<pdfaid:part>2</pdfaid:part>"));
+        free(pdf);
     }
 
     /* CFF2 variable-font outlines cannot be embedded in PDF 1.x: the loader

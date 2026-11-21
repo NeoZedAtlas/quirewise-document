@@ -116,7 +116,8 @@ if(BUILD_TESTING)
         QUIREWISE_FONT_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/FileeTest-TrueType.ttf"
         QUIREWISE_OTF_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/FileeTest-CID.otf"
         QUIREWISE_CFF2_TEST_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cff2.otf"
-        QUIREWISE_CFF2_STATIC_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cff2-static.otf")
+        QUIREWISE_CFF2_STATIC_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cff2-static.otf"
+        QUIREWISE_CFF2_VARIABLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/cff2-variable.otf")
     target_include_directories(quirewise_document_pdf_font_embed_test PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/backends")
     target_link_libraries(quirewise_document_pdf_font_embed_test PRIVATE
