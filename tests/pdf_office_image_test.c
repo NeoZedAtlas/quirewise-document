@@ -45,7 +45,9 @@ int main(void)
     uint8_t *epub = NULL;
     size_t epub_size = 0u;
     QwConvertReport report;
+    QwConvertOptions pages_options = QW_CONVERT_OPTIONS_INIT;
 
+    pages_options.pdf_office_pages = 1;
     memset(&report, 0, sizeof(report));
     if (qw_convert_to_pdf_memory(html, sizeof(html) - 1u, NULL, &pdf, &pdf_size,
                                  &report) != QW_STATUS_OK ||
@@ -66,8 +68,9 @@ int main(void)
     }
 
     memset(&report, 0, sizeof(report));
-    if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_DOCX, NULL, &docx,
-                                    &docx_size, &report) != QW_STATUS_OK ||
+    if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_DOCX,
+                                    &pages_options, &docx, &docx_size,
+                                    &report) != QW_STATUS_OK ||
         !docx || !docx_size)
         fail("PDF to DOCX failed", &report);
     if (!contains(docx, docx_size, "word/media/page1.jpg") ||
@@ -83,8 +86,9 @@ int main(void)
     free(docx);
 
     memset(&report, 0, sizeof(report));
-    if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_EPUB, NULL, &epub,
-                                    &epub_size, &report) != QW_STATUS_OK ||
+    if (qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_EPUB,
+                                    &pages_options, &epub, &epub_size,
+                                    &report) != QW_STATUS_OK ||
         !epub || !epub_size)
         fail("PDF to EPUB failed", &report);
     if (!contains(epub, epub_size, "OEBPS/page1.jpg") ||

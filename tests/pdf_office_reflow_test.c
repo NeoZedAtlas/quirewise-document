@@ -55,12 +55,13 @@ int main(void)
                                    &pdf_size, NULL) == QW_STATUS_OK);
     CHECK(pdf != NULL && pdf_size > 0u);
 
-    /* Default mode keeps the page images. */
-    options.pdf_office_reflow = 0;
+    /* Page images are opt-in now; editable text is the default. */
+    options.pdf_office_pages = 1;
     CHECK(qw_convert_to_format_memory(pdf, pdf_size, QW_FORMAT_DOCX, &options,
                                       &docx, &docx_size, NULL) ==
           QW_STATUS_OK);
     CHECK(contains(docx, docx_size, "word/media/page1.jpg"));
+    options.pdf_office_pages = 0;
 
     /* Reflow mode emits paragraphs and no media parts. */
     options.pdf_office_reflow = 1;
