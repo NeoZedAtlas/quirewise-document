@@ -934,6 +934,38 @@ static int office_pdf_join_space(const QwPdfLine *previous,
            (unsigned char)b[0] < 0x80u;
 }
 
+/* Width of one grid column in twips, from the detected column origins. */
+static int office_pdf_column_twips(const OfficePdfTable *table, size_t column,
+                                   int page_w)
+{
+    double width;
+    int twips;
+    if (column >= table->column_count) return 1200;
+    if (column + 1u < table->column_count)
+        width = table->columns[column + 1u] - table->columns[column];
+    else
+        width = 0.0;
+    if (width <= 0.0) width = 120.0;
+    if (column + 1u == table->column_count) {
+        twips = page_w - (int)(table->columns[column] * 20.0) - 1120;
+        if (twips < 400) twips = (int)(width * 20.0);
+    } else {
+        twips = (int)(width * 20.0);
+    }
+    return twips < 200 ? 200 : twips;
+}
+
+/* Total width of a cell spanning `span` grid columns. */
+static int office_pdf_cell_twips(const OfficePdfTable *table, size_t column,
+                                 size_t span, int page_w)
+{
+    int total = 0;
+    size_t index;
+    for (index = 0u; index < span; ++index)
+        total += office_pdf_column_twips(table, column + index, page_w);
+    return total;
+}
+
 int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                                      const char *password,
                                      uint8_t **out_data, size_t *out_size,
@@ -1147,6 +1179,26 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
                 }
+                {
+                    size_t column;
+                    if (!pdf_buffer_text(&body, "<w:tblGrid>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                    for (column = 0u; column < table.column_count; ++column) {
+                        if (!pdf_buffer_printf(
+                                &body, "<w:gridCol w:w=\"%d\"/>",
+                                office_pdf_column_twips(&table, column,
+                                                        page_w))) {
+                            qw_doc_pdf_lines_free(page_lines, line_count);
+                            goto out_of_memory;
+                        }
+                    }
+                    if (!pdf_buffer_text(&body, "</w:tblGrid>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                }
                 for (row = line_index; row < block_end; ++row) {
                     size_t cell;
                     if (!pdf_buffer_text(&body, "<w:tr>")) {
@@ -1165,12 +1217,17 @@ int qw_doc_office_docx_text_from_pdf(const uint8_t *data, size_t size,
                         size_t span =
                             office_pdf_cell_span(&table, column, next_column);
                         if (!pdf_buffer_text(&body, "<w:tc>") ||
+                            !pdf_buffer_text(&body, "<w:tcPr>") ||
                             (span > 1u &&
                              !pdf_buffer_printf(
                                  &body,
-                                 "<w:tcPr><w:gridSpan w:val=\"%zu\"/>"
-                                 "</w:tcPr>",
-                                 span)) ||
+                                 "<w:gridSpan w:val=\"%zu\"/>", span)) ||
+                            !pdf_buffer_printf(
+                                &body,
+                                "<w:tcW w:w=\"%d\" w:type=\"dxa\"/>",
+                                office_pdf_cell_twips(&table, column, span,
+                                                      page_w)) ||
+                            !pdf_buffer_text(&body, "</w:tcPr>") ||
                             !pdf_buffer_text(&body, "<w:p><w:r><w:rPr>") ||
                             !pdf_buffer_text(&body,
                                              office_pdf_font_tag(run->font)) ||
@@ -1626,6 +1683,36 @@ int qw_doc_office_epub_text_from_pdf(const uint8_t *data, size_t size,
                                      "cellpadding=\"4\">")) {
                     qw_doc_pdf_lines_free(page_lines, line_count);
                     goto out_of_memory;
+                }
+                {
+                    size_t column;
+                    double widths[OFFICE_PDF_MAX_COLUMNS];
+                    double total = 0.0;
+                    for (column = 0u; column < table.column_count; ++column) {
+                        widths[column] =
+                            column + 1u < table.column_count
+                                ? table.columns[column + 1u] -
+                                      table.columns[column]
+                                : (column ? widths[column - 1u] : 100.0);
+                        total += widths[column];
+                    }
+                    if (total <= 0.0) total = 1.0;
+                    if (!pdf_buffer_text(&chapter, "<colgroup>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
+                    for (column = 0u; column < table.column_count; ++column) {
+                        if (!pdf_buffer_printf(
+                                &chapter, "<col style=\"width:%.1f%%\"/>",
+                                widths[column] * 100.0 / total)) {
+                            qw_doc_pdf_lines_free(page_lines, line_count);
+                            goto out_of_memory;
+                        }
+                    }
+                    if (!pdf_buffer_text(&chapter, "</colgroup>")) {
+                        qw_doc_pdf_lines_free(page_lines, line_count);
+                        goto out_of_memory;
+                    }
                 }
                 for (row = line_index; row < block_end; ++row) {
                     size_t cell;

@@ -391,6 +391,9 @@ int main(void)
               QW_STATUS_OK);
         CHECK(contains(table_docx, table_docx_size, "<w:tbl>"));
         CHECK(contains(table_docx, table_docx_size, "<w:tblBorders>"));
+        CHECK(contains(table_docx, table_docx_size, "<w:tblGrid>"));
+        CHECK(contains(table_docx, table_docx_size, "<w:gridCol"));
+        CHECK(contains(table_docx, table_docx_size, "<w:tcW"));
         CHECK(contains(table_docx, table_docx_size, "<w:tr>"));
         CHECK(contains(table_docx, table_docx_size, "Name"));
         CHECK(contains(table_docx, table_docx_size, "Qty"));
@@ -407,6 +410,8 @@ int main(void)
                            "<table border=\"1\""));
             CHECK(contains(table_epub, table_epub_size, "<tr>"));
             CHECK(contains(table_epub, table_epub_size, "<td>"));
+            CHECK(contains(table_epub, table_epub_size, "<colgroup>"));
+            CHECK(contains(table_epub, table_epub_size, "style=\"width:"));
             CHECK(contains(table_epub, table_epub_size, "Apple"));
             free(table_epub);
         }
