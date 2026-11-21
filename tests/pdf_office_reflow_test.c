@@ -888,6 +888,96 @@ int main(void)
         free(docx);
     }
 
+    /* Wrapped lines merge into one paragraph; sentence ends do not. */
+    {
+        FILE *file = fopen(QUIREWISE_PARAGRAPH_PDF, "rb");
+        long length;
+        uint8_t *bytes = NULL;
+        size_t byte_count = 0u;
+        QwConvertOptions opts = QW_CONVERT_OPTIONS_INIT;
+        uint8_t *docx = NULL;
+        size_t docx_size = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        bytes = (uint8_t *)malloc((size_t)length);
+        CHECK(bytes != NULL);
+        byte_count = fread(bytes, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(byte_count == (size_t)length);
+        opts.pdf_office_reflow = 1;
+        CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_DOCX,
+                                          &opts, &docx, &docx_size, NULL) ==
+              QW_STATUS_OK);
+        {
+            const uint8_t *long_text = find_bytes(docx, docx_size,
+                                                  "This is a long");
+            const uint8_t *continues = find_bytes(docx, docx_size,
+                                                  "continues here.");
+            const uint8_t *new_sentence = find_bytes(docx, docx_size,
+                                                     "New sentence.");
+            const uint8_t *scan;
+            int break_found = 0;
+            CHECK(long_text != NULL);
+            CHECK(continues != NULL);
+            CHECK(new_sentence != NULL);
+            for (scan = long_text; scan < continues; ++scan) {
+                if (memcmp(scan, "</w:p>", 6u) == 0) {
+                    break_found = 1;
+                    break;
+                }
+            }
+            CHECK(!break_found);
+            break_found = 0;
+            for (scan = continues; scan < new_sentence; ++scan) {
+                if (memcmp(scan, "</w:p>", 6u) == 0) {
+                    break_found = 1;
+                    break;
+                }
+            }
+            CHECK(break_found);
+        }
+        {
+            uint8_t *epub = NULL;
+            size_t epub_size = 0u;
+            CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_EPUB,
+                                              &opts, &epub, &epub_size, NULL) ==
+                  QW_STATUS_OK);
+            const uint8_t *epub_long = find_bytes(epub, epub_size,
+                                                  "This is a long");
+            const uint8_t *epub_continues = find_bytes(epub, epub_size,
+                                                       "continues here.");
+            const uint8_t *epub_new = find_bytes(epub, epub_size,
+                                                 "New sentence.");
+            const uint8_t *scan;
+            int epub_break = 0;
+            CHECK(epub_long != NULL);
+            CHECK(epub_continues != NULL);
+            CHECK(epub_new != NULL);
+            for (scan = epub_long; scan < epub_continues; ++scan) {
+                if (memcmp(scan, "</p>", 4u) == 0) {
+                    epub_break = 1;
+                    break;
+                }
+            }
+            CHECK(!epub_break);
+            epub_break = 0;
+            for (scan = epub_continues; scan < epub_new; ++scan) {
+                if (memcmp(scan, "</p>", 4u) == 0) {
+                    epub_break = 1;
+                    break;
+                }
+            }
+            CHECK(epub_break);
+            free(epub);
+        }
+        free(bytes);
+        free(docx);
+    }
+
     puts("PASS: PDF -> DOCX/EPUB reflow mode");
     return 0;
 }
