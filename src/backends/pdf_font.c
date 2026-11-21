@@ -1,3 +1,4 @@
+#include "pdf_cff.h"
 #include "pdf_font.h"
 
 #include <stdio.h>
@@ -970,13 +971,24 @@ int qw_pdf_font_subset(const QwPdfFont *font, const uint16_t *gids,
     memset(out, 0, sizeof(*out));
     if (font->cff) {
         uint16_t *map;
-        uint8_t *copy;
+        uint8_t *copy = NULL;
+        size_t copy_size = 0u;
+        unsigned glyph_count = 0u;
         unsigned index;
         map = (uint16_t *)malloc((size_t)font->num_glyphs * sizeof(uint16_t));
+        if (!map) return 0;
+        if (qw_pdf_cff_subset(font->data, font->size, gids, count, &copy,
+                              &copy_size, map, &glyph_count)) {
+            out->data = copy;
+            out->size = copy_size;
+            out->map = map;
+            out->num_glyphs = glyph_count;
+            return 1;
+        }
+        /* Fall back to the whole font with unused glyphs blanked. */
         copy = (uint8_t *)malloc(font->size);
-        if (!map || !copy) {
+        if (!copy) {
             free(map);
-            free(copy);
             return 0;
         }
         memcpy(copy, font->data, font->size);

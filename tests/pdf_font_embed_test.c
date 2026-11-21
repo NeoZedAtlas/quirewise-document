@@ -1,5 +1,6 @@
 /* Embedding a caller-supplied TrueType font as the PDF text font. */
 #include "document_backend.h"
+#include "pdf_cff.h"
 #include "pdf_font.h"
 
 #include <quirewise/compression.h>
@@ -304,6 +305,51 @@ int main(void)
         free(blanked);
         free(plain_zip);
         free(blank_zip);
+    }
+
+    /* True CFF subsetting rebuilds CharStrings, charset and FDSelect. */
+    {
+        FILE *file = fopen(QUIREWISE_OTF_TEST_PATH, "rb");
+        long length;
+        uint8_t *data = NULL;
+        size_t size = 0u;
+        uint16_t gids[2] = {1u, 2u};
+        uint16_t map[256];
+        uint8_t *subset = NULL;
+        size_t subset_size = 0u;
+        unsigned glyph_count = 0u;
+
+        CHECK(file != NULL);
+        CHECK(fseek(file, 0, SEEK_END) == 0);
+        length = ftell(file);
+        CHECK(length > 0);
+        CHECK(fseek(file, 0, SEEK_SET) == 0);
+        data = (uint8_t *)malloc((size_t)length);
+        CHECK(data != NULL);
+        size = fread(data, 1u, (size_t)length, file);
+        fclose(file);
+        CHECK(size == (size_t)length);
+        CHECK(qw_pdf_cff_subset(data, size, gids, 2u, &subset, &subset_size,
+                                map, &glyph_count) == 1);
+        CHECK(subset != NULL && subset_size > 0u);
+        CHECK(subset_size < size);
+        CHECK(glyph_count >= 3u);
+        CHECK(map[0] == 0u);
+        CHECK(map[1] == 1u);
+        CHECK(map[2] == 2u);
+        CHECK(map[3] == 0xFFFFu);
+        file = fopen(".tmp-cff-subset.otf", "wb");
+        CHECK(file != NULL);
+        CHECK(fwrite(subset, 1u, subset_size, file) == subset_size);
+        fclose(file);
+        {
+            QwPdfFont *font = qw_pdf_font_load(".tmp-cff-subset.otf");
+            CHECK(font != NULL);
+            qw_pdf_font_free(font);
+        }
+        remove(".tmp-cff-subset.otf");
+        free(subset);
+        free(data);
     }
 
     puts("PASS: PDF font embedding (TrueType subset + OpenType/CFF)");
