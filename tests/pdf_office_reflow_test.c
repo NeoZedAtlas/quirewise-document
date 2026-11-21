@@ -721,6 +721,25 @@ int main(void)
             CHECK(two2 < three1);
             CHECK(three1 < three2);
         }
+        /* The plain-text target uses the same column order, so Markdown and
+           HTML built from the text layer read down each column too. */
+        {
+            uint8_t *text = NULL;
+            size_t text_size = 0u;
+            const uint8_t *one1;
+            const uint8_t *one2;
+            const uint8_t *two1;
+            CHECK(qw_convert_to_format_memory(bytes, byte_count, QW_FORMAT_TXT,
+                                              &opts, &text, &text_size,
+                                              NULL) == QW_STATUS_OK);
+            one1 = find_bytes(text, text_size, "One1");
+            one2 = find_bytes(text, text_size, "One2");
+            two1 = find_bytes(text, text_size, "Two1");
+            CHECK(one1 != NULL && one2 != NULL && two1 != NULL);
+            CHECK(one1 < one2);
+            CHECK(one2 < two1);
+            free(text);
+        }
         free(bytes);
         free(docx);
     }

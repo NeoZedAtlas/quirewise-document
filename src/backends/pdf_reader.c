@@ -3357,6 +3357,236 @@ int qw_doc_pdf_extract_page_lines(QwPdfReader *reader, size_t page_index,
     return QW_STATUS_OK;
 }
 
+/* Multi-column text pages should read column by column in every text target,
+   not just in the DOCX/EPUB reflow. These helpers reuse the same gutter and
+   span rules: cluster the line origins, keep clusters with at least two lines,
+   require a real gutter and a wide span, and cap the count. */
+
+#define PDF_TEXT_COLUMN_LIMIT 6u
+#define PDF_TEXT_COLUMN_TOLERANCE 12.0
+#define PDF_TEXT_COLUMN_GUTTER 40.0
+#define PDF_TEXT_COLUMN_SPAN 120.0
+
+static size_t pdf_text_column_of(const double *boundaries, size_t count,
+                                 double x)
+{
+    size_t index;
+    for (index = 0u; index < count; ++index)
+        if (x <= boundaries[index]) return index;
+    return count ? count - 1u : 0u;
+}
+
+/* Return the number of columns, leaving the sorted order in `lines`. */
+static size_t pdf_text_columns(QwPdfLine *lines, size_t count)
+{
+    double *origins;
+    double centers[PDF_TEXT_COLUMN_LIMIT + 1u];
+    size_t weights[PDF_TEXT_COLUMN_LIMIT + 1u];
+    size_t clusters = 1u;
+    size_t index;
+    size_t kept = 0u;
+    double boundaries[PDF_TEXT_COLUMN_LIMIT];
+
+    if (count < 4u) return 1u;
+    origins = (double *)malloc(count * sizeof(*origins));
+    if (!origins) return 1u;
+    for (index = 0u; index < count; ++index) origins[index] = lines[index].x;
+    for (index = 1u; index < count; ++index) {
+        double current = origins[index];
+        size_t position = index;
+        while (position > 0u && origins[position - 1u] > current) {
+            origins[position] = origins[position - 1u];
+            --position;
+        }
+        origins[position] = current;
+    }
+    centers[0] = origins[0];
+    weights[0] = 1u;
+    for (index = 1u; index < count; ++index) {
+        double center = centers[clusters - 1u];
+        if (origins[index] - center <= PDF_TEXT_COLUMN_TOLERANCE) {
+            centers[clusters - 1u] =
+                (center * (double)weights[clusters - 1u] + origins[index]) /
+                (double)(weights[clusters - 1u] + 1u);
+            ++weights[clusters - 1u];
+        } else if (clusters > PDF_TEXT_COLUMN_LIMIT) {
+            free(origins);
+            return 1u;
+        } else {
+            centers[clusters] = origins[index];
+            weights[clusters] = 1u;
+            ++clusters;
+        }
+    }
+    free(origins);
+    if (clusters < 2u) return 1u;
+    for (index = 0u; index < clusters; ++index) {
+        if (weights[index] >= 2u) {
+            centers[kept] = centers[index];
+            weights[kept] = weights[index];
+            ++kept;
+        }
+    }
+    if (kept < 2u || centers[kept - 1u] - centers[0] < PDF_TEXT_COLUMN_SPAN)
+        return 1u;
+    for (index = 0u; index + 1u < kept; ++index)
+        if (centers[index + 1u] - centers[index] < PDF_TEXT_COLUMN_GUTTER)
+            return 1u;
+    if (kept > 2u) {
+        /* require every gutter, not just the first one */
+        for (index = 0u; index + 1u < kept; ++index)
+            if (centers[index + 1u] - centers[index] < PDF_TEXT_COLUMN_GUTTER)
+                return 1u;
+    }
+    for (index = 0u; index + 1u < kept; ++index)
+        boundaries[index] = (centers[index] + centers[index + 1u]) / 2.0;
+    for (index = 1u; index < count; ++index) {
+        QwPdfLine current = lines[index];
+        size_t key = pdf_text_column_of(boundaries, kept, current.x);
+        size_t position = index;
+        while (position > 0u) {
+            const QwPdfLine *previous = &lines[position - 1u];
+            size_t previous_key =
+                pdf_text_column_of(boundaries, kept, previous->x);
+            if (previous_key < key ||
+                (previous_key == key && previous->y >= current.y))
+                break;
+            lines[position] = *previous;
+            --position;
+        }
+        lines[position] = current;
+    }
+    return kept;
+}
+
+static int pdf_text_append_lines(QwPdfBuffer *text, const QwPdfLine *lines,
+                                 size_t count)
+{
+    size_t line_index;
+    for (line_index = 0u; line_index < count; ++line_index) {
+        size_t run_index;
+        int wrote = 0;
+        for (run_index = 0u; run_index < lines[line_index].run_count;
+             ++run_index) {
+            const char *run = lines[line_index].runs[run_index].text;
+            size_t length;
+            if (!run) continue;
+            length = strlen(run);
+            if (!length) continue;
+            if (wrote && run[0] != ' ') {
+                if (!pdf_buffer_append(text, " ", 1u)) return 0;
+            }
+            if (!pdf_buffer_append(text, run, length)) return 0;
+            wrote = 1;
+        }
+        if (!pdf_buffer_append(text, "\n", 1u)) return 0;
+    }
+    return 1;
+}
+
+#define PDF_TEXT_PROSE_MIN_CHARS 20u
+
+static int pdf_text_line_is_prose(const QwPdfLine *line)
+{
+    size_t run_index;
+    if (line->run_count < 2u) return 0;
+    for (run_index = 0u; run_index < line->run_count; ++run_index) {
+        const char *text = line->runs[run_index].text;
+        if (!text || strlen(text) < PDF_TEXT_PROSE_MIN_CHARS) return 0;
+    }
+    return 1;
+}
+
+static size_t pdf_text_line_segments(const QwPdfLine *line)
+{
+    size_t segments = 1u;
+    size_t run_index;
+    if (!pdf_text_line_is_prose(line)) return 1u;
+    for (run_index = 1u; run_index < line->run_count; ++run_index)
+        if (line->runs[run_index].x - line->runs[run_index - 1u].x >=
+            PDF_TEXT_COLUMN_GUTTER)
+            ++segments;
+    return segments <= PDF_TEXT_COLUMN_LIMIT ? segments : 1u;
+}
+
+static int pdf_text_copy_run_range(const QwPdfLine *source, size_t start,
+                                   size_t count, QwPdfLine *target)
+{
+    size_t run_index;
+    target->x = count ? source->runs[start].x : source->x;
+    target->y = count ? source->runs[start].y : source->y;
+    target->run_count = count;
+    target->runs = (QwPdfRun *)calloc(count ? count : 1u,
+                                      sizeof(*target->runs));
+    if (!target->runs) return 0;
+    for (run_index = 0u; run_index < count; ++run_index) {
+        const QwPdfRun *run = &source->runs[start + run_index];
+        QwPdfRun *copy = &target->runs[run_index];
+        *copy = *run;
+        copy->text = NULL;
+        if (run->text) {
+            size_t length = strlen(run->text);
+            copy->text = (char *)malloc(length + 1u);
+            if (!copy->text) return 0;
+            memcpy(copy->text, run->text, length + 1u);
+        }
+    }
+    return 1;
+}
+
+/* Aligned columns put both prose runs on one baseline; split them so the
+   column detector sees one line per column, exactly like the reflow writer. */
+static int pdf_text_split_aligned_prose(QwPdfLine **lines_ptr,
+                                        size_t *count_ptr)
+{
+    QwPdfLine *lines = *lines_ptr;
+    size_t count = *count_ptr;
+    size_t total = 0u;
+    size_t index;
+    size_t out_index = 0u;
+    QwPdfLine *out;
+
+    for (index = 0u; index < count; ++index)
+        total += pdf_text_line_segments(&lines[index]);
+    if (total == count) return 1;
+    out = (QwPdfLine *)calloc(total, sizeof(*out));
+    if (!out) return 0;
+    for (index = 0u; index < count; ++index) {
+        QwPdfLine *line = &lines[index];
+        size_t segments = pdf_text_line_segments(line);
+        if (segments <= 1u) {
+            if (!pdf_text_copy_run_range(line, 0u, line->run_count,
+                                         &out[out_index])) {
+                qw_doc_pdf_lines_free(out, out_index);
+                return 0;
+            }
+            ++out_index;
+            continue;
+        }
+        {
+            size_t run_index = 0u;
+            while (run_index < line->run_count) {
+                size_t end = run_index + 1u;
+                while (end < line->run_count &&
+                       line->runs[end].x - line->runs[end - 1u].x <
+                           PDF_TEXT_COLUMN_GUTTER)
+                    ++end;
+                if (!pdf_text_copy_run_range(line, run_index, end - run_index,
+                                             &out[out_index])) {
+                    qw_doc_pdf_lines_free(out, out_index);
+                    return 0;
+                }
+                ++out_index;
+                run_index = end;
+            }
+        }
+    }
+    qw_doc_pdf_lines_free(lines, count);
+    *lines_ptr = out;
+    *count_ptr = out_index;
+    return 1;
+}
+
 int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
                                      size_t *out_size, QwConvertReport *report)
 {
@@ -3375,7 +3605,36 @@ int qw_pdf_reader_extract_text(QwPdfReader *reader, uint8_t **out_text,
     if (!reader->text_ready) {
         memset(&text, 0, sizeof(text));
         for (index = 0u; index < reader->page_count; ++index) {
+            QwPdfLine *page_lines = NULL;
+            size_t line_count = 0u;
+            int has_columns = 0;
             if (index) pdf_buffer_append(&text, "\n", 1u);
+            if (qw_doc_pdf_extract_page_lines(reader, index, &page_lines,
+                                              &line_count) != QW_STATUS_OK) {
+                free(text.data);
+                return QW_STATUS_ERR_DECODE;
+            }
+            if (line_count)
+                has_columns = pdf_text_columns(page_lines, line_count) >= 2u;
+            if (!has_columns && line_count > 1u) {
+                if (!pdf_text_split_aligned_prose(&page_lines, &line_count)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    free(text.data);
+                    return QW_STATUS_ERR_OUT_OF_MEMORY;
+                }
+                if (line_count)
+                    has_columns = pdf_text_columns(page_lines, line_count) >= 2u;
+            }
+            if (has_columns) {
+                if (!pdf_text_append_lines(&text, page_lines, line_count)) {
+                    qw_doc_pdf_lines_free(page_lines, line_count);
+                    free(text.data);
+                    return QW_STATUS_ERR_OUT_OF_MEMORY;
+                }
+                qw_doc_pdf_lines_free(page_lines, line_count);
+                continue;
+            }
+            qw_doc_pdf_lines_free(page_lines, line_count);
             if (!pdf_extract_page_text(reader, reader->page_objects[index], &text,
                                       NULL)) {
                 free(text.data);
