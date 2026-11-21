@@ -194,6 +194,12 @@ int main(void)
         CHECK(contains(pdfa_pdf, pdfa_size, "/DestOutputProfile"));
         CHECK(contains(pdfa_pdf, pdfa_size, "/FontFile2"));
         CHECK(contains(pdfa_pdf, pdfa_size, "<pdfaid:part>1</pdfaid:part>"));
+        /* veraPDF (ISO 19005-1 6.1.3) requires a trailer /ID, and every font
+           object must be embedded: the Helvetica/STSong-Light slots stay null
+           when the embedded font carries the text. */
+        CHECK(contains(pdfa_pdf, pdfa_size, "/ID [<"));
+        CHECK(!contains(pdfa_pdf, pdfa_size, "/BaseFont /Helvetica"));
+        CHECK(!contains(pdfa_pdf, pdfa_size, "/BaseFont /STSong-Light"));
         free(pdfa_pdf);
 
         /* PDF/A-2b and 3b keep the same structure with another part id. */

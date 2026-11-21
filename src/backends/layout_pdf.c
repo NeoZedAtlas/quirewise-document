@@ -969,6 +969,67 @@ typedef struct QwPdfOut {
     size_t offset_capacity;
 } QwPdfOut;
 
+/* PDF/A requires a file identifier in the trailer (ISO 19005-1 clause
+   6.1.3). Deriving it from the bytes written so far keeps the output
+   reproducible for identical input. */
+static void pdf_trailer_id(const QwPdfOut *out, char *buffer, size_t size)
+{
+    unsigned long long first = 1469598103934665603ull;
+    unsigned long long second = 1099511628211ull;
+    size_t index;
+
+    for (index = 0u; index < out->bytes.size; ++index) {
+        unsigned char value = (unsigned char)out->bytes.data[index];
+        first ^= value;
+        first *= 1099511628211ull;
+        second += first;
+        second *= 0x100000001b3ull;
+    }
+    (void)snprintf(buffer, size, "<%016llx%016llx>", first, second);
+}
+
+/* Append UTF-8 text to an XMP buffer, escaping the XML metacharacters a
+   document title or author may contain. */
+static int pdf_append_xml_text(char *buffer, size_t capacity, size_t *used,
+                               const char *text)
+{
+    const unsigned char *cursor = (const unsigned char *)text;
+    while (*cursor) {
+        const char *escape = NULL;
+        size_t escape_size = 0u;
+        switch (*cursor) {
+        case '&': escape = "&amp;"; escape_size = 5u; break;
+        case '<': escape = "&lt;"; escape_size = 4u; break;
+        case '>': escape = "&gt;"; escape_size = 4u; break;
+        case '"': escape = "&quot;"; escape_size = 6u; break;
+        case '\'': escape = "&apos;"; escape_size = 6u; break;
+        default: break;
+        }
+        if (escape) {
+            if (*used + escape_size >= capacity) return 0;
+            memcpy(buffer + *used, escape, escape_size);
+            *used += escape_size;
+        } else {
+            if (*used + 1u >= capacity) return 0;
+            buffer[(*used)++] = (char)*cursor;
+        }
+        ++cursor;
+    }
+    return 1;
+}
+
+/* Append XMP markup verbatim; only interpolated text goes through
+   pdf_append_xml_text. */
+static int pdf_append_xml_markup(char *buffer, size_t capacity, size_t *used,
+                                 const char *text)
+{
+    size_t size = strlen(text);
+    if (*used + size >= capacity) return 0;
+    memcpy(buffer + *used, text, size);
+    *used += size;
+    return 1;
+}
+
 static int pdf_out_append(QwPdfOut *out, const char *bytes, size_t size)
 {
     return pdf_text_append(&out->bytes, bytes, size);
@@ -1056,6 +1117,7 @@ static int pdf_write_text_line(QwPdfOut *out, const QwPdfGlyphRun *runs,
 {
     size_t run_index;
     double cursor = x;
+    uint16_t space_gid = font ? qw_pdf_font_gid(font, 0x20u) : 0u;
     if (!pdf_out_printf(out, "BT\n")) return 0;
     for (run_index = 0; run_index < run_count; ++run_index) {
         const QwPdfGlyphRun *run = &runs[run_index];
@@ -1074,9 +1136,17 @@ static int pdf_write_text_line(QwPdfOut *out, const QwPdfGlyphRun *runs,
                 uint16_t gid;
                 if (!length) break;
                 gid = qw_pdf_font_gid(font, code);
+                /* PDF/A-2 forbids showing the .notdef glyph: substitute the
+                   space glyph and drop the character when even that is
+                   unavailable. */
+                if (gid == 0u) gid = space_gid;
                 if (gid_map) {
                     gid = gid_map[gid];
                     if (gid == 0xFFFFu) gid = 0u;
+                }
+                if (gid == 0u) {
+                    chunk_index += length;
+                    continue;
                 }
                 if (!pdf_out_printf(out, "%04X", (unsigned)gid)) return 0;
                 chunk_index += length;
@@ -1633,24 +1703,32 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             if (ok) ok = pdf_out_printf(&out, "] >>\nendobj\n");
         }
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (ok) ok = pdf_out_printf(&out,
-            "3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-            "/Encoding /WinAnsiEncoding >>\nendobj\n");
+        /* Objects 3-6 are the built-in Helvetica/STSong-Light pair. When an
+           embedded font is in use they are not referenced by any page, and a
+           PDF/A validator still rejects the unembedded font dictionaries, so
+           the slots stay in place but become null. */
+        if (ok) ok = pdf_out_printf(&out, "%s",
+            font ? "3 0 obj\nnull\nendobj\n"
+                 : "3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+                   "/Encoding /WinAnsiEncoding >>\nendobj\n");
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (ok) ok = pdf_out_printf(&out,
-            "4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light "
-            "/Encoding /UniGB-UCS2-H /DescendantFonts [%zu 0 R] >>\nendobj\n",
+        if (ok) ok = pdf_out_printf(&out, "%s",
+            font ? "4 0 obj\nnull\nendobj\n"
+                 : "4 0 obj\n<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light "
+                   "/Encoding /UniGB-UCS2-H /DescendantFonts [%zu 0 R] >>\nendobj\n",
             font_descendant);
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (ok) ok = pdf_out_printf(&out,
-            "5 0 obj\n<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
-            "/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> "
-            "/FontDescriptor %zu 0 R /DW 1000 >>\nendobj\n", font_descriptor);
+        if (ok) ok = pdf_out_printf(&out, "%s",
+            font ? "5 0 obj\nnull\nendobj\n"
+                 : "5 0 obj\n<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
+                   "/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> "
+                   "/FontDescriptor %zu 0 R /DW 1000 >>\nendobj\n", font_descriptor);
         if (ok) ok = pdf_out_track(&out, out.bytes.size);
-        if (ok) ok = pdf_out_printf(&out,
-            "6 0 obj\n<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 "
-            "/FontBBox [-25 -254 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 "
-            "/CapHeight 880 /StemV 80 >>\nendobj\n");
+        if (ok) ok = pdf_out_printf(&out, "%s",
+            font ? "6 0 obj\nnull\nendobj\n"
+                 : "6 0 obj\n<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 "
+                   "/FontBBox [-25 -254 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 "
+                   "/CapHeight 880 /StemV 80 >>\nendobj\n");
 
         if (ok && !pdf_build_xobject_resources(lines, image_object_base,
                                                &resources)) {
@@ -2142,11 +2220,22 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                 escaped_author[author_size++] = '>';
             }
             escaped_author[author_size] = '\0';
+            char title_entry[800] = "";
+            char author_entry[800] = "";
+            /* Empty entries are omitted so the Info dictionary stays exactly
+               equivalent to the XMP properties (ISO 19005-1 6.7.3). */
+            if (lines->title[0]) {
+                snprintf(title_entry, sizeof(title_entry), "/Title %s ",
+                         escaped_title);
+            }
+            if (lines->author[0]) {
+                snprintf(author_entry, sizeof(author_entry), "/Author %s ",
+                         escaped_author);
+            }
             if (!pdf_out_track(&out, out.bytes.size) ||
                 !pdf_out_printf(&out,
-                    "%zu 0 obj\n<< /Producer (Quirewise) /Title %s "
-                    "/Author %s >>\nendobj\n",
-                    info_object, escaped_title, escaped_author)) {
+                    "%zu 0 obj\n<< /Producer (Quirewise) %s%s>>\nendobj\n",
+                    info_object, title_entry, author_entry)) {
                 ok = 0;
             }
         }
@@ -2192,21 +2281,57 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             "  <rdf:Description rdf:about=\"\"\n"
             "   xmlns:pdfaid=\"http://www.aiim.org/pdfa/ns/id/\"\n"
             "   xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\"\n"
+            "   xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\"\n"
             "   xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
             "   <pdfaid:part>";
-        static const char xmp_suffix[] =
+        static const char xmp_middle[] =
             "</pdfaid:part>\n"
             "   <pdfaid:conformance>B</pdfaid:conformance>\n"
-            "   <xmp:CreatorTool>Quirewise</xmp:CreatorTool>\n"
-            "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">"
-            "Quirewise document</rdf:li></rdf:Alt></dc:title>\n"
+            "   <xmp:CreatorTool>Quirewise</xmp:CreatorTool>\n";
+        static const char xmp_producer[] =
+            "   <pdf:Producer>Quirewise</pdf:Producer>\n";
+        static const char xmp_suffix[] =
             "  </rdf:Description>\n"
             " </rdf:RDF>\n"
             "</x:xmpmeta>\n"
             "<?xpacket end=\"w\"?>\n";
-        char xmp[1024];
+        char xmp[2048];
+        size_t xmp_used = 0u;
         int xmp_length = snprintf(xmp, sizeof(xmp), "%s%d%s", xmp_prefix,
-                                  pdfa, xmp_suffix);
+                                  pdfa, xmp_middle);
+        int xmp_ok = xmp_length > 0 && (size_t)xmp_length < sizeof(xmp);
+        if (xmp_ok) {
+            xmp_used = (size_t)xmp_length;
+            /* ISO 19005-1/2 require the XMP properties to mirror the Info
+               dictionary, so write the title and author the writer emits
+               there instead of a fixed placeholder. */
+            if (lines->title[0]) {
+                xmp_ok = pdf_append_xml_markup(
+                             xmp, sizeof(xmp), &xmp_used,
+                             "   <dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">") &&
+                         pdf_append_xml_text(xmp, sizeof(xmp), &xmp_used,
+                                             lines->title) &&
+                         pdf_append_xml_markup(xmp, sizeof(xmp), &xmp_used,
+                                               "</rdf:li></rdf:Alt></dc:title>\n");
+            }
+            if (xmp_ok && lines->author[0]) {
+                xmp_ok = pdf_append_xml_markup(
+                             xmp, sizeof(xmp), &xmp_used,
+                             "   <dc:creator><rdf:Seq><rdf:li>") &&
+                         pdf_append_xml_text(xmp, sizeof(xmp), &xmp_used,
+                                             lines->author) &&
+                         pdf_append_xml_markup(xmp, sizeof(xmp), &xmp_used,
+                                               "</rdf:li></rdf:Seq></dc:creator>\n");
+            }
+            if (xmp_ok) {
+                xmp_ok = pdf_append_xml_markup(xmp, sizeof(xmp), &xmp_used,
+                                               xmp_producer) &&
+                         pdf_append_xml_markup(xmp, sizeof(xmp), &xmp_used,
+                                               xmp_suffix);
+            }
+            if (xmp_ok) xmp_length = (int)xmp_used;
+        }
+        if (!xmp_ok) ok = 0;
         const uint8_t *icc;
         size_t icc_size = 0u;
         size_t icc_bound;
@@ -2273,6 +2398,8 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
             ok = pdf_out_printf(&out, "%010llu 00000 n \n", offset);
         }
         if (ok) {
+            char file_id[48];
+            pdf_trailer_id(&out, file_id, sizeof(file_id));
             if (lines->title[0] || lines->author[0]) {
                 size_t info_object = 6u + (page_count ? page_count : 1u) * 2u +
                                      lines->image_count +
@@ -2280,14 +2407,16 @@ static int pdf_emit_document(const QwPdfLines *lines, double page_width,
                                      1u;
                 ok = pdf_out_printf(
                     &out,
-                    "trailer\n<< /Size %zu /Root 1 0 R /Info %zu 0 R >>\n"
-                    "startxref\n%zu\n%%%%EOF\n",
-                    object_total + 1u, info_object, xref_offset);
+                    "trailer\n<< /Size %zu /Root 1 0 R /Info %zu 0 R "
+                    "/ID [%s %s] >>\nstartxref\n%zu\n%%%%EOF\n",
+                    object_total + 1u, info_object, file_id, file_id,
+                    xref_offset);
             } else {
                 ok = pdf_out_printf(
                     &out,
-                    "trailer\n<< /Size %zu /Root 1 0 R >>\nstartxref\n%zu\n%%%%EOF\n",
-                    object_total + 1u, xref_offset);
+                    "trailer\n<< /Size %zu /Root 1 0 R /ID [%s %s] >>\n"
+                    "startxref\n%zu\n%%%%EOF\n",
+                    object_total + 1u, file_id, file_id, xref_offset);
             }
         }
     }
